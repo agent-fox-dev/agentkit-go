@@ -4,9 +4,8 @@ spec_name: "gateway_authenticator"
 title: "Gateway authentication by callback, the principal on the backend's context, and destroy from the embedder"
 status: "active"
 created_at: "2026-10-20T06:25:34.284579Z"
-updated_at: "2026-10-20T06:25:34.284579Z"
 intent_hash: "19fe1f9e81c805eb8488cc41de7836595131b82559103c8dcd50c90878885910"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/13-authenticate-gateway-tokens-with-a-callback.md"
 ---
 ## Intent
@@ -161,3 +160,13 @@ Hub embeds the same server with one token per lease. Its backend has to know at 
 | `google.golang.org/grpc/metadata.FromIncomingContext` | `func FromIncomingContext(ctx context.Context) (metadata.MD, bool)` | unverified. Used by `authenticate`. |
 | `grpc.UnaryServerInterceptor` / `grpc.StreamServerInterceptor` shapes | as used by `unaryAuth` and `streamAuth` | unverified. Existing call sites. |
 | `crypto/sha256.Sum256`, `encoding/hex.EncodeToString`, `crypto/subtle.ConstantTimeCompare`, `errors.New`, `log/slog` | standard library | stable |
+
+## Glossary
+
+- **Authenticator**: The embedder-supplied func(ctx context.Context, token string) (principal string, ok bool) that callback mode calls once per RPC from the tap handle.
+- **callback mode**: A gatewayd.Server built with a non-nil Config.Authenticate and an empty Config.Tokens. The embedder's callback decides which tokens are accepted.
+- **held sandbox**: A sandbox whose entry is currently in the server's registry: created, recorded by gatewayService.Create, and not yet removed by any path.
+- **principal**: The non-secret owner identity of an authenticated RPC. In callback mode it is the string the Authenticator returns. In static mode it is the 64-character lowercase hex SHA-256 of the token. Sandbox ownership is keyed by it.
+- **removal path**: registry.remove, the single code path that deletes a registry entry once, stops its TTL timer, closes the backend sandbox and logs 'sandbox destroyed' with a reason.
+- **static mode**: A gatewayd.Server built with a non-empty Config.Tokens and a nil Config.Authenticate. This is spec 19's token-list authentication.
+- **tap handle**: The grpc.InTapHandle function (Server.tap). It runs on the connection's I/O goroutine before gRPC reads any request message.

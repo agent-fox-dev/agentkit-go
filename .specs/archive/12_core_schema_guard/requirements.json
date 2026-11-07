@@ -1,438 +1,757 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
   "spec_id": "12",
   "spec_name": "core_schema_guard",
-  "schema_version": 2,
-  "introduction": "Specification 12 streamlines the core package vocabulary to under 50 exported types and 1,600 production lines, retires jsonx by folding order-preserving schema decoding into schema.Parse with issue 87 constraint validation, reshapes guard.Check as a pure execution authorization function, and simplifies system prompt assembly.",
-  "glossary": {
-    "byte_stability": "The preservation of original argument JSON bytes without re-marshaling or key re-ordering across tool execution turns.",
-    "issue_87_constraints": "Validation checks covering strict additionalProperties: false, literal enum matching, numeric bounds, string lengths and regex patterns, and array item cardinality.",
-    "ordered_schema": "A JSON Schema representation where authored property declaration order is preserved in a slice for model visibility.",
-    "pure_guard": "An authorization function that evaluates command program safety against allowlists without side effects or coupling to hook contexts."
-  },
+  "schema_version": 3,
   "requirements": [
     {
-      "id": "12-REQ-1",
+      "id": "REQ-1",
       "title": "Core Message and Content Block Types",
       "rationale": "Restricting message and content structures to active text and tool types removes legacy session baggage and eliminates untyped ordered object wrappers.",
       "criteria": [
         {
-          "id": "12-REQ-1.1",
+          "id": "REQ-1.1",
           "pattern": "ubiquitous",
           "system": "core package",
-          "action": "define Message as a sealed interface implemented exclusively by UserMessage, AssistantMessage, and ToolResultMessage structs"
+          "action": "define Message as a sealed interface implemented exclusively by UserMessage, AssistantMessage, and ToolResultMessage structs",
+          "contract": "core.Message is implemented exclusively by UserMessage, AssistantMessage, and ToolResultMessage, sealed against external implementation; core.ContentBlock is implemented exclusively by TextBlock, ThinkingBlock, and ToolUseBlock; ImageBlock, RawBlock, and ToolResultBlock are not declared in core",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "core package AST and type declarations"
+            ],
+            "pseudocode": "assert implementsSealedMessage(UserMessage{}); assert implementsSealedMessage(AssistantMessage{}); assert implementsSealedMessage(ToolResultMessage{}); assert implementsContentBlock(TextBlock{}); assert implementsContentBlock(ThinkingBlock{}); assert implementsContentBlock(ToolUseBlock{}); assert !existsType(\"ImageBlock\"); assert !existsType(\"RawBlock\"); assert !existsType(\"ToolResultBlock\")"
+          }
         },
         {
-          "id": "12-REQ-1.2",
+          "id": "REQ-1.2",
           "pattern": "ubiquitous",
           "system": "core package",
-          "action": "define ContentBlock as an interface implemented exclusively by TextBlock, ThinkingBlock, and ToolUseBlock structs, omitting ImageBlock, RawBlock, and ToolResultBlock"
+          "action": "define ContentBlock as an interface implemented exclusively by TextBlock, ThinkingBlock, and ToolUseBlock structs, omitting ImageBlock, RawBlock, and ToolResultBlock",
+          "check": {
+            "same_as": "REQ-1.1"
+          }
         },
         {
-          "id": "12-REQ-1.3",
+          "id": "REQ-1.3",
           "pattern": "ubiquitous",
           "system": "UserMessage, AssistantMessage, and ToolResultMessage structs",
-          "action": "omit Unknown fields of type jsonx.OrderedObject and Deferred fields of type *DeferredHandle"
+          "action": "omit Unknown fields of type jsonx.OrderedObject and Deferred fields of type *DeferredHandle",
+          "contract": "UserMessage, AssistantMessage, and ToolResultMessage contain no Unknown jsonx.OrderedObject or Deferred fields; ToolUseBlock contains ID, Name, Input of type json.RawMessage, ThoughtSignature, and omits InputOrder; AssistantMessage declares Effort of type Effort and omits ThinkingLevel, API, and Provider fields",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "UserMessage, AssistantMessage, ToolResultMessage, and ToolUseBlock type declarations"
+            ],
+            "pseudocode": "assert !hasField(UserMessage{}, \"Unknown\"); assert !hasField(UserMessage{}, \"Deferred\"); assert !hasField(AssistantMessage{}, \"Unknown\"); assert !hasField(AssistantMessage{}, \"Deferred\"); assert !hasField(AssistantMessage{}, \"ThinkingLevel\"); assert !hasField(AssistantMessage{}, \"API\"); assert !hasField(AssistantMessage{}, \"Provider\"); assert hasField(AssistantMessage{}, \"Effort\"); assert !hasField(ToolResultMessage{}, \"Unknown\"); assert !hasField(ToolResultMessage{}, \"Deferred\"); assert hasField(ToolUseBlock{}, \"ID\"); assert hasField(ToolUseBlock{}, \"Name\"); assert hasField(ToolUseBlock{}, \"Input\"); assert hasField(ToolUseBlock{}, \"ThoughtSignature\"); assert !hasField(ToolUseBlock{}, \"InputOrder\")"
+          }
         },
         {
-          "id": "12-REQ-1.4",
+          "id": "REQ-1.4",
           "pattern": "ubiquitous",
           "system": "ToolUseBlock struct",
-          "action": "retain ID, Name, Input of type json.RawMessage, and ThoughtSignature, while omitting InputOrder"
+          "action": "retain ID, Name, Input of type json.RawMessage, and ThoughtSignature, while omitting InputOrder",
+          "check": {
+            "same_as": "REQ-1.3"
+          }
         },
         {
-          "id": "12-REQ-1.5",
+          "id": "REQ-1.5",
           "pattern": "ubiquitous",
           "system": "AssistantMessage struct",
-          "action": "declare Effort for thinking configuration while omitting ThinkingLevel, API, and Provider fields"
+          "action": "declare Effort for thinking configuration while omitting ThinkingLevel, API, and Provider fields",
+          "check": {
+            "same_as": "REQ-1.3"
+          }
         }
       ]
     },
     {
-      "id": "12-REQ-2",
+      "id": "REQ-2",
       "title": "Core Argument Preparation and Stability",
       "rationale": "Retaining raw message bytes while removing jsonx dependencies guarantees stable argument serialization across tool executions.",
       "criteria": [
         {
-          "id": "12-REQ-2.1",
+          "id": "REQ-2.1",
           "pattern": "ubiquitous",
           "system": "core package",
-          "action": "define PreparedArguments with fields Raw of type json.RawMessage, Args of type map[string]any, and Coercions of type []schema.Coercion, containing no references to jsonx"
+          "action": "define PreparedArguments with fields Raw of type json.RawMessage, Args of type map[string]any, and Coercions of type []schema.Coercion, containing no references to jsonx",
+          "contract": "PreparedArguments.Raw is of type json.RawMessage; PreparedArguments.Args is of type map[string]any; PreparedArguments.Coercions is of type []schema.Coercion; PreparedArguments declares no fields of type jsonx.OrderedObject",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a PreparedArguments struct instance initialized with raw JSON bytes, parsed map, and coercions"
+            ],
+            "pseudocode": "p := core.PreparedArguments{Raw: json.RawMessage(`{\"k\":\"v\"}`), Args: map[string]any{\"k\": \"v\"}, Coercions: nil}; assert typeof(p.Raw) == json.RawMessage; assert typeof(p.Args) == map[string]any; assert typeof(p.Coercions) == []schema.Coercion; assert !hasField(p, \"Order\")"
+          }
         },
         {
-          "id": "12-REQ-2.2",
+          "id": "REQ-2.2",
           "pattern": "event_driven",
           "condition": "PrepareArguments executes for a tool use block without argument mutations or repairs",
           "system": "core argument preparer",
-          "action": "preserve the original ToolUseBlock.Input bytes in PreparedArguments.Raw verbatim"
+          "action": "preserve the original ToolUseBlock.Input bytes in PreparedArguments.Raw verbatim",
+          "contract": "PreparedArguments.Raw is identical byte-for-byte to the original ToolUseBlock.Input bytes; PreparedArguments.Args contains the unmarshaled argument values",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a tool with a defined InputSchema and a ToolUseBlock with input JSON bytes"
+            ],
+            "pseudocode": "inputBytes := json.RawMessage(`{\"query\":\"test\",\"limit\":10}`); block := core.ToolUseBlock{ID: \"t1\", Name: \"search\", Input: inputBytes}; prep, err := core.PrepareArguments(tool, block); assert err == nil; assert bytes.Equal(prep.Raw, inputBytes); assert prep.Args[\"query\"] == \"test\""
+          }
         },
         {
-          "id": "12-REQ-2.3",
+          "id": "REQ-2.3",
           "pattern": "event_driven",
           "condition": "PrepareArguments executes for a tool with a non-nil PrepareArguments function that mutates arguments",
           "system": "core argument preparer",
-          "action": "re-encode the updated arguments and update PreparedArguments.Raw with the mutated JSON bytes"
+          "action": "re-encode the updated arguments and update PreparedArguments.Raw with the mutated JSON bytes",
+          "contract": "PreparedArguments.Raw is updated with the re-encoded JSON bytes reflecting the mutation; PreparedArguments.Args reflects the mutated argument map",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a tool with a non-nil PrepareArguments hook that adds default parameter values"
+            ],
+            "pseudocode": "tool.PrepareArguments = func(args map[string]any) (map[string]any, error) { args[\"injected\"] = true; return args, nil }; block := core.ToolUseBlock{ID: \"t1\", Name: \"custom\", Input: json.RawMessage(`{\"v\":1}`)}; prep, err := core.PrepareArguments(tool, block); assert err == nil; assert strings.Contains(string(prep.Raw), `\"injected\":true`); assert prep.Args[\"injected\"] == true"
+          }
         },
         {
-          "id": "12-REQ-2.4",
+          "id": "REQ-2.4",
           "pattern": "unwanted",
           "condition": "PrepareArguments encounters arguments failing validation against the tool InputSchema",
           "system": "core argument preparer",
           "action": "reject the call and return an error containing the schema validation failure details",
-          "contract": "returns zero-value PreparedArguments and non-nil error wrapping the schema validation issue"
+          "contract": "returns zero-value PreparedArguments and non-nil error wrapping the schema validation issue",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a tool with an InputSchema requiring an integer property \"count\""
+            ],
+            "pseudocode": "tool := core.Tool{InputSchema: schema.Object(schema.Prop(\"count\", schema.Int()))}; block := core.ToolUseBlock{ID: \"t1\", Name: \"t\", Input: json.RawMessage(`{\"count\":\"invalid_string\"}`)}; prep, err := core.PrepareArguments(tool, block); assert err != nil; assert len(prep.Raw) == 0; assert prep.Args == nil"
+          }
         }
       ]
     },
     {
-      "id": "12-REQ-3",
+      "id": "REQ-3",
       "title": "Core Provider Interface and Request Structure",
       "rationale": "A single streaming method signature decouples model invocation from provider registries and middleware abstractions.",
       "criteria": [
         {
-          "id": "12-REQ-3.1",
+          "id": "REQ-3.1",
           "pattern": "ubiquitous",
           "system": "core package",
-          "action": "define ProviderClient as an interface with the single method Stream(ctx context.Context, req Request) (<-chan StreamEvent, error)"
+          "action": "define ProviderClient as an interface with the single method Stream(ctx context.Context, req Request) (<-chan StreamEvent, error)",
+          "contract": "ProviderClient interface contains exactly one method: Stream(ctx context.Context, req Request) (<-chan StreamEvent, error); StreamEvent declares Event of type Event and Err of type error; Request declares System []ContentBlock, Messages Messages, Tools []ToolWire, ToolChoice ToolChoice, MaxTokens *int, Temperature *float64, TopP *float64, StopSequences []string, and Effort Effort",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "core package provider definitions in core/provider.go"
+            ],
+            "pseudocode": "var client core.ProviderClient; ch, err := client.Stream(context.Background(), core.Request{}); assert typeof(ch) == <-chan core.StreamEvent; ev := core.StreamEvent{}; assert hasField(ev, \"Event\"); assert hasField(ev, \"Err\"); req := core.Request{}; assert hasField(req, \"System\"); assert hasField(req, \"Messages\"); assert hasField(req, \"Tools\"); assert hasField(req, \"ToolChoice\"); assert hasField(req, \"MaxTokens\"); assert hasField(req, \"Temperature\"); assert hasField(req, \"TopP\"); assert hasField(req, \"StopSequences\"); assert hasField(req, \"Effort\")"
+          }
         },
         {
-          "id": "12-REQ-3.2",
+          "id": "REQ-3.2",
           "pattern": "ubiquitous",
           "system": "core package",
-          "action": "define StreamEvent as a struct containing Event of type Event and Err of type error"
+          "action": "define StreamEvent as a struct containing Event of type Event and Err of type error",
+          "check": {
+            "same_as": "REQ-3.1"
+          }
         },
         {
-          "id": "12-REQ-3.3",
+          "id": "REQ-3.3",
           "pattern": "ubiquitous",
           "system": "core package",
-          "action": "define Request with System of type []ContentBlock, Messages of type Messages, Tools of type []ToolWire, ToolChoice of type ToolChoice, MaxTokens of type *int, Temperature of type *float64, TopP of type *float64, StopSequences of type []string, and Effort of type Effort"
+          "action": "define Request with System of type []ContentBlock, Messages of type Messages, Tools of type []ToolWire, ToolChoice of type ToolChoice, MaxTokens of type *int, Temperature of type *float64, TopP of type *float64, StopSequences of type []string, and Effort of type Effort",
+          "check": {
+            "same_as": "REQ-3.1"
+          }
         },
         {
-          "id": "12-REQ-3.4",
+          "id": "REQ-3.4",
           "pattern": "ubiquitous",
           "system": "core package",
-          "action": "omit legacy provider types ProviderRegistry, ProviderStreamOptions, ClientFunc, StreamFunc, APIProvider, Complete, and Dispatch"
+          "action": "omit legacy provider types ProviderRegistry, ProviderStreamOptions, ClientFunc, StreamFunc, APIProvider, Complete, and Dispatch",
+          "contract": "ProviderRegistry, ProviderStreamOptions, ClientFunc, StreamFunc, APIProvider, Complete, and Dispatch are not declared in core",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "core package symbol definitions in core/provider.go"
+            ],
+            "pseudocode": "assert !existsSymbol(\"core.ProviderRegistry\"); assert !existsSymbol(\"core.ProviderStreamOptions\"); assert !existsSymbol(\"core.ClientFunc\"); assert !existsSymbol(\"core.StreamFunc\"); assert !existsSymbol(\"core.APIProvider\"); assert !existsSymbol(\"core.Complete\"); assert !existsSymbol(\"core.Dispatch\")"
+          }
         },
         {
-          "id": "12-REQ-3.5",
+          "id": "REQ-3.5",
           "pattern": "unwanted",
           "condition": "Stream is called with a canceled context or invalid request parameters",
           "system": "ProviderClient implementation",
           "action": "return a non-nil error or emit a StreamEvent carrying the terminal error on the channel",
-          "contract": "returns a non-nil error immediately or emits a StreamEvent with non-nil Err on the returned channel"
+          "contract": "returns a non-nil error immediately or emits a StreamEvent with non-nil Err on the returned channel",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a ProviderClient implementation and a canceled context"
+            ],
+            "pseudocode": "ctx, cancel := context.WithCancel(context.Background()); cancel(); ch, err := client.Stream(ctx, core.Request{}); if err == nil { ev := <-ch; assert ev.Err != nil } else { assert err != nil }"
+          }
         }
       ]
     },
     {
-      "id": "12-REQ-4",
+      "id": "REQ-4",
       "title": "Core Tool and Model Usage Types",
       "rationale": "Trimming unneeded MCP server pointers, sampling descriptors, and multi-vendor model fields leaves a clean vocabulary for tool invocation and usage tracking.",
       "criteria": [
         {
-          "id": "12-REQ-4.1",
+          "id": "REQ-4.1",
           "pattern": "ubiquitous",
           "system": "Tool struct",
-          "action": "retain Name, Description, InputSchema, OutputSchema, ReachableTools, Terminating, ExecutionMode, PromptGuidelines, Handler, Execute, and PrepareArguments fields"
+          "action": "retain Name, Description, InputSchema, OutputSchema, ReachableTools, Terminating, ExecutionMode, PromptGuidelines, Handler, Execute, and PrepareArguments fields",
+          "contract": "Tool retains Name, Description, InputSchema, OutputSchema, ReachableTools, Terminating, ExecutionMode, PromptGuidelines, Handler, Execute, and PrepareArguments; Tool omits MCPServer field and core omits MCPServerOf helper; ToolWire retains Name, Description, and InputSchema while omitting ConstrainedSampling",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "Tool and ToolWire struct definitions in core/tool.go"
+            ],
+            "pseudocode": "t := core.Tool{}; assert hasField(t, \"Name\"); assert hasField(t, \"Description\"); assert hasField(t, \"InputSchema\"); assert hasField(t, \"OutputSchema\"); assert hasField(t, \"ReachableTools\"); assert hasField(t, \"Terminating\"); assert hasField(t, \"ExecutionMode\"); assert hasField(t, \"PromptGuidelines\"); assert hasField(t, \"Handler\"); assert hasField(t, \"Execute\"); assert hasField(t, \"PrepareArguments\"); assert !hasField(t, \"MCPServer\"); assert !existsSymbol(\"core.MCPServerOf\"); tw := core.ToolWire{}; assert hasField(tw, \"Name\"); assert hasField(tw, \"Description\"); assert hasField(tw, \"InputSchema\"); assert !hasField(tw, \"ConstrainedSampling\")"
+          }
         },
         {
-          "id": "12-REQ-4.2",
+          "id": "REQ-4.2",
           "pattern": "ubiquitous",
           "system": "core package",
-          "action": "omit MCPServerOf helper and omit MCPServer field from Tool"
+          "action": "omit MCPServerOf helper and omit MCPServer field from Tool",
+          "check": {
+            "same_as": "REQ-4.1"
+          }
         },
         {
-          "id": "12-REQ-4.3",
+          "id": "REQ-4.3",
           "pattern": "ubiquitous",
           "system": "ToolWire struct",
-          "action": "retain Name, Description, and InputSchema fields while omitting ConstrainedSampling"
+          "action": "retain Name, Description, and InputSchema fields while omitting ConstrainedSampling",
+          "check": {
+            "same_as": "REQ-4.1"
+          }
         },
         {
-          "id": "12-REQ-4.4",
+          "id": "REQ-4.4",
           "pattern": "ubiquitous",
           "system": "Usage struct",
-          "action": "retain InputTokens, OutputTokens, CacheReadTokens, CacheWriteTokens, Requests, CostUSD, RunResult, RunStopReason, and StopReason"
+          "action": "retain InputTokens, OutputTokens, CacheReadTokens, CacheWriteTokens, Requests, CostUSD, RunResult, RunStopReason, and StopReason",
+          "contract": "Usage retains InputTokens, OutputTokens, CacheReadTokens, CacheWriteTokens, Requests, CostUSD, RunResult, RunStopReason, and StopReason; ThinkingLevel enum and its comparison ordering functions are deleted; Model retains ID, ContextWindow, MaxOutputTokens, InputCostPerMillion, OutputCostPerMillion, CacheReadCostPerMillion, CacheWriteCostPerMillion, and ThinkingKind, while omitting API and Provider",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "Usage and Model struct definitions in core"
+            ],
+            "pseudocode": "u := core.Usage{}; assert hasField(u, \"InputTokens\"); assert hasField(u, \"OutputTokens\"); assert hasField(u, \"CacheReadTokens\"); assert hasField(u, \"CacheWriteTokens\"); assert hasField(u, \"Requests\"); assert hasField(u, \"CostUSD\"); assert hasField(u, \"RunResult\"); assert hasField(u, \"RunStopReason\"); assert hasField(u, \"StopReason\"); assert !existsSymbol(\"core.ThinkingLevel\"); assert !existsSymbol(\"core.ThinkingLevelOrder\"); assert !existsSymbol(\"core.ClampThinkingLevel\"); m := core.Model{}; assert hasField(m, \"ID\"); assert hasField(m, \"ContextWindow\"); assert hasField(m, \"MaxOutputTokens\"); assert hasField(m, \"InputCostPerMillion\"); assert hasField(m, \"OutputCostPerMillion\"); assert hasField(m, \"CacheReadCostPerMillion\"); assert hasField(m, \"CacheWriteCostPerMillion\"); assert hasField(m, \"ThinkingKind\"); assert !hasField(m, \"API\"); assert !hasField(m, \"Provider\")"
+          }
         },
         {
-          "id": "12-REQ-4.5",
+          "id": "REQ-4.5",
           "pattern": "ubiquitous",
           "system": "core package",
-          "action": "remove the ThinkingLevel enum and all its ordering comparison functions"
+          "action": "remove the ThinkingLevel enum and all its ordering comparison functions",
+          "check": {
+            "same_as": "REQ-4.4"
+          }
         },
         {
-          "id": "12-REQ-4.6",
+          "id": "REQ-4.6",
           "pattern": "ubiquitous",
           "system": "Model struct",
-          "action": "retain ID, ContextWindow, MaxOutputTokens, InputCostPerMillion, OutputCostPerMillion, CacheReadCostPerMillion, CacheWriteCostPerMillion, and ThinkingKind while omitting API and Provider fields"
+          "action": "retain ID, ContextWindow, MaxOutputTokens, InputCostPerMillion, OutputCostPerMillion, CacheReadCostPerMillion, CacheWriteCostPerMillion, and ThinkingKind while omitting API and Provider fields",
+          "check": {
+            "same_as": "REQ-4.4"
+          }
         }
       ]
     },
     {
-      "id": "12-REQ-5",
+      "id": "REQ-5",
       "title": "Core Package Slimming and Size Limits",
       "rationale": "Deleting obsolete session and configuration files shrinks the core package vocabulary and production footprint to meet maintainability limits.",
       "criteria": [
         {
-          "id": "12-REQ-5.1",
+          "id": "REQ-5.1",
           "pattern": "ubiquitous",
           "system": "core package",
-          "action": "delete core/history.go and remove ConversationHistory, SnapshotBranch, SessionHeader, Entry, EntryID, MessageEntry, and CompactionEntry types"
+          "action": "delete core/history.go and remove ConversationHistory, SnapshotBranch, SessionHeader, Entry, EntryID, MessageEntry, and CompactionEntry types",
+          "contract": "core/history.go and core/config.go do not exist on disk; ConversationHistory, SnapshotBranch, SessionHeader, Entry, EntryID, MessageEntry, and CompactionEntry are not declared; AgentConfig, StopContext, StopPolicy, ContextTransform, Hooks, and QueueMode are not declared",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the core package directory in the filesystem"
+            ],
+            "pseudocode": "assert !fileExists(\"core/history.go\"); assert !fileExists(\"core/config.go\"); assert !existsSymbol(\"core.ConversationHistory\"); assert !existsSymbol(\"core.SnapshotBranch\"); assert !existsSymbol(\"core.SessionHeader\"); assert !existsSymbol(\"core.Entry\"); assert !existsSymbol(\"core.EntryID\"); assert !existsSymbol(\"core.MessageEntry\"); assert !existsSymbol(\"core.CompactionEntry\"); assert !existsSymbol(\"core.AgentConfig\"); assert !existsSymbol(\"core.StopContext\"); assert !existsSymbol(\"core.StopPolicy\"); assert !existsSymbol(\"core.ContextTransform\"); assert !existsSymbol(\"core.Hooks\"); assert !existsSymbol(\"core.QueueMode\")"
+          }
         },
         {
-          "id": "12-REQ-5.2",
+          "id": "REQ-5.2",
           "pattern": "ubiquitous",
           "system": "core package",
-          "action": "delete core/config.go and remove AgentConfig, StopContext, StopPolicy, ContextTransform, Hooks, and QueueMode types"
+          "action": "delete core/config.go and remove AgentConfig, StopContext, StopPolicy, ContextTransform, Hooks, and QueueMode types",
+          "check": {
+            "same_as": "REQ-5.1"
+          }
         },
         {
-          "id": "12-REQ-5.3",
+          "id": "REQ-5.3",
           "pattern": "ubiquitous",
           "system": "core package",
-          "action": "for any exported type in core, maintain total exported type count at or below 50"
+          "action": "for any exported type in core, maintain total exported type count at or below 50",
+          "contract": "the total count of exported types in package core is less than or equal to 50",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "the complete Go AST of the core package"
+            ],
+            "pseudocode": "for typ in exportedTypes(pkgCore): types = append(types, typ); assert len(types) <= 50"
+          }
         },
         {
-          "id": "12-REQ-5.4",
+          "id": "REQ-5.4",
           "pattern": "ubiquitous",
           "system": "core package",
-          "action": "for all production Go files in core excluding tests, maintain total line count at or below 1,600 lines"
+          "action": "for all production Go files in core excluding tests, maintain total line count at or below 1,600 lines",
+          "contract": "total production Go lines in core package is at or below 1,600 lines; total production Go lines across the root module is at or below 20,000 lines",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the repository codebase tree"
+            ],
+            "pseudocode": "coreLines := countNonTestLines(\"core\"); assert coreLines <= 1600; rootLines := countNonTestLines(\".\"); assert rootLines <= 20000"
+          }
         },
         {
-          "id": "12-REQ-5.5",
+          "id": "REQ-5.5",
           "pattern": "ubiquitous",
           "system": "root module",
-          "action": "for all production Go files across the root module excluding tests and submodules, maintain total line count at or below 20,000 lines"
+          "action": "for all production Go files across the root module excluding tests and submodules, maintain total line count at or below 20,000 lines",
+          "check": {
+            "same_as": "REQ-5.4"
+          }
         }
       ]
     },
     {
-      "id": "12-REQ-6",
+      "id": "REQ-6",
       "title": "Retirement of jsonx Package and Imports",
       "rationale": "Folding JSON parsing into schema eliminates redundant ordered decoding implementations across the codebase.",
       "criteria": [
         {
-          "id": "12-REQ-6.1",
+          "id": "REQ-6.1",
           "pattern": "ubiquitous",
           "system": "file system",
-          "action": "delete the jsonx directory and files jsonx/ordered.go and jsonx/ordered_probe_test.go"
+          "action": "delete the jsonx directory and files jsonx/ordered.go and jsonx/ordered_probe_test.go",
+          "contract": "jsonx directory does not exist; jsonx/ordered.go and jsonx/ordered_probe_test.go do not exist",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the repository root directory"
+            ],
+            "pseudocode": "assert !dirExists(\"jsonx\"); assert !fileExists(\"jsonx/ordered.go\"); assert !fileExists(\"jsonx/ordered_probe_test.go\")"
+          }
         },
         {
-          "id": "12-REQ-6.2",
+          "id": "REQ-6.2",
           "pattern": "ubiquitous",
           "system": "codebase import graph",
-          "action": "for any Go source file in core, schema, tools, and mcp, forbid importing github.com/agent-fox-dev/agentkit-go/jsonx or github.com/agentfox/agentkit-go/jsonx"
+          "action": "for any Go source file in core, schema, tools, and mcp, forbid importing github.com/agent-fox-dev/agentkit-go/jsonx or github.com/agentfox/agentkit-go/jsonx",
+          "contract": "no file imports github.com/agent-fox-dev/agentkit-go/jsonx or github.com/agentfox/agentkit-go/jsonx",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "the source files belonging to core, schema, tools, and mcp packages"
+            ],
+            "pseudocode": "for file in filesIn(\"core\", \"schema\", \"tools\", \"mcp\"): for imp in file.Imports: assert imp != \"github.com/agent-fox-dev/agentkit-go/jsonx\" && imp != \"github.com/agentfox/agentkit-go/jsonx\""
+          }
         },
         {
-          "id": "12-REQ-6.3",
+          "id": "REQ-6.3",
           "pattern": "ubiquitous",
           "system": "codebase import graph",
-          "action": "for any Go source file in the root module, forbid importing github.com/agent-fox-dev/agentkit-go/jsonx or github.com/agentfox/agentkit-go/jsonx"
+          "action": "for any Go source file in the root module, forbid importing github.com/agent-fox-dev/agentkit-go/jsonx or github.com/agentfox/agentkit-go/jsonx",
+          "contract": "no file imports github.com/agent-fox-dev/agentkit-go/jsonx or github.com/agentfox/agentkit-go/jsonx",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "all Go source files across the root module"
+            ],
+            "pseudocode": "for file in allGoFiles(\".\"): for imp in file.Imports: assert imp != \"github.com/agent-fox-dev/agentkit-go/jsonx\" && imp != \"github.com/agentfox/agentkit-go/jsonx\""
+          }
         }
       ]
     },
     {
-      "id": "12-REQ-7",
+      "id": "REQ-7",
       "title": "Order-Preserving Schema Parsing",
       "rationale": "Parsing JSON Schema definitions with jsontext preserves model-visible property declaration order without external ordered map packages.",
+      "system": "schema parser",
       "criteria": [
         {
-          "id": "12-REQ-7.1",
+          "id": "REQ-7.1",
           "pattern": "event_driven",
           "condition": "schema.Parse is invoked with a valid JSON Schema byte slice containing object properties",
-          "system": "schema parser",
-          "action": "decode the schema using encoding/json/jsontext and populate PropertyOrder with property keys in the exact order they appear in the source bytes"
+          "action": "decode the schema using encoding/json/jsontext and populate PropertyOrder with property keys in the exact order they appear in the source bytes",
+          "contract": "schema.Parse returns a non-nil *Schema with PropertyOrder exactly equal to ['zebra', 'apple', 'mango']",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a JSON Schema string with properties authored in non-alphabetical order 'zebra', 'apple', 'mango'"
+            ],
+            "pseudocode": "raw := []byte(`{\"type\":\"object\",\"properties\":{\"zebra\":{\"type\":\"string\"},\"apple\":{\"type\":\"string\"},\"mango\":{\"type\":\"string\"}}}`); s, err := schema.Parse(raw); assert err == nil; assert s.PropertyOrder == []string{\"zebra\", \"apple\", \"mango\"}"
+          }
         },
         {
-          "id": "12-REQ-7.2",
+          "id": "REQ-7.2",
           "pattern": "event_driven",
           "condition": "schema.Parse is invoked with a valid JSON Schema byte slice",
-          "system": "schema parser",
-          "action": "populate Schema fields Properties, Required, Type, Description, Title, Items, Enum, Const, Nullable, AnyOf, OneOf, and AllOf from corresponding JSON keywords"
+          "action": "populate Schema fields Properties, Required, Type, Description, Title, Items, Enum, Const, Nullable, AnyOf, OneOf, and AllOf from corresponding JSON keywords",
+          "contract": "Properties map contains child schemas for each property; Required, Type, Description, Title, Items, Enum, Const, Nullable, AnyOf, OneOf, and AllOf match declared JSON keywords",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a JSON Schema string declaring full standard schema keywords"
+            ],
+            "pseudocode": "raw := []byte(`{\"type\":\"string\",\"description\":\"test\",\"title\":\"Test\",\"enum\":[\"a\",\"b\"],\"const\":\"a\",\"nullable\":true}`); s, err := schema.Parse(raw); assert err == nil; assert s.Type == schema.TypeString; assert s.Description == \"test\"; assert s.Title == \"Test\"; assert len(s.Enum) == 2; assert s.HasConst == true; assert s.Nullable == true"
+          }
         },
         {
-          "id": "12-REQ-7.3",
+          "id": "REQ-7.3",
           "pattern": "event_driven",
           "condition": "schema.Parse encounters JSON keywords not directly modeled by Schema fields",
-          "system": "schema parser",
-          "action": "preserve the unmodeled keywords in Schema.Extra while retaining their declaration order"
+          "action": "preserve the unmodeled keywords in Schema.Extra while retaining their declaration order",
+          "contract": "Schema.Extra contains all unmodeled keywords with values matching source JSON; the declaration order of unmodeled keywords in Schema.Extra is preserved",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a JSON Schema string containing unmodeled keywords '$comment', 'x-custom', 'deprecated' in order"
+            ],
+            "pseudocode": "raw := []byte(`{\"type\":\"object\",\"$comment\":\"note\",\"x-custom\":\"val\",\"deprecated\":true}`); s, err := schema.Parse(raw); assert err == nil; assert s.Extra[\"$comment\"] == \"note\"; assert s.Extra[\"x-custom\"] == \"val\"; assert s.Extra[\"deprecated\"] == true"
+          }
         },
         {
-          "id": "12-REQ-7.4",
+          "id": "REQ-7.4",
           "pattern": "unwanted",
           "condition": "schema.Parse is invoked with syntactically malformed JSON bytes or unclosed tokens",
-          "system": "schema parser",
           "action": "reject parsing and return an error detailing the syntax failure",
-          "contract": "returns nil *Schema and non-nil error"
+          "contract": "returns nil *Schema and non-nil error",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a malformed JSON Schema byte slice with an unclosed object token"
+            ],
+            "pseudocode": "raw := []byte(`{\"type\":\"object\",\"properties\":{`); s, err := schema.Parse(raw); assert s == nil; assert err != nil"
+          }
         }
       ]
     },
     {
-      "id": "12-REQ-8",
+      "id": "REQ-8",
       "title": "Schema Constraint Validation and Coercion",
       "rationale": "Complete JSON Schema constraint validation and type coercion close issue 87 gaps for direct and code mode script execution.",
       "criteria": [
         {
-          "id": "12-REQ-8.1",
+          "id": "REQ-8.1",
           "pattern": "unwanted",
           "condition": "Validate is called on an object containing properties not listed in Properties or PropertyOrder when AdditionalProperties has Allowed set to false",
           "system": "schema validator",
           "action": "reject the object and report an unpermitted property error",
-          "contract": "returns non-nil error mentioning property not allowed"
+          "contract": "returns non-nil error mentioning property not allowed",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Schema configured with AdditionalProperties Allowed set to false and declared property 'name'"
+            ],
+            "pseudocode": "s := schema.Object(schema.Prop(\"name\", schema.String())).Closed(); err := schema.Validate(s, map[string]any{\"name\": \"test\", \"extra\": 123}); assert err != nil; assert strings.Contains(err.Error(), \"not allowed\")"
+          }
         },
         {
-          "id": "12-REQ-8.2",
+          "id": "REQ-8.2",
           "pattern": "unwanted",
           "condition": "Validate is called on a value that does not match any declared Enum literal in value and type",
           "system": "schema validator",
           "action": "reject the value and report an enum mismatch error",
-          "contract": "returns non-nil error indicating value must be one of declared enum choices"
+          "contract": "returns non-nil error indicating value must be one of declared enum choices",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Schema with Enum values ['GET', 'POST', 'PUT']"
+            ],
+            "pseudocode": "s := schema.Object(schema.Prop(\"method\", schema.Enum(\"m\", \"GET\", \"POST\", \"PUT\"))); err := schema.Validate(s, map[string]any{\"method\": \"get\"}); assert err != nil; assert strings.Contains(err.Error(), \"one of\")"
+          }
         },
         {
-          "id": "12-REQ-8.3",
+          "id": "REQ-8.3",
           "pattern": "unwanted",
           "condition": "Validate is called on a numeric value violating declared Minimum, Maximum, ExclusiveMinimum, ExclusiveMaximum, or MultipleOf constraints",
           "system": "schema validator",
           "action": "reject the numeric value and report a bound violation error",
-          "contract": "returns non-nil error indicating relational constraint violation"
+          "contract": "returns non-nil error indicating relational constraint violation",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Schema specifying Minimum 10, Maximum 50, and MultipleOf 5"
+            ],
+            "pseudocode": "s := schema.Object(schema.Prop(\"num\", schema.Int().Min(10).Max(50))); errLow := schema.Validate(s, map[string]any{\"num\": 5}); assert errLow != nil; assert strings.Contains(errLow.Error(), \"at least\"); errHigh := schema.Validate(s, map[string]any{\"num\": 60}); assert errHigh != nil; assert strings.Contains(errHigh.Error(), \"at most\")"
+          }
         },
         {
-          "id": "12-REQ-8.4",
+          "id": "REQ-8.4",
           "pattern": "unwanted",
           "condition": "Validate is called on a string violating MinLength, MaxLength, or failing to match Pattern",
           "system": "schema validator",
           "action": "reject the string and report a string constraint error",
-          "contract": "returns non-nil error indicating length or regex pattern mismatch"
+          "contract": "returns non-nil error indicating length or regex pattern mismatch",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Schema specifying MinLength 5, MaxLength 10, and Pattern '^[a-z]+$'"
+            ],
+            "pseudocode": "s := &schema.Schema{Type: schema.TypeString, MinLength: ptr(5), MaxLength: ptr(10), Pattern: \"^[a-z]+$\"}; errShort := schema.Validate(s, \"abc\"); assert errShort != nil; errPattern := schema.Validate(s, \"abc123\"); assert errPattern != nil"
+          }
         },
         {
-          "id": "12-REQ-8.5",
+          "id": "REQ-8.5",
           "pattern": "unwanted",
           "condition": "Validate is called on an array violating MinItems, MaxItems, or containing duplicate items when UniqueItems is true",
           "system": "schema validator",
           "action": "reject the array and report an array constraint error",
-          "contract": "returns non-nil error indicating cardinality or uniqueness violation"
+          "contract": "returns non-nil error indicating cardinality or uniqueness violation",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Schema specifying MinItems 2, MaxItems 4, and UniqueItems true"
+            ],
+            "pseudocode": "s := schema.Array(schema.Int()); s.MinItems = ptr(2); s.MaxItems = ptr(4); s.UniqueItems = ptr(true); errDup := schema.Validate(s, []any{1, 1}); assert errDup != nil; errShort := schema.Validate(s, []any{1}); assert errShort != nil"
+          }
         },
         {
-          "id": "12-REQ-8.6",
+          "id": "REQ-8.6",
           "pattern": "event_driven",
           "condition": "Coerce parses string representations of valid numbers or booleans matching the target schema",
           "system": "schema coercer",
-          "action": "convert the strings into numeric or boolean representations and record Coercion entries"
+          "action": "convert the strings into numeric or boolean representations and record Coercion entries",
+          "contract": "the converted map contains numeric 42.5 and boolean true; the returned coercions list contains entries for each converted field",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Schema with integer, number, and boolean properties"
+            ],
+            "pseudocode": "s := schema.Object(schema.Prop(\"n\", schema.Number()), schema.Prop(\"b\", schema.Boolean())); out, coercions := schema.Coerce(s, map[string]any{\"n\": \"42.5\", \"b\": \"true\"}); assert out[\"n\"] == 42.5; assert out[\"b\"] == true; assert len(coercions) == 2"
+          }
         },
         {
-          "id": "12-REQ-8.7",
+          "id": "REQ-8.7",
           "pattern": "unwanted",
           "condition": "Coerce encounters non-standard string representations such as NaN, Inf, +5, .5, 5., or 1_0 targeting a number or integer schema",
           "system": "schema coercer",
           "action": "refuse numeric coercion so invalid literals are not emitted into arguments",
-          "contract": "returns unchanged value without emitting non-standard numeric literals"
+          "contract": "returns unchanged value without emitting non-standard numeric literals",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Schema expecting an integer property 'count'"
+            ],
+            "pseudocode": "s := schema.Object(schema.Prop(\"count\", schema.Int())); for _, bad := range []string{\"NaN\", \"Inf\", \"+5\", \".5\", \"5.\", \"1_0\"} { out, coercions := schema.Coerce(s, map[string]any{\"count\": bad}); assert out[\"count\"] == bad; assert len(coercions) == 0 }"
+          }
         }
       ]
     },
     {
-      "id": "12-REQ-9",
+      "id": "REQ-9",
       "title": "Pure-Function Shell Guard and Hook Adapter",
       "rationale": "Decoupling program authorization into a pure function enables host verification while providing a clean execution hook adapter.",
       "criteria": [
         {
-          "id": "12-REQ-9.1",
+          "id": "REQ-9.1",
           "pattern": "ubiquitous",
           "system": "guard package",
-          "action": "define Decision struct containing Block of type bool, Reason of type string, and Terminate of type bool"
+          "action": "define Decision struct containing Block of type bool, Reason of type string, and Terminate of type bool",
+          "contract": "guard.Decision contains Block bool, Reason string, and Terminate bool; guard.ShellToolNames equals []string{\"execute\", \"run_command\"}",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "guard package declarations in guard/guard.go"
+            ],
+            "pseudocode": "d := guard.Decision{Block: true, Reason: \"test\", Terminate: true}; assert typeof(d.Block) == bool; assert typeof(d.Reason) == string; assert typeof(d.Terminate) == bool; assert guard.ShellToolNames == []string{\"execute\", \"run_command\"}"
+          }
         },
         {
-          "id": "12-REQ-9.2",
+          "id": "REQ-9.2",
           "pattern": "unwanted",
           "condition": "Check is called with an empty argv slice",
           "system": "shell guard",
           "action": "return a Decision blocking execution with Reason set to empty argv and Terminate set to opts.TerminateOnBlock",
-          "contract": "returns Decision{Block: true, Reason: \"empty argv\", Terminate: opts.TerminateOnBlock}"
+          "contract": "returns Decision{Block: true, Reason: \"empty argv\", Terminate: opts.TerminateOnBlock}",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "guard.Options with TerminateOnBlock set to true"
+            ],
+            "pseudocode": "opts := guard.Options{TerminateOnBlock: true}; d := guard.Check([]string{}, opts); assert d == guard.Decision{Block: true, Reason: \"empty argv\", Terminate: true}"
+          }
         },
         {
-          "id": "12-REQ-9.3",
+          "id": "REQ-9.3",
           "pattern": "unwanted",
           "condition": "Check evaluates argv[0] containing a path separator that does not match an exact cleaned path in opts.AllowedPrograms",
           "system": "shell guard",
           "action": "return a Decision blocking execution with Reason reporting that the program is not on the allowlist",
-          "contract": "returns Decision{Block: true, Reason: fmt.Sprintf(\"program %q is not on the allowlist\", argv[0]), Terminate: opts.TerminateOnBlock}"
+          "contract": "returns Decision{Block: true, Reason: fmt.Sprintf(\"program %q is not on the allowlist\", argv[0]), Terminate: opts.TerminateOnBlock}",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "guard.Options with AllowedPrograms ['/usr/bin/git'] and TerminateOnBlock true"
+            ],
+            "pseudocode": "opts := guard.Options{AllowedPrograms: []string{\"/usr/bin/git\"}, TerminateOnBlock: true}; d := guard.Check([]string{\"/usr/bin/curl\", \"url\"}, opts); assert d == guard.Decision{Block: true, Reason: fmt.Sprintf(`program %q is not on the allowlist`, \"/usr/bin/curl\"), Terminate: true}"
+          }
         },
         {
-          "id": "12-REQ-9.4",
+          "id": "REQ-9.4",
           "pattern": "unwanted",
           "condition": "Check evaluates a bare program name argv[0] that does not match any bare program in opts.AllowedPrograms",
           "system": "shell guard",
           "action": "return a Decision blocking execution with Reason reporting that the bare program is not on the allowlist",
-          "contract": "returns Decision{Block: true, Reason: fmt.Sprintf(\"program %q is not on the allowlist\", argv[0]), Terminate: opts.TerminateOnBlock}"
+          "contract": "returns Decision{Block: true, Reason: fmt.Sprintf(\"program %q is not on the allowlist\", argv[0]), Terminate: opts.TerminateOnBlock}",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "guard.Options with AllowedPrograms ['git', 'go'] and TerminateOnBlock false"
+            ],
+            "pseudocode": "opts := guard.Options{AllowedPrograms: []string{\"git\", \"go\"}, TerminateOnBlock: false}; d := guard.Check([]string{\"rm\", \"-rf\", \"dir\"}, opts); assert d == guard.Decision{Block: true, Reason: fmt.Sprintf(`program %q is not on the allowlist`, \"rm\"), Terminate: false}"
+          }
         },
         {
-          "id": "12-REQ-9.5",
+          "id": "REQ-9.5",
           "pattern": "event_driven",
           "condition": "Check evaluates argv[0] that matches an authorized entry in opts.AllowedPrograms",
           "system": "shell guard",
-          "action": "return a Decision permitting execution with Block set to false"
+          "action": "return a Decision permitting execution with Block set to false",
+          "contract": "Check returns Decision with Block false",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "guard.Options with AllowedPrograms ['git', '/usr/local/bin/deploy']"
+            ],
+            "pseudocode": "opts := guard.Options{AllowedPrograms: []string{\"git\", \"/usr/local/bin/deploy\"}}; dBare := guard.Check([]string{\"git\", \"status\"}, opts); assert dBare.Block == false; dPath := guard.Check([]string{\"/usr/local/bin/deploy\"}, opts); assert dPath.Block == false"
+          }
         },
         {
-          "id": "12-REQ-9.6",
+          "id": "REQ-9.6",
           "pattern": "ubiquitous",
           "system": "guard package",
-          "action": "set ShellToolNames to []string{\"execute\", \"run_command\"}"
+          "action": "set ShellToolNames to []string{\"execute\", \"run_command\"}",
+          "check": {
+            "same_as": "REQ-9.1"
+          }
         },
         {
-          "id": "12-REQ-9.7",
+          "id": "REQ-9.7",
           "pattern": "event_driven",
           "condition": "Restricted creates a BeforeToolCall hook and receives a tool invocation",
           "system": "guard Restricted adapter",
-          "action": "evaluate blocked tools, shell operators, and environment prefix assignments before delegating program evaluation to Check"
+          "action": "evaluate blocked tools, shell operators, and environment prefix assignments before delegating program evaluation to Check",
+          "contract": "call to secret_tool is blocked with refusal reason; call to execute with pipe operator is blocked; call to execute with dangerous env assignment prefix is blocked; call to execute with allowed program succeeds without block",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "guard.Options with BlockedTools ['danger_tool'], AllowShellOperators false, AllowEnvPrefixes false, and AllowedPrograms ['git']"
+            ],
+            "pseudocode": "opts := guard.Options{BlockedTools: []string{\"danger_tool\"}, AllowShellOperators: false, AllowEnvPrefixes: false, AllowedPrograms: []string{\"git\"}}; hook := guard.Restricted(opts); decBlocked := hook(ctx, core.BeforeToolCallContext{ToolName: \"danger_tool\"}); assert decBlocked.Block == true; decPipe := hook(ctx, core.BeforeToolCallContext{ToolName: \"execute\", Arguments: map[string]any{\"command\": \"git status | cat\"}}); assert decPipe.Block == true; decEnv := hook(ctx, core.BeforeToolCallContext{ToolName: \"execute\", Arguments: map[string]any{\"command\": \"PATH=/tmp git status\"}}); assert decEnv.Block == true; decOk := hook(ctx, core.BeforeToolCallContext{ToolName: \"execute\", Arguments: map[string]any{\"command\": \"git commit\"}}); assert decOk.Block == false"
+          }
         }
       ]
     },
     {
-      "id": "12-REQ-10",
+      "id": "REQ-10",
       "title": "Simplified Prompt Assembly",
       "rationale": "Simplifying prompt assembly removes deleted skills dependencies and ensures first-seen tool guideline deduplication.",
       "criteria": [
         {
-          "id": "12-REQ-10.1",
+          "id": "REQ-10.1",
           "pattern": "ubiquitous",
           "system": "prompt package",
-          "action": "define Build with signature func Build(system string, tools []core.Tool) string"
+          "action": "define Build with signature func Build(system string, tools []core.Tool) string",
+          "contract": "Build has signature func Build(system string, tools []core.Tool) string; prompt.Input and prompt.SkillBlocks are not declared; prompt package does not import the skills package",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "prompt package declarations and imports in prompt/prompt.go"
+            ],
+            "pseudocode": "var buildFn func(system string, tools []core.Tool) string = prompt.Build; assert buildFn != nil; assert !existsSymbol(\"prompt.Input\"); assert !existsSymbol(\"prompt.SkillBlocks\"); for imp in packageImports(\"prompt\"): assert !strings.Contains(imp, \"/skills\")"
+          }
         },
         {
-          "id": "12-REQ-10.2",
+          "id": "REQ-10.2",
           "pattern": "event_driven",
           "condition": "Build is called with an empty system prompt string",
           "system": "prompt builder",
-          "action": "initialize prompt text with BaseInstructions and append UniversalGuidelines"
+          "action": "initialize prompt text with BaseInstructions and append UniversalGuidelines",
+          "contract": "with empty system prompt, prompt starts with BaseInstructions and UniversalGuidelines; with custom system prompt, custom text replaces BaseInstructions and UniversalGuidelines",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "empty system prompt string and custom system prompt string"
+            ],
+            "pseudocode": "pDefault := prompt.Build(\"\", nil); assert strings.HasPrefix(pDefault, prompt.BaseInstructions); assert strings.Contains(pDefault, prompt.UniversalGuidelines[0]); pCustom := prompt.Build(\"Custom system prompt instructions.\", nil); assert strings.HasPrefix(pCustom, \"Custom system prompt instructions.\"); assert !strings.Contains(pCustom, prompt.BaseInstructions)"
+          }
         },
         {
-          "id": "12-REQ-10.3",
+          "id": "REQ-10.3",
           "pattern": "event_driven",
           "condition": "Build is called with a non-empty system prompt string",
           "system": "prompt builder",
-          "action": "use system prompt as the opening instructions in place of BaseInstructions and UniversalGuidelines"
+          "action": "use system prompt as the opening instructions in place of BaseInstructions and UniversalGuidelines",
+          "check": {
+            "same_as": "REQ-10.2"
+          }
         },
         {
-          "id": "12-REQ-10.4",
+          "id": "REQ-10.4",
           "pattern": "event_driven",
           "condition": "Build processes tools containing PromptGuidelines",
           "system": "prompt builder",
-          "action": "append per-tool guidelines in first-seen order, deduplicating identical guidelines"
+          "action": "append per-tool guidelines in first-seen order, deduplicating identical guidelines",
+          "contract": "per-tool PromptGuidelines are deduplicated and appended in first-seen order; ExecuteFallbackGuideline is appended when execute is present without search tools; SearchOverExecuteGuideline is appended when both execute and search tools are present",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "tools with duplicate PromptGuidelines and varying combinations of execute and search tools"
+            ],
+            "pseudocode": "t1 := core.Tool{Name: \"t1\", PromptGuidelines: []string{\"Guideline A\", \"Guideline B\"}}; t2 := core.Tool{Name: \"t2\", PromptGuidelines: []string{\"Guideline B\", \"Guideline C\"}}; res := prompt.Build(\"\", []core.Tool{t1, t2}); idxA := strings.Index(res, \"Guideline A\"); idxB := strings.Index(res, \"Guideline B\"); idxC := strings.Index(res, \"Guideline C\"); assert idxA < idxB && idxB < idxC; assert strings.Count(res, \"Guideline B\") == 1"
+          }
         },
         {
-          "id": "12-REQ-10.5",
+          "id": "REQ-10.5",
           "pattern": "event_driven",
           "condition": "Build processes tools including execute or search tools",
           "system": "prompt builder",
-          "action": "append ExecuteFallbackGuideline when execute is present without search tools, or append SearchOverExecuteGuideline when both execute and search tools are present"
+          "action": "append ExecuteFallbackGuideline when execute is present without search tools, or append SearchOverExecuteGuideline when both execute and search tools are present",
+          "check": {
+            "same_as": "REQ-10.4"
+          }
         },
         {
-          "id": "12-REQ-10.6",
+          "id": "REQ-10.6",
           "pattern": "ubiquitous",
           "system": "prompt package",
-          "action": "remove prompt.Input, prompt.SkillBlocks, and all imports of the skills package"
+          "action": "remove prompt.Input, prompt.SkillBlocks, and all imports of the skills package",
+          "check": {
+            "same_as": "REQ-10.1"
+          }
         }
       ]
     }
   ],
   "execution_paths": [
     {
-      "id": "12-PATH-1",
+      "id": "PATH-1",
       "title": "Order-preserving schema parsing and argument validation pipeline",
       "steps": [
         {
@@ -451,10 +770,26 @@
           "actor": "core argument preparer",
           "action": "validates arguments against schema constraints and preserves original input bytes in PreparedArguments.Raw"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "schema parser",
+          "core argument preparer",
+          "JSON validator"
+        ],
+        "setup": [
+          "an authored JSON schema with ordered properties and valid JSON input bytes"
+        ],
+        "end_state": [
+          "schema.Parse preserves PropertyOrder ['query', 'filter', 'limit']",
+          "PrepareArguments validates arguments against schema constraints successfully",
+          "PreparedArguments.Raw preserves the original tool input bytes verbatim"
+        ],
+        "pseudocode": "schemaBytes := []byte(`{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"filter\":{\"type\":\"string\"},\"limit\":{\"type\":\"integer\"}}}`); s, err := schema.Parse(schemaBytes); assert err == nil; assert s.PropertyOrder == []string{\"query\", \"filter\", \"limit\"}; tool := core.Tool{Name: \"search\", InputSchema: s}; block := core.ToolUseBlock{ID: \"t1\", Name: \"search\", Input: json.RawMessage(`{\"query\":\"test\",\"filter\":\"active\",\"limit\":5}`)}; prep, err := core.PrepareArguments(tool, block); assert err == nil; assert bytes.Equal(prep.Raw, block.Input); assert prep.Args[\"query\"] == \"test\""
+      }
     },
     {
-      "id": "12-PATH-2",
+      "id": "PATH-2",
       "title": "Pure guard authorization and Restricted tool hook enforcement",
       "steps": [
         {
@@ -473,10 +808,26 @@
           "actor": "guard Restricted adapter",
           "action": "converts the Decision into a BeforeToolCallDecision reflecting authorization or refusal reason"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "guard.Restricted hook",
+          "guard.Check authorization engine",
+          "allowlist matcher"
+        ],
+        "setup": [
+          "guard.Options configured with AllowedPrograms ['ls', 'git'] and Restricted hook installed"
+        ],
+        "end_state": [
+          "Restricted extracts argv and delegates evaluation to guard.Check",
+          "guard.Check returns Decision with Block false",
+          "Restricted returns BeforeToolCallDecision with Block false permitting execution"
+        ],
+        "pseudocode": "opts := guard.Options{AllowedPrograms: []string{\"ls\", \"git\"}}; hook := guard.Restricted(opts); dec := hook(context.Background(), core.BeforeToolCallContext{ToolName: \"run_command\", Arguments: map[string]any{\"argv\": []any{\"ls\", \"-la\"}}}); assert dec.Block == false"
+      }
     },
     {
-      "id": "12-PATH-3",
+      "id": "PATH-3",
       "title": "Simplified prompt construction and model stream dispatch",
       "steps": [
         {
@@ -495,7 +846,22 @@
           "actor": "core provider client",
           "action": "streams StreamEvent values carrying incremental progress and terminal status"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "prompt.Build assembler",
+          "core.Request builder",
+          "core.ProviderClient streamer"
+        ],
+        "setup": [
+          "tools list with file navigation and execute tools, and a ProviderClient implementation"
+        ],
+        "end_state": [
+          "assembled prompt contains base instructions and deduplicated guidelines in first-seen order",
+          "ProviderClient.Stream accepts Request and returns a channel streaming StreamEvent values to completion"
+        ],
+        "pseudocode": "toolsList := []core.Tool{{Name: \"read_file\", PromptGuidelines: []string{\"Read before editing.\"}}, {Name: \"execute\"}}; sysPrompt := prompt.Build(\"\", toolsList); assert strings.Contains(sysPrompt, \"Read before editing.\"); req := core.Request{System: []core.ContentBlock{core.TextBlock{Text: sysPrompt}}}; ch, err := providerClient.Stream(context.Background(), req); assert err == nil; ev := <-ch; assert ev.Err == nil"
+      }
     }
   ],
   "external_apis": [

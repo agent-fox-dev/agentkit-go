@@ -1,0 +1,45 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/progress.v3.json",
+  "spec_id": "10",
+  "spec_name": "anthropic_wire",
+  "schema_version": 3,
+  "updated_at": "2026-10-09T11:26:14.24786Z",
+  "tasks": [
+    {
+      "id": 1,
+      "state": "done"
+    },
+    {
+      "id": 2,
+      "state": "done"
+    },
+    {
+      "id": 3,
+      "state": "done"
+    },
+    {
+      "id": 4,
+      "state": "done"
+    },
+    {
+      "id": 5,
+      "state": "done"
+    },
+    {
+      "id": 6,
+      "state": "done"
+    },
+    {
+      "id": 7,
+      "state": "done"
+    },
+    {
+      "id": 8,
+      "state": "done"
+    },
+    {
+      "id": 9,
+      "state": "done"
+    }
+  ]
+}

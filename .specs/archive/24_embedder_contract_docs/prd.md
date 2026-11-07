@@ -4,9 +4,8 @@ spec_name: "embedder_contract_docs"
 title: "Embedder contract, closing pass: the API golden settled, the contract and data flow documented end to end, and PRD 12's measurement redone"
 status: "active"
 created_at: "2026-10-16T06:27:40.47366Z"
-updated_at: "2026-10-16T06:27:40.47366Z"
 intent_hash: "fe35ce7b5eb7a05c0013688c1b60bcd5b9f9df47f688b7f357bb923b703da3f4"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/12-simplify-the-embedder-contract.md"
 ---
 ## Intent
@@ -280,3 +279,14 @@ A new erratum, in the format of the existing ones (title `# Erratum: spec 24 \`e
 | `14_sandbox_rsync_sync` | modifies | TS-14-44 compares against the widened golden, and its doc comment changes. |
 | `15_sandbox_landlock_agent` | modifies | TS-15-42 compares against the widened golden, and its doc comment changes. |
 | `17_sandbox_podman` | modifies | TS-17-61 compares against the widened golden, and its doc comment changes. Its `preSpec17Guard` list is unchanged. |
+
+## Glossary
+
+- **MODULES**: The Makefile variable listing every Go module that make check, make test, make vet and make lint run in.
+- **apiPackages**: The ordered list of package directories, relative to the repository root, declared in internal/policy/layout_test.go. The exported-API golden is built from it.
+- **change detector**: The role the golden plays after spec 20 retired the API freeze. A change to an exported API fails TS-13-67 until the golden is regenerated with AGENTKIT_UPDATE_API_GOLDEN=1 and committed.
+- **existing sections**: The golden sections for ., core, tools, codemode and workspace as spec 23 left them.
+- **exported-API golden**: internal/policy/testdata/exported-api.golden: one `== <pkg>` header per apiPackages entry, followed by that package's sorted, deduplicated exported declaration lines as printed by exportedAPI.
+- **exportedAPI**: The test helper exportedAPI(t, dir) in internal/policy. It parses every non-test .go file in a directory, whatever its build tags, and returns the package's exported declarations as text lines.
+- **golden comparison tests**: TS-13-67, TS-14-44, TS-15-42 and TS-17-61. Each compares the exported API of every apiPackages entry against the same golden.
+- **new sections**: The golden sections for guard, provider/faux, sandbox, codesearch and mcpserve, which this spec appends.

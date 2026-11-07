@@ -4,9 +4,8 @@ spec_name: "find_references"
 title: "find_references tool with Go type resolution and enclosing declaration attribution"
 status: "active"
 created_at: "2026-10-08T07:16:24.29887Z"
-updated_at: "2026-10-08T07:16:24.29887Z"
 intent_hash: "a0c68f192f79c56af21e6b30669ca9b63efa6ddfc8267725ead12b6b8e98932b"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/07-add-a-find-references-tool.md"
 ---
 ## Intent
@@ -245,3 +244,13 @@ The method must enforce workspace confinement, return identical results to `find
 | `02_symbol_navigation_tools` | Provides `find_symbol`, `symbolTable`, `SymbolOptions`, `SymbolMatch`, `FileNavigationTools()`, and dirty-marking hooks in `write_file`, `edit_file`, and shell tools. |
 | `03_indexed_code_search` | Provides optional `tools.Index` integration and index candidate acceleration. |
 | `04_runner_and_tool_metadata` | Defines tool metadata conventions and prompt guideline assembly. |
+
+## Glossary
+
+- **enclosing_declaration**: The innermost declaration (such as a function, method, or class) whose line range spans a reference site.
+- **lexical_confidence**: A match outside comments and strings matching word boundaries, or an incompletely typed Go identifier.
+- **partial_result**: A reference search result bounded by MaxFiles or MaxDuration rather than finding all workspace occurrences.
+- **reference_site**: A source location consisting of file path, line number, column, and source snippet where an identifier is used or called.
+- **resolved_confidence**: A match in Go code verified through go/types to refer to the target declaration's types.Object.
+- **synthetic_package**: An empty in-memory *types.Package defining zero symbols returned by the workspace importer for external dependencies.
+- **text_confidence**: A match occurring inside comments or string literals, within non-outline files, or for an undeclared symbol.

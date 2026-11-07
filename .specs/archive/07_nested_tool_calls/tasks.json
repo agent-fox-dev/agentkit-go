@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "07",
   "spec_name": "nested_tool_calls",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -21,17 +21,9 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Add ReachableTools and Terminating fields to core.Tool and enforce cycle and terminating validation in agent constructors and registration",
       "criteria": [
-        "07-REQ-1"
-      ],
-      "tests": [
-        "TS-07-1",
-        "TS-07-2",
-        "TS-07-3",
-        "TS-07-4",
-        "TS-07-5"
+        "REQ-1"
       ],
       "steps": [
         "In core/tool.go, add ReachableTools []Tool and Terminating bool to the core.Tool struct definition.",
@@ -48,26 +40,14 @@
       ],
       "done_when": [
         "`go test ./... -run 'Test(Reachable|Cycle|Terminating)'` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Implement transitive reachable tool queries, recursive policy resolution, and transitive unguarded shell tool checks",
       "criteria": [
-        "07-REQ-2",
-        "07-REQ-3"
-      ],
-      "tests": [
-        "TS-07-6",
-        "TS-07-7",
-        "TS-07-8",
-        "TS-07-9",
-        "TS-07-10",
-        "TS-07-11",
-        "TS-07-12",
-        "TS-07-13"
+        "REQ-2",
+        "REQ-3"
       ],
       "steps": [
         "In core/tool.go, implement core.ReachableTools(tools []Tool) []Tool computing the deduplicated transitive closure of all reachable tools, preserving the order of first appearance.",
@@ -89,26 +69,14 @@
       ],
       "done_when": [
         "`go test ./... -run 'Test(ReachableTools|ToolPolicyResolve|ExecuteGuard)'` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Implement NestedCaller interface, context injection in executeBatch, and interceptor authorization and rewriting semantics",
       "criteria": [
-        "07-REQ-4",
-        "07-REQ-5"
-      ],
-      "tests": [
-        "TS-07-14",
-        "TS-07-15",
-        "TS-07-16",
-        "TS-07-17",
-        "TS-07-18",
-        "TS-07-19",
-        "TS-07-20",
-        "TS-07-21"
+        "REQ-4",
+        "REQ-5"
       ],
       "steps": [
         "In core/tool.go, define NestedCaller interface with Call(ctx context.Context, calls ...ToolUseBlock) ([]ToolResult, error), context key for NestedCaller, WithNestedCaller helper, and CallNested invocation helper.",
@@ -131,24 +99,14 @@
       ],
       "done_when": [
         "`go test ./... -run 'TestNested(Caller|Dispatch|Interceptor)'` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Implement terminating vote isolation, nested concurrency dispatch, execution modes, and cancellation handling",
       "criteria": [
-        "07-REQ-6",
-        "07-REQ-7"
-      ],
-      "tests": [
-        "TS-07-22",
-        "TS-07-23",
-        "TS-07-24",
-        "TS-07-25",
-        "TS-07-26",
-        "TS-07-27"
+        "REQ-6",
+        "REQ-7"
       ],
       "steps": [
         "In the nested execution dispatcher, implement terminating vote isolation: if an unmarked child tool handler returns ToolResult{Terminate: true}, override Terminate to false, set TerminateIgnored=true in the audit record, and annotate both the nested ToolResult Detail and wrapper ToolResult Detail that the terminate vote was ignored.",
@@ -167,25 +125,14 @@
       ],
       "done_when": [
         "`go test ./... -run 'TestNested(Concurrency|Sequential|Isolation|Cancel|TerminateVote)'` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Implement nested telemetry, events, audit records, subagent usage propagation, and transcript and stop policy isolation",
       "criteria": [
-        "07-REQ-8",
-        "07-REQ-9"
-      ],
-      "tests": [
-        "TS-07-28",
-        "TS-07-29",
-        "TS-07-30",
-        "TS-07-31",
-        "TS-07-32",
-        "TS-07-33",
-        "TS-07-34"
+        "REQ-8",
+        "REQ-9"
       ],
       "steps": [
         "In core/event.go and core/eventjson.go, add ParentToolUseID string to ToolExecutionStartEvent, ToolExecutionUpdateEvent, and ToolExecutionEndEvent with omitempty JSON serialization.",
@@ -209,54 +156,7 @@
       ],
       "done_when": [
         "`go test ./... -run 'TestNested(Events|Audit|Tracing|Usage|History|Stop)'` passes"
-      ],
-      "state": "done"
-    },
-    {
-      "id": 6,
-      "kind": "integration",
-      "title": "Verify execution paths, error contracts, and complete end-to-end integration for nested tool calls",
-      "tests": [
-        "TS-07-35",
-        "TS-07-36",
-        "TS-07-37",
-        "TS-07-38"
-      ],
-      "steps": [
-        "Write smoke tests TS-07-35, TS-07-36, TS-07-37, and TS-07-38 in a dedicated smoke test file nested_smoke_test.go and confirm they execute against the real Agent runtime and pass.",
-        "Trace 07-PATH-1 through NewAgent, executeBatch, WithNestedCaller, CallNested, interceptors, events, tracer spans, and session persistence; confirm concurrent child tool execution, result ordering, and top-level only history recording with no stubs.",
-        "Trace 07-PATH-2 through NewAgent and RegisterTool; confirm depth-first cycle detection rejects recursive reachable tools and produces the formatted error 'agentkit: reachable tools cycle detected: <path>'.",
-        "Trace 07-PATH-3 through BeforeToolCall, CallNested, and executeBatch; confirm interceptor Block+Terminate aborts wrapper with core.ErrTerminated and propagates Terminate=true to the batch.",
-        "Trace 07-PATH-4 through checkExecuteGuard; confirm transitively reachable shell tool detection aborts before provider requests with core.ErrUnguardedExecute.",
-        "For every criterion with a contract (07-REQ-1.3, 07-REQ-1.4, 07-REQ-3.2, 07-REQ-4.2, 07-REQ-4.4, 07-REQ-7.5), verify that the returned error or result structure is produced by production code and consumed by runtime callers.",
-        "Search all touched files (core/tool.go, core/toolpolicy.go, core/errors.go, core/event.go, core/eventjson.go, core/audit.go, agent.go, execguard.go, batch.go) for stub markers such as panic(\\\"not implemented\\\"), TODO, and empty implementations, confirming none remain.",
-        "Verify documentation freshness per steering directives, updating docs/api.md, docs/architecture.md, and README.md with the new ReachableTools, NestedCaller, and execute guard behaviors, and run `make check`."
-      ],
-      "touches": [
-        "core/tool.go",
-        "core/toolpolicy.go",
-        "core/errors.go",
-        "core/event.go",
-        "core/eventjson.go",
-        "core/audit.go",
-        "agent.go",
-        "execguard.go",
-        "batch.go",
-        "docs/api.md",
-        "docs/architecture.md",
-        "README.md"
-      ],
-      "depends_on": [
-        1,
-        2,
-        3,
-        4,
-        5
-      ],
-      "done_when": [
-        "`make check` passes completely without errors or linter warnings"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

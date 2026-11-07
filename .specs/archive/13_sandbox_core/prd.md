@@ -4,9 +4,8 @@ spec_name: "sandbox_core"
 title: "Sandbox foundation: agent protocol, proxy tools, tar transfer and the local provider"
 status: "active"
 created_at: "2026-10-12T12:33:33.084695Z"
-updated_at: "2026-10-12T12:33:33.084695Z"
 intent_hash: "adf6f8d3af3eaec676be828a34aef4aecc1e49c6dcab4431d43c7749499160cf"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/11-run-tools-in-an-isolated-sandbox.md"
 ---
 ## Intent
@@ -400,3 +399,16 @@ A proxy `Execute(ctx, input)`:
 - `MkdirAll`, `Symlink`, `RemoveAll` and `Chmod` (Go 1.25)
 - `archive/tar` `NewReader`, `NewWriter`, `Header` and its `Typeflag` constants
 - `crypto/sha256`
+
+## Glossary
+
+- **agent**: The AgentKit process inside a sandbox (sandbox/internal/agent, wrapped by the agentkit-sandboxd command) that serves the agentkit.sandbox.v1 Agent service and runs the built-in tools against the workspace.
+- **definition digest**: The SHA-256 over a tool's name, description, input and output schema JSON, prompt guidelines, Builtin flag and execution mode. The host and the agent compute it with one shared function so that each can detect a definition mismatch.
+- **deliberate refusal**: An RPC error with status InvalidArgument, FailedPrecondition, NotFound or Unimplemented. The agent returns it on purpose, and it does not mark the sandbox unavailable.
+- **effective spec**: The Spec returned by Sandbox.Spec(): the caller's Spec after CheckSpec has applied its defaults, with Workdir set to the workspace root the agent reported in Hello.
+- **entry rules**: The single tar-entry validation function used both when the agent extracts a synced tar and when the host validates an exported tar.
+- **local provider**: local.Unisolated(), a sandbox.Provider that runs the agent service in the embedder's own process over os.Pipe pairs with no isolation; it exists for tests and development.
+- **proxy tool**: A core.Tool whose definition fields are copied from the host's tools.All value and whose Execute sends the call to the agent over the Call RPC.
+- **sandbox**: An ephemeral execution environment created by a sandbox.Provider that holds exactly one workspace and one agent process; represented on the host by the sandbox.Sandbox interface.
+- **sandbox state**: The lifecycle of a sandbox: live, then unavailable (after a transport failure, when the agent ends, or at the TTL), then closed (after Close).
+- **transport failure**: While the host context is still live, either an RPC error whose gRPC status is not one of the agent's deliberate refusals (InvalidArgument, FailedPrecondition, NotFound, Unimplemented), or a malformed response. It moves the sandbox to the unavailable state for good.

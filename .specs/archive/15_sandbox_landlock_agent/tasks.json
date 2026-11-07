@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "15",
   "spec_name": "sandbox_landlock_agent",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -29,23 +29,14 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Report the applied ruleset in Hello: LandlockReport proto, ProtocolMinor 2, sandbox.LandlockInfo with Satisfies, agent.Config.Landlock and AgentInfo.Landlock",
       "criteria": [
-        "15-REQ-4.1",
-        "15-REQ-4.2",
-        "15-REQ-4.3",
-        "15-REQ-4.4",
-        "15-REQ-4.5",
-        "15-REQ-4.6"
-      ],
-      "tests": [
-        "TS-15-21",
-        "TS-15-22",
-        "TS-15-23",
-        "TS-15-24",
-        "TS-15-25",
-        "TS-15-26"
+        "REQ-4.1",
+        "REQ-4.2",
+        "REQ-4.3",
+        "REQ-4.4",
+        "REQ-4.5",
+        "REQ-4.6"
       ],
       "steps": [
         "Write TS-15-21 in sandbox/internal/sandboxpb/landlock_proto_test.go, TS-15-22, TS-15-23 and TS-15-24 in sandbox/landlock_test.go, TS-15-25 in sandbox/internal/agent/landlock_test.go and TS-15-26 in sandbox/internal/attach/landlock_test.go, and confirm they fail",
@@ -76,25 +67,14 @@
         "sandbox/internal/attach/landlock_test.go",
         "sandbox/internal/fakeagent/fakeagent.go",
         "sandbox/cmd/agentkit-sandboxd/main_test.go"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Add Spec.RequireLandlock and Capabilities.Landlock, enforce them in CheckSpec and after Hello in attach.New, and make local report no confinement",
       "criteria": [
-        "15-REQ-4.7",
-        "15-REQ-6"
-      ],
-      "tests": [
-        "TS-15-27",
-        "TS-15-33",
-        "TS-15-34",
-        "TS-15-35",
-        "TS-15-36",
-        "TS-15-37",
-        "TS-15-38"
+        "REQ-4.7",
+        "REQ-6"
       ],
       "steps": [
         "Write TS-15-33 and TS-15-34 in sandbox/check_test.go (TS-15-34 extends TS-13-13's seeded generators with random Capabilities.Landlock and Spec.RequireLandlock), TS-15-27 and TS-15-35 in sandbox/local/landlock_test.go with TMPDIR set to t.TempDir(), and TS-15-36, TS-15-37 and TS-15-38 in sandbox/internal/attach/require_landlock_test.go over fakeagent; confirm they fail",
@@ -119,24 +99,17 @@
       ],
       "depends_on": [
         1
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Create sandbox/internal/confine with Plan, the probe seam and the outcome, and promote go-landlock to a direct requirement with its ruling",
       "criteria": [
-        "15-REQ-2.1",
-        "15-REQ-2.2",
-        "15-REQ-2.8",
-        "15-REQ-8.1",
-        "15-REQ-8.2"
-      ],
-      "tests": [
-        "TS-15-8",
-        "TS-15-14",
-        "TS-15-40"
+        "REQ-2.1",
+        "REQ-2.2",
+        "REQ-2.8",
+        "REQ-8.1",
+        "REQ-8.2"
       ],
       "steps": [
         "Before touching go.mod, copy internal/policy/testdata/go-list-m-all.txt to internal/policy/testdata/go-list-m-all.14.txt, record 14's direct set, and read the selected go-landlock version from the snapshot (v0.10.1 expected)",
@@ -172,34 +145,22 @@
       "done_when": [
         "go.mod requires github.com/landlock-lsm/go-landlock without `// indirect` and psx only with `// indirect`",
         "`go list -m all` output equals internal/policy/testdata/go-list-m-all.txt byte for byte"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Build the ruleset's roots and apply it through Setup with a strict V2–V4 configuration on Linux, with a non-Linux stub",
       "criteria": [
-        "15-REQ-1.1",
-        "15-REQ-1.2",
-        "15-REQ-1.3",
-        "15-REQ-1.4",
-        "15-REQ-1.5",
-        "15-REQ-1.6",
-        "15-REQ-1.8",
-        "15-REQ-2.3",
-        "15-REQ-2.4",
-        "15-REQ-2.7"
-      ],
-      "tests": [
-        "TS-15-1",
-        "TS-15-2",
-        "TS-15-3",
-        "TS-15-4",
-        "TS-15-7",
-        "TS-15-9",
-        "TS-15-10",
-        "TS-15-13"
+        "REQ-1.1",
+        "REQ-1.2",
+        "REQ-1.3",
+        "REQ-1.4",
+        "REQ-1.5",
+        "REQ-1.6",
+        "REQ-1.8",
+        "REQ-2.3",
+        "REQ-2.4",
+        "REQ-2.7"
       ],
       "steps": [
         "Write TS-15-1, TS-15-4 and TS-15-7 in sandbox/internal/confine/rules_test.go (no build constraint, expectations filtered by what exists on the host), TS-15-2, TS-15-3, TS-15-10 and TS-15-9's child halves in sandbox/internal/confine/setup_linux_test.go, TS-15-9's file checks in plan_test.go and TS-15-13 in stub_test.go (constraint check, every platform) plus setup_other_test.go (`//go:build !linux`); confirm they fail",
@@ -229,30 +190,16 @@
       ],
       "depends_on": [
         3
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Add --network, --landlock-ro and --landlock-rw to agentkit-sandboxd, refuse dangerous flag values, apply the ruleset before any other work, and add sandbox.AgentArgs",
       "criteria": [
-        "15-REQ-1.7",
-        "15-REQ-2.5",
-        "15-REQ-2.6",
-        "15-REQ-3"
-      ],
-      "tests": [
-        "TS-15-5",
-        "TS-15-6",
-        "TS-15-11",
-        "TS-15-12",
-        "TS-15-15",
-        "TS-15-16",
-        "TS-15-17",
-        "TS-15-18",
-        "TS-15-19",
-        "TS-15-20"
+        "REQ-1.7",
+        "REQ-2.5",
+        "REQ-2.6",
+        "REQ-3"
       ],
       "steps": [
         "Write TS-15-15 and TS-15-20 in sandbox/cmd/agentkit-sandboxd/flags_test.go, TS-15-18 in order_test.go, TS-15-6, TS-15-16 and TS-15-17 in flags_binary_test.go (Linux and macOS, 13's binary-build helper), TS-15-12's binary half and TS-15-19 and TS-15-5's binary case in landlock_linux_test.go, TS-15-5's report cases in sandbox/internal/confine/home_tmp_test.go, and TS-15-11 plus TS-15-12's probe-reports-4 child in sandbox/internal/confine/failures_linux_test.go; confirm they fail",
@@ -282,22 +229,13 @@
       "depends_on": [
         2,
         4
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Keep every agent RPC working under the ruleset, refuse a SpillDir outside the writable roots, and prove the confined agent end to end on Linux",
       "criteria": [
-        "15-REQ-5"
-      ],
-      "tests": [
-        "TS-15-28",
-        "TS-15-29",
-        "TS-15-30",
-        "TS-15-31",
-        "TS-15-32"
+        "REQ-5"
       ],
       "steps": [
         "Write TS-15-29 in sandbox/internal/agent/spill_landlock_test.go over net.Pipe, TS-15-28, TS-15-30, TS-15-31's binary half and TS-15-32 in sandbox/cmd/agentkit-sandboxd/confined_linux_test.go (`//go:build linux`, 13's binary-build helper, stdioconn and attach.Dial, an independent syscall(444, 0, 0, 1) probe with t.Skipf naming the ABI), and TS-15-31's simulated half in sandbox/internal/confine/abi23_linux_test.go through the probe seam; confirm they fail",
@@ -319,22 +257,15 @@
       ],
       "depends_on": [
         5
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Pin that the host is never confined, hold the build, size and API gates, and update the documentation",
       "criteria": [
-        "15-REQ-7",
-        "15-REQ-8.3",
-        "15-REQ-8.4"
-      ],
-      "tests": [
-        "TS-15-39",
-        "TS-15-41",
-        "TS-15-42"
+        "REQ-7",
+        "REQ-8.3",
+        "REQ-8.4"
       ],
       "steps": [
         "Write TS-15-39 in internal/policy/landlock_policy_test.go: walk every non-test .go file of the root module (skip testdata and directories with their own go.mod such as codesearch) with go/parser and go/build/constraint; require every importer of github.com/landlock-lsm/go-landlock or a subpackage to sit under sandbox/internal/confine with a constraint true for linux and false for darwin and windows, require the only importer of <module>/sandbox/internal/confine to be sandbox/cmd/agentkit-sandboxd, and fail with file:line on any CallExpr selecting a method named BestEffort",
@@ -365,44 +296,7 @@
       "done_when": [
         "`make check` exits 0",
         "`make doc` was run before the documentation edits"
-      ],
-      "state": "done"
-    },
-    {
-      "id": 8,
-      "kind": "integration",
-      "title": "Verify every Landlock execution path end to end through the real code",
-      "tests": [
-        "TS-15-43",
-        "TS-15-44",
-        "TS-15-45",
-        "TS-15-46"
-      ],
-      "steps": [
-        "Write TS-15-43 and TS-15-46 in sandbox/cmd/agentkit-sandboxd/landlock_smoke_linux_test.go (`//go:build linux`) with the built binary, the dialtcp helper, a loopback listener and the independent kernel probe, skipping with the ABI named below 4; TS-15-46 starts the binary with sandbox.AgentArgs(eff) and attaches through attach.New with Provider \"test\"",
-        "Write TS-15-44 in sandbox/internal/attach/landlock_smoke_test.go over fakeagent with an effective spec from sandbox.CheckSpec, and TS-15-45 in sandbox/landlock_unconfined_smoke_test.go as a re-executed child following TS-14-49's pattern, reading PR_GET_NO_NEW_PRIVS through the standard syscall package in a Linux-only helper",
-        "Trace 15-PATH-1 through the code: main → parseFlags → confine.Setup → decide/probeABI → Plan → buildRules → landlock.V4.Restrict → redirectStdout → agent.New with Config.Landlock → Serve → Hello's LandlockReport → attach fills AgentInfo.Landlock; confirm each step calls the next",
-        "Trace 15-PATH-2: attach.New → Hello → AgentInfo.Landlock → Satisfies → client close, Destroy once and the RequireLandlock SpecError with Provider; confirm no other path returns a live Sandbox for a RequireLandlock spec",
-        "Trace 15-PATH-3: local.Create → CheckSpec's RequireLandlock refusal before any directory, then the in-process agent built with the no-confinement LandlockInfo; confirm local reaches neither confine nor go-landlock",
-        "Trace 15-PATH-4: CheckSpec with Capabilities.Landlock → AgentArgs → the real parseFlags → Setup → attach.New's RequireLandlock check → Sync through 14's Rsync → proxy execute → Export; AgentArgs' production consumers are the later provider specs, so confirm it is exported from package sandbox and its output is accepted by the command's real parseFlags",
-        "Confirm every contract is consumed in production code: Setup's *UsageError and apply error drive main's exit 2 and exit 1; Plan's Decision selects the configuration version and Restrict versus RestrictPaths; the LandlockInfo returned by Setup reaches agent.Config and Hello; Satisfies is called by attach.New; CheckSpec's RequireLandlock refusal is returned by local.Create; the Tools SpillDir refusal is returned to the client",
-        "Search every file in the earlier tasks' touches, especially sandbox/internal/confine, sandbox/cmd/agentkit-sandboxd/main.go, sandbox/internal/attach/attach.go and sandbox/local/local.go, for TODO, panic(\"not implemented\"), NotImplementedError, todo!() and a bare `return sandbox.LandlockInfo{}, nil` or `return nil` on a non-trivial path, and remove any that remain; confirm the Linux Setup never returns without probing",
-        "Run `make check` on a Linux host with Landlock ABI 4 and confirm TS-15-43 and TS-15-46 ran rather than skipped"
-      ],
-      "touches": [
-        "sandbox/cmd/agentkit-sandboxd/landlock_smoke_linux_test.go",
-        "sandbox/internal/attach/landlock_smoke_test.go",
-        "sandbox/landlock_unconfined_smoke_test.go",
-        "sandbox/landlock_unconfined_linux_test.go"
-      ],
-      "depends_on": [
-        7
-      ],
-      "done_when": [
-        "`make check` exits 0",
-        "On a Linux kernel offering Landlock ABI 4 or later, TS-15-43 and TS-15-46 pass without skipping"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

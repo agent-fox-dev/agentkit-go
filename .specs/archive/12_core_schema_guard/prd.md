@@ -4,9 +4,8 @@ spec_name: "core_schema_guard"
 title: "Shrink Core Vocabulary, Fold jsonx into schema.Parse, Reshape guard.Check, and Rewrite Docs"
 status: "active"
 created_at: "2026-10-09T11:53:55.402368Z"
-updated_at: "2026-10-09T11:53:55.402368Z"
 intent_hash: "f6d492819c1bf686f2569744627232a5767737b072ef57868ab25336161aa6ea"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/10-cut-agentkit-down-to-the-hands.md"
 ---
 ## Intent
@@ -234,3 +233,10 @@ const (
     ArrayEnd Kind = ']'
 )
 ```
+
+## Glossary
+
+- **byte_stability**: The preservation of original argument JSON bytes without re-marshaling or key re-ordering across tool execution turns.
+- **issue_87_constraints**: Validation checks covering strict additionalProperties: false, literal enum matching, numeric bounds, string lengths and regex patterns, and array item cardinality.
+- **ordered_schema**: A JSON Schema representation where authored property declaration order is preserved in a slice for model visibility.
+- **pure_guard**: An authorization function that evaluates command program safety against allowlists without side effects or coupling to hook contexts.

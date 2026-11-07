@@ -4,9 +4,8 @@ spec_name: "openrouter_provider"
 title: "OpenRouter provider on the OpenRouter Go SDK"
 status: "active"
 created_at: "2026-10-21T10:40:29.359459Z"
-updated_at: "2026-10-21T10:40:29.359459Z"
 intent_hash: "d45f81729bb507ff530747dd9051cb1de7202e2dad3cf496a76c543894982b0a"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/14-run-the-agent-on-anthropic-openrouter-or-ollama.md"
 ---
 ## Intent
@@ -428,3 +427,14 @@ Repository symbols this work uses, read in the code:
 - `provider.BillingModel(requested *core.Model, served string, lookup func(string) *core.Model) (*core.Model, string)`;
 - `provider.ToolResultText(core.ToolResultMessage) string`;
 - `(*schema.Schema).MarshalJSON`.
+
+## Glossary
+
+- **attempt**: One SDK request within a turn; the provider's own retry loop may make up to 1 + MaxRetries attempts per turn.
+- **chat-style wire**: A provider wire whose transcript pairs tool calls and tool results by id in separate messages, as OpenRouter Chat Completions and Ollama do.
+- **content event**: Any TextStart/TextDelta, ThinkingStart/ThinkingDelta, ToolCallStart or ToolInputDelta event emitted for the current turn; MessageStartEvent is not a content event.
+- **in-stream error**: A chunk inside an HTTP 200 stream that carries a top-level error object {code, message} or a choice with finish_reason "error".
+- **presence bit**: A core.Usage flag (UsageInputTokens … UsageCostUSD) recording that a field was reported rather than defaulted to zero.
+- **reasoning_details fragment**: One element of a Chat Completions delta's reasoning_details array (reasoning.text, reasoning.summary or reasoning.encrypted), kept with every field it arrived with and stored as a JSON array in core.ThinkingBlock.Signature.
+- **recording server**: An httptest server used by the offline tests that records every request it receives and replays canned SSE bodies; OPENROUTER_BASE_URL points at it.
+- **synthetic result**: A tool result inserted by the shared repair for an unanswered tool call, marked as an error with text "No result provided".

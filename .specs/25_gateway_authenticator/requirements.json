@@ -1,448 +1,764 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
   "spec_id": "25",
   "spec_name": "gateway_authenticator",
-  "schema_version": 2,
-  "introduction": "This spec lets a program that embeds `gatewayd.Server` (module `sandbox/gatewayd`) own the gateway's authentication. The embedder passes an `Authenticator` callback that turns a bearer token into a principal. The server keys sandbox ownership by that principal, exposes it to the backend through `PrincipalFromContext`, and gives the embedder `(*Server).Destroy` to end any held sandbox. The static token-list mode, the `agentkit-gateway` command, clients and both wire protocols keep their spec 19 behaviour.",
-  "glossary": {
-    "Authenticator": "The embedder-supplied func(ctx context.Context, token string) (principal string, ok bool) that callback mode calls once per RPC from the tap handle.",
-    "callback mode": "A gatewayd.Server built with a non-nil Config.Authenticate and an empty Config.Tokens. The embedder's callback decides which tokens are accepted.",
-    "held sandbox": "A sandbox whose entry is currently in the server's registry: created, recorded by gatewayService.Create, and not yet removed by any path.",
-    "principal": "The non-secret owner identity of an authenticated RPC. In callback mode it is the string the Authenticator returns. In static mode it is the 64-character lowercase hex SHA-256 of the token. Sandbox ownership is keyed by it.",
-    "removal path": "registry.remove, the single code path that deletes a registry entry once, stops its TTL timer, closes the backend sandbox and logs 'sandbox destroyed' with a reason.",
-    "static mode": "A gatewayd.Server built with a non-empty Config.Tokens and a nil Config.Authenticate. This is spec 19's token-list authentication.",
-    "tap handle": "The grpc.InTapHandle function (Server.tap). It runs on the connection's I/O goroutine before gRPC reads any request message."
-  },
+  "schema_version": 3,
   "requirements": [
     {
-      "id": "25-REQ-1",
+      "id": "REQ-1",
       "title": "Configuration with exactly one authentication mode",
       "rationale": "An embedder must pick either the static list or the callback, and a configuration with neither or both must fail at construction rather than at the first RPC.",
       "criteria": [
         {
-          "id": "25-REQ-1.1",
+          "id": "REQ-1.1",
           "pattern": "ubiquitous",
           "system": "gatewayd package",
-          "action": "export `type Authenticator func(ctx context.Context, token string) (principal string, ok bool)` and the field `Config.Authenticate Authenticator`"
+          "action": "export `type Authenticator func(ctx context.Context, token string) (principal string, ok bool)` and the field `Config.Authenticate Authenticator`",
+          "contract": "the assignment compiles; a gatewayd.Authenticator value is assignable back to the bare func type",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the gatewayd package compiled in an external test package"
+            ],
+            "pseudocode": "var a gatewayd.Authenticator = func(ctx context.Context, tok string) (string, bool) { return 'p', true }; cfg := gatewayd.Config{Backend: b, Authenticate: a}; var f func(context.Context,string)(string,bool) = a"
+          }
         },
         {
-          "id": "25-REQ-1.2",
+          "id": "REQ-1.2",
           "pattern": "unwanted",
           "condition": "New is called with a non-empty Config.Tokens and a non-nil Config.Authenticate",
           "system": "gatewayd.New",
           "action": "refuse the configuration",
-          "contract": "returns a nil *Server and a non-nil error whose text contains both 'Tokens' and 'Authenticate' and contains no configured token"
+          "contract": "returns a nil *Server and a non-nil error whose text contains both 'Tokens' and 'Authenticate' and contains no configured token",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a valid backend",
+              "two valid tokens",
+              "a non-nil authenticator"
+            ],
+            "pseudocode": "s, err := gatewayd.New(Config{Backend:b, Tokens:[]string{Token,TokenB}, Authenticate:fn}); assert s == nil; assert err != nil; assert contains(err.Error(),'Tokens') && contains(err.Error(),'Authenticate'); assert !contains(err.Error(), Token) && !contains(err.Error(), TokenB)"
+          }
         },
         {
-          "id": "25-REQ-1.3",
+          "id": "REQ-1.3",
           "pattern": "unwanted",
           "condition": "New is called with a nil or empty Config.Tokens and a nil Config.Authenticate",
           "system": "gatewayd.New",
           "action": "refuse the configuration",
-          "contract": "returns a nil *Server and a non-nil error whose text contains both 'Tokens' and 'Authenticate'"
+          "contract": "returns a nil *Server and a non-nil error whose text contains both 'Tokens' and 'Authenticate'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a valid backend"
+            ],
+            "pseudocode": "for toks in [nil, []string{}]: s, err := New(Config{Backend:b, Tokens:toks}); assert s == nil; assert contains(err.Error(),'Tokens') && contains(err.Error(),'Authenticate')"
+          }
         },
         {
-          "id": "25-REQ-1.4",
+          "id": "REQ-1.4",
           "pattern": "event_driven",
           "condition": "New is called with a non-empty Config.Tokens and a nil Config.Authenticate",
           "system": "gatewayd.New",
           "action": "validate the tokens with internal/token.Validate as spec 19 does",
-          "contract": "an invalid list (too short, non-printable, repeated) returns the spec 19 error 'gatewayd: Config.Tokens: ...' unchanged"
+          "contract": "an invalid list (too short, non-printable, repeated) returns the spec 19 error 'gatewayd: Config.Tokens: ...' unchanged",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a nil Authenticate"
+            ],
+            "pseudocode": "for list in [short, nonprintable, dup]: _, err := New(Config{Backend:b, Tokens:list}); assert err.Error() == 'gatewayd: Config.Tokens: ' + token.Validate(list).Error()"
+          }
         },
         {
-          "id": "25-REQ-1.5",
+          "id": "REQ-1.5",
           "pattern": "event_driven",
           "condition": "New is called with a non-nil Config.Authenticate and an empty Config.Tokens",
           "system": "gatewayd.New",
           "action": "apply no token validation, and validate Backend, the limits, TLS and NetworkModes with the spec 19 rules and error texts",
-          "contract": "returns a non-nil *Server and a nil error when the other fields are valid; a nil Backend still returns 'gatewayd: Config.Backend is nil'"
+          "contract": "returns a non-nil *Server and a nil error when the other fields are valid; a nil Backend still returns 'gatewayd: Config.Backend is nil'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a non-nil Authenticate and empty Tokens"
+            ],
+            "pseudocode": "s, err := New(Config{Backend:b, Authenticate:fn}); assert err == nil && s != nil; _, err = New(Config{Authenticate:fn}); assert err.Error() == 'gatewayd: Config.Backend is nil'; _, err = New(Config{Backend:b, Authenticate:fn, MaxSandboxes:-1}); assert err.Error() == spec19Text"
+          }
         }
       ]
     },
     {
-      "id": "25-REQ-2",
+      "id": "REQ-2",
       "title": "Static mode authentication and principal",
       "rationale": "Existing deployments must not see a behaviour change, and a backend still needs a stable, non-secret name for each token.",
+      "system": "gatewayd.Server",
       "criteria": [
         {
-          "id": "25-REQ-2.1",
+          "id": "REQ-2.1",
           "pattern": "state_driven",
           "condition": "the server runs in static mode",
-          "system": "gatewayd.Server",
           "action": "authenticate each RPC in the tap handle and again in both the unary and stream interceptors, comparing the token's SHA-256 with every configured hash using crypto/subtle.ConstantTimeCompare",
-          "contract": "a token absent from Config.Tokens gets codes.Unauthenticated with message 'gatewayd: a valid bearer token is required', as in spec 19"
+          "contract": "a token absent from Config.Tokens gets codes.Unauthenticated with message 'gatewayd: a valid bearer token is required', as in spec 19",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a gwtest server started with Config.Tokens only"
+            ],
+            "pseudocode": "env := gwtest.Start(t, Config{Backend:b}); conn := env.Raw(t); for each rpc: err := invoke(Ctx(ctx, 'x'*40)); assert status.Code(err)==Unauthenticated && status.Convert(err).Message()=='gatewayd: a valid bearer token is required'"
+          }
         },
         {
-          "id": "25-REQ-2.2",
+          "id": "REQ-2.2",
           "pattern": "ubiquitous",
-          "system": "gatewayd.Server",
           "action": "for any token accepted in static mode, use the 64-character lowercase hex encoding of its SHA-256 as the RPC's principal",
-          "contract": "PrincipalFromContext on the backend's Create context returns hex.EncodeToString(sha256.Sum256(token)) with ok == true"
+          "contract": "PrincipalFromContext on the backend's Create context returns hex.EncodeToString(sha256.Sum256(token)) with ok == true",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a gwtest server whose Tokens hold the generated token",
+              "gwtest.Counting as the backend"
+            ],
+            "pseudocode": "for tok in gen_tokens(32..64, printable): env := Start(Config{Backend:counting, Tokens:[tok]}); create(env.Dial(t,tok)); p, ok := counting.Principals()[0]; assert ok && p == hex(sha256(tok))"
+          }
         },
         {
-          "id": "25-REQ-2.3",
+          "id": "REQ-2.3",
           "pattern": "state_driven",
           "condition": "the server runs in static mode",
-          "system": "gatewayd.Server",
           "action": "log the 'sandbox created' owner attribute as the first 8 hex characters of the principal, and never write the full 64-character principal to any log line",
-          "contract": "the owner attribute equals the principal's 8-character prefix; the log output contains no 64-character hex hash of a configured token"
+          "contract": "the owner attribute equals the principal's 8-character prefix; the log output contains no 64-character hex hash of a configured token",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a static-mode server with a log capture",
+              "a token whose full hex SHA-256 is known"
+            ],
+            "pseudocode": "h := hex(sha256(Token)); rec := logs.Messages('sandbox created')[0]; assert rec['owner'] == h[:8]; assert !contains(logs.String(), h) && !contains(logs.String(), Token)"
+          }
         }
       ]
     },
     {
-      "id": "25-REQ-3",
+      "id": "REQ-3",
       "title": "Callback mode: when the authenticator runs, and revocation",
       "rationale": "Running the callback once, in the tap, keeps the rule that nothing is read before authentication and gives a single answer per RPC.",
+      "system": "gatewayd.Server",
       "criteria": [
         {
-          "id": "25-REQ-3.1",
+          "id": "REQ-3.1",
           "pattern": "unwanted",
           "condition": "in callback mode an RPC's authorization metadata is missing, repeated, lacks the 'Bearer ' prefix, or carries an empty token",
-          "system": "gatewayd.Server",
           "action": "refuse the RPC without calling the authenticator",
-          "contract": "codes.Unauthenticated with message 'gatewayd: a valid bearer token is required'; the authenticator's call count is unchanged"
+          "contract": "codes.Unauthenticated with message 'gatewayd: a valid bearer token is required'; the authenticator's call count is unchanged",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a callback-mode server with an authenticator that counts its calls and accepts everything"
+            ],
+            "pseudocode": "for md in shapes: err := rawInvoke(md); assert Unauthenticated + message; assert calls.Load()==0"
+          }
         },
         {
-          "id": "25-REQ-3.2",
+          "id": "REQ-3.2",
           "pattern": "event_driven",
           "condition": "in callback mode an RPC carries exactly one authorization value of the form 'Bearer <non-empty token>'",
-          "system": "gatewayd.Server",
           "action": "call the authenticator exactly once for that unary RPC or stream from the tap handle, passing the tap's context (which carries the peer address) and the token byte for byte as presented, with no length or character rule of the server's own",
-          "contract": "the authenticator records one call per unary RPC and one per stream; a 1-byte token and a token with characters outside printable ASCII reach the authenticator unchanged"
+          "contract": "the authenticator records one call per unary RPC and one per stream; a 1-byte token and a token with characters outside printable ASCII reach the authenticator unchanged",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a callback-mode server whose authenticator records each call's token and whether peer.FromContext(ctx) is present"
+            ],
+            "pseudocode": "unary(Ctx(ctx,'t1')); assert len(calls)==1; stream(Ctx(ctx,'t2')); assert len(calls)==2; for tok in ['a', 31 chars, 'a b~!=']: invoke(tok); assert calls.last.token == tok && calls.last.hasPeer"
+          }
         },
         {
-          "id": "25-REQ-3.3",
+          "id": "REQ-3.3",
           "pattern": "unwanted",
           "condition": "in callback mode the authenticator returns ok == false",
-          "system": "gatewayd.Server",
           "action": "refuse the RPC in the tap handle before gRPC reads any request message, including for a method no handler serves",
-          "contract": "codes.Unauthenticated with message 'gatewayd: a valid bearer token is required'; no backend method is called and no handler runs"
+          "contract": "codes.Unauthenticated with message 'gatewayd: a valid bearer token is required'; no backend method is called and no handler runs",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a callback-mode server whose authenticator returns ok == false",
+              "a counting backend",
+              "a raw gRPC connection"
+            ],
+            "pseudocode": "for m in [Create, Hello stream, '/x.Y/Z']: err := raw.Invoke(Ctx(ctx,'tok'), m); assert Unauthenticated; assert counting.Creates()==0 && counting.Reaps()==0"
+          }
         },
         {
-          "id": "25-REQ-3.4",
+          "id": "REQ-3.4",
           "pattern": "event_driven",
           "condition": "in callback mode the authenticator accepts a token with a valid principal",
-          "system": "gatewayd.Server",
           "action": "place the principal on the RPC's context, and let the unary and stream interceptors pass the RPC on without calling the authenticator again",
-          "contract": "the handler and the backend see the principal through PrincipalFromContext; the authenticator's call count for the RPC stays at 1"
+          "contract": "the handler and the backend see the principal through PrincipalFromContext; the authenticator's call count for the RPC stays at 1",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a callback-mode server whose authenticator maps 'tok-a' to principal 'tenant-1'",
+              "gwtest.Counting as backend"
+            ],
+            "pseudocode": "sb := create(env.Dial(t,'tok-a')); assert counting.Principals()[0] == ('tenant-1', true); assert calls.Load()==1"
+          }
         },
         {
-          "id": "25-REQ-3.5",
+          "id": "REQ-3.5",
           "pattern": "unwanted",
           "condition": "in callback mode a unary or stream interceptor receives a context that carries no principal",
-          "system": "gatewayd.Server",
           "action": "refuse the RPC without calling the handler",
-          "contract": "codes.Unauthenticated with message 'gatewayd: a valid bearer token is required'"
+          "contract": "codes.Unauthenticated with message 'gatewayd: a valid bearer token is required'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an in-package test with a callback-mode Server and a log capture",
+              "a context that carries no principal"
+            ],
+            "pseudocode": "_, err := s.unaryAuth(context.Background(), req, info, handler); assert Unauthenticated; assert !ran; assert calls==0; assert logs.Messages('authentication refused')[0]['reason']=='refused'"
+          }
         },
         {
-          "id": "25-REQ-3.6",
+          "id": "REQ-3.6",
           "pattern": "event_driven",
           "condition": "the authenticator stops accepting a token it previously accepted",
-          "system": "gatewayd.Server",
           "action": "refuse every later RPC that presents that token, let RPCs already in flight under it run to their end, and keep the principal's sandboxes registered until TTL expiry, a client Destroy under the same principal, (*Server).Destroy, or Shutdown",
-          "contract": "later RPCs get codes.Unauthenticated; an execute already in flight returns its normal result; the sandbox stays visible to another token that maps to the same principal"
+          "contract": "later RPCs get codes.Unauthenticated; an execute already in flight returns its normal result; the sandbox stays visible to another token that maps to the same principal",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a callback-mode server whose authenticator maps tokens 'tok-a' and 'tok-b' to principal P and can revoke 'tok-a' at runtime",
+              "a sandbox created with 'tok-a' and an execute tool call in flight under 'tok-a'"
+            ],
+            "pseudocode": "start execute(sleep) under tok-a; revoke('tok-a'); assert execute result ok; assert Unauthenticated on List(tok-a); assert id in List(tok-b)"
+          }
         }
       ]
     },
     {
-      "id": "25-REQ-4",
+      "id": "REQ-4",
       "title": "Callback mode: invalid principals and panics",
       "rationale": "An embedder bug must not create an unowned sandbox, flood the logs, or bring down the process.",
+      "system": "gatewayd.Server",
       "criteria": [
         {
-          "id": "25-REQ-4.1",
+          "id": "REQ-4.1",
           "pattern": "unwanted",
           "condition": "the authenticator returns ok == true with an empty principal",
-          "system": "gatewayd.Server",
           "action": "treat the result as ok == false and refuse the RPC",
-          "contract": "codes.Unauthenticated; no sandbox is created"
+          "contract": "codes.Unauthenticated; no sandbox is created",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a callback-mode server whose authenticator returns ('', true) for 'tok-empty'",
+              "gwtest.Counting as backend"
+            ],
+            "pseudocode": "_, err := env.Dial(t,'tok-empty').Create(ctx, spec); assert Unauthenticated; assert counting.Creates()==0"
+          }
         },
         {
-          "id": "25-REQ-4.2",
+          "id": "REQ-4.2",
           "pattern": "unwanted",
           "condition": "the authenticator returns ok == true with a principal longer than 256 bytes",
-          "system": "gatewayd.Server",
           "action": "treat the result as ok == false and refuse the RPC",
-          "contract": "a 257-byte principal gets codes.Unauthenticated; a 256-byte principal is accepted"
+          "contract": "a 257-byte principal gets codes.Unauthenticated; a 256-byte principal is accepted",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a callback-mode server whose authenticator returns 257 'a' bytes for 'tok-long' and 256 'a' bytes for 'tok-max'"
+            ],
+            "pseudocode": "assert Unauthenticated == code(create('tok-long')); assert create('tok-max') ok; assert len(counting.Principals()[0].p)==256"
+          }
         },
         {
-          "id": "25-REQ-4.3",
+          "id": "REQ-4.3",
           "pattern": "unwanted",
           "condition": "the authenticator panics",
-          "system": "gatewayd.Server",
           "action": "recover the panic, refuse the RPC, and keep serving other RPCs on the same and other connections",
-          "contract": "the RPC gets codes.Unauthenticated; the process does not exit; a following RPC on the same connection whose token the authenticator accepts succeeds"
+          "contract": "the RPC gets codes.Unauthenticated; the process does not exit; a following RPC on the same connection whose token the authenticator accepts succeeds",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a callback-mode server whose authenticator panics for 'tok-boom' and accepts 'tok-ok'",
+              "one client connection used for both tokens"
+            ],
+            "pseudocode": "conn := env.Raw(t); assert Unauthenticated == code(invoke(conn,'tok-boom')); assert nil == invoke(conn,'tok-ok'); assert nil == invoke(env.Raw(t),'tok-ok')"
+          }
         },
         {
-          "id": "25-REQ-4.4",
+          "id": "REQ-4.4",
           "pattern": "ubiquitous",
-          "system": "gatewayd.Server",
           "action": "for any principal of 1 to 256 bytes, including non-ASCII and control bytes, accept it unchanged and compare it with other principals byte for byte",
-          "contract": "PrincipalFromContext returns the exact bytes the authenticator returned"
+          "contract": "PrincipalFromContext returns the exact bytes the authenticator returned",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a callback-mode server whose authenticator returns the generated principal for 'tok'",
+              "gwtest.Counting as backend"
+            ],
+            "pseudocode": "for p in gen_bytes(1..256): set(authn, p); create(); assert counting.last.principal == p; assert list(tokSame) has id; assert list(tokOneByteOff) empty"
+          }
         }
       ]
     },
     {
-      "id": "25-REQ-5",
+      "id": "REQ-5",
       "title": "Ownership by principal",
       "rationale": "Several tokens of one tenant must share sandboxes, and a foreign tenant must not be able to tell that a sandbox exists.",
       "criteria": [
         {
-          "id": "25-REQ-5.1",
+          "id": "REQ-5.1",
           "pattern": "ubiquitous",
           "system": "gatewayd registry",
-          "action": "in both modes, record each sandbox under the principal of the Create RPC that made it, and filter lookup, access, list, relay routing, SyncGit and the Destroy RPC by that principal string"
+          "action": "in both modes, record each sandbox under the principal of the Create RPC that made it, and filter lookup, access, list, relay routing, SyncGit and the Destroy RPC by that principal string",
+          "contract": "List includes the id; the relay tool call returns its result; SyncGit syncs the sandbox; Destroy removes it and the destroy log reason is 'client'",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a callback-mode server mapping 'tok-a' and 'tok-b' to principal P",
+              "a sandbox created with 'tok-a'"
+            ],
+            "pseudocode": "sb := create(dial('tok-a')); pb := dial('tok-b'); assert id in pb.List(); assert run(pb.Attach(id)).ok; assert syncGit(pb,id) == nil; pb.Destroy(id); assert destroyReason(logs,id)=='client'"
+          }
         },
         {
-          "id": "25-REQ-5.2",
+          "id": "REQ-5.2",
           "pattern": "event_driven",
           "condition": "an RPC whose token maps to principal P addresses a sandbox created under P, including through a different token from the one that created it",
           "system": "gatewayd.Server",
           "action": "serve the RPC against that sandbox",
-          "contract": "List includes the id; the Agent relay reaches the sandbox; SyncGit syncs it; the Destroy RPC removes it with reason 'client'"
+          "contract": "List includes the id; the Agent relay reaches the sandbox; SyncGit syncs it; the Destroy RPC removes it with reason 'client'",
+          "check": {
+            "same_as": "REQ-5.1"
+          }
         },
         {
-          "id": "25-REQ-5.3",
+          "id": "REQ-5.3",
           "pattern": "unwanted",
           "condition": "an RPC whose token maps to principal Q addresses a sandbox created under a different principal P",
           "system": "gatewayd.Server",
           "action": "answer exactly as spec 19 answers for an id that does not exist, and leave the sandbox untouched",
-          "contract": "List omits the id; the Destroy RPC answers OK and the sandbox stays registered; the Agent relay and SyncGit answer codes.Unavailable with a message naming the id"
+          "contract": "List omits the id; the Destroy RPC answers OK and the sandbox stays registered; the Agent relay and SyncGit answer codes.Unavailable with a message naming the id",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a callback-mode server mapping 'tok-p' to P and 'tok-q' to Q",
+              "a sandbox created under P"
+            ],
+            "pseudocode": "assert id not in qList(); assert qDestroy(id)==nil; assert id in pList(); for call in [relay, syncGit]: assert code==Unavailable && contains(msg,id) && msg == msgFor(unknownId)"
+          }
         }
       ]
     },
     {
-      "id": "25-REQ-6",
+      "id": "REQ-6",
       "title": "Logs",
       "rationale": "Operators need to know why an RPC was refused without the logs ever exposing a secret.",
+      "system": "gatewayd.Server",
       "criteria": [
         {
-          "id": "25-REQ-6.1",
+          "id": "REQ-6.1",
           "pattern": "event_driven",
           "condition": "a sandbox is created in callback mode",
-          "system": "gatewayd.Server",
           "action": "log 'sandbox created' with the owner attribute set to the full principal as the authenticator returned it",
-          "contract": "the JSON log record's owner field equals the principal"
+          "contract": "the JSON log record's owner field equals the principal",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a callback-mode server mapping 'tok-a' to principal 'tenant-1-lease-0042' with a log capture"
+            ],
+            "pseudocode": "assert logs.Messages('sandbox created')[0]['owner']=='tenant-1-lease-0042'"
+          }
         },
         {
-          "id": "25-REQ-6.2",
+          "id": "REQ-6.2",
           "pattern": "event_driven",
           "condition": "the server refuses an RPC's authentication in either mode",
-          "system": "gatewayd.Server",
           "action": "log the Warn message 'authentication refused' with the peer attribute and a reason attribute",
-          "contract": "the message text and the peer attribute are unchanged from spec 19; reason is one of 'no token', 'refused', 'invalid principal', 'panic'"
+          "contract": "the message text and the peer attribute are unchanged from spec 19; reason is one of 'no token', 'refused', 'invalid principal', 'panic'",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a static-mode server and a callback-mode server, each with a log capture"
+            ],
+            "pseudocode": "for env in [static, callback]: invoke(badToken); rec := logs.Messages('authentication refused')[0]; assert rec.level=='WARN' && rec['peer']!='' && rec['reason'] in {...}"
+          }
         },
         {
-          "id": "25-REQ-6.3",
+          "id": "REQ-6.3",
           "pattern": "event_driven",
           "condition": "the refusal is due to a missing, repeated, non-Bearer or empty authorization header",
-          "system": "gatewayd.Server",
           "action": "set the refusal's reason to 'no token'",
-          "contract": "reason == \"no token\""
+          "contract": "reason == \"no token\"",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a static-mode server and a callback-mode server, each with a log capture"
+            ],
+            "pseudocode": "for env, md in product(modes, shapes): invoke(md); assert logs.last('authentication refused')['reason']=='no token'"
+          }
         },
         {
-          "id": "25-REQ-6.4",
+          "id": "REQ-6.4",
           "pattern": "event_driven",
           "condition": "the refusal is due to no static hash matching, the authenticator returning ok == false, or an interceptor finding no principal",
-          "system": "gatewayd.Server",
           "action": "set the refusal's reason to 'refused'",
-          "contract": "reason == \"refused\""
+          "contract": "reason == \"refused\"",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a static-mode server and a callback-mode server whose authenticator returns ok == false, each with a log capture"
+            ],
+            "pseudocode": "invoke(static,'x'*40); invoke(callback,'nope'); assert both logs reason=='refused'"
+          }
         },
         {
-          "id": "25-REQ-6.5",
+          "id": "REQ-6.5",
           "pattern": "event_driven",
           "condition": "the refusal is due to an empty principal or one longer than 256 bytes",
-          "system": "gatewayd.Server",
           "action": "set the refusal's reason to 'invalid principal'",
-          "contract": "reason == \"invalid principal\""
+          "contract": "reason == \"invalid principal\"",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a callback-mode server returning an empty principal for 'tok-empty' and a 257-byte principal for 'tok-long', with a log capture"
+            ],
+            "pseudocode": "invoke('tok-empty'); invoke('tok-long'); for rec in logs.Messages('authentication refused'): assert rec['reason']=='invalid principal'"
+          }
         },
         {
-          "id": "25-REQ-6.6",
+          "id": "REQ-6.6",
           "pattern": "event_driven",
           "condition": "the refusal is due to a recovered authenticator panic",
-          "system": "gatewayd.Server",
           "action": "set the refusal's reason to 'panic' and leave the panic value out of every log line",
-          "contract": "reason == \"panic\"; the log output does not contain the panic value"
+          "contract": "reason == \"panic\"; the log output does not contain the panic value",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a callback-mode server whose authenticator panics with the string 'PANIC-SECRET-xyz' and a log capture"
+            ],
+            "pseudocode": "invoke('tok'); assert logs.Messages('authentication refused')[0]['reason']=='panic'; assert !contains(logs.String(),'PANIC-SECRET-xyz')"
+          }
         },
         {
-          "id": "25-REQ-6.7",
+          "id": "REQ-6.7",
           "pattern": "ubiquitous",
-          "system": "gatewayd.Server",
           "action": "in both modes, keep every log line free of any token, any authenticator panic value, any full static-mode hash, any Spec.Env value and any tool payload, including a planted token that the authenticator receives and accepts",
-          "contract": "the captured log output contains none of the planted strings"
+          "contract": "the captured log output contains none of the planted strings",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a static-mode and a callback-mode server with log capture; the callback authenticator accepts a planted token and panics once for another token carrying a planted panic value",
+              "a Spec.Env value and a tool payload each containing a planted string"
+            ],
+            "pseudocode": "for env in modes: run flows; for s in planted: assert !contains(logs.String(), s)"
+          }
         }
       ]
     },
     {
-      "id": "25-REQ-7",
+      "id": "REQ-7",
       "title": "The principal on the backend's context",
       "rationale": "An embedder's backend has to know at Create, Sync and Reap which tenant is calling, and it must not be able to forge a principal.",
       "criteria": [
         {
-          "id": "25-REQ-7.1",
+          "id": "REQ-7.1",
           "pattern": "ubiquitous",
           "system": "gatewayd package",
-          "action": "export `func PrincipalFromContext(ctx context.Context) (principal string, ok bool)`, which reads an unexported context key, and export no function or key that puts a principal on a context"
+          "action": "export `func PrincipalFromContext(ctx context.Context) (principal string, ok bool)`, which reads an unexported context key, and export no function or key that puts a principal on a context",
+          "contract": "PrincipalFromContext has signature func(context.Context) (string, bool); no other exported function takes a string and returns a context.Context, and no exported key variable or type exists for context values",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the exported API of package gatewayd parsed with go/parser or go/doc"
+            ],
+            "pseudocode": "api := exported(gatewayd); assert api['PrincipalFromContext'].sig == 'func(context.Context)(string,bool)'; assert none(f for f in api.funcs if returns(f, context.Context) and f != nil_ok)"
+          }
         },
         {
-          "id": "25-REQ-7.2",
+          "id": "REQ-7.2",
           "pattern": "event_driven",
           "condition": "the server calls Backend.Create while serving a Gateway.Create RPC",
           "system": "gatewayd.Server",
           "action": "pass a context that carries the RPC's principal",
-          "contract": "PrincipalFromContext returns the creating RPC's principal and ok == true"
+          "contract": "PrincipalFromContext returns the creating RPC's principal and ok == true",
+          "check": {
+            "same_as": "REQ-3.4"
+          }
         },
         {
-          "id": "25-REQ-7.3",
+          "id": "REQ-7.3",
           "pattern": "event_driven",
           "condition": "the server calls a backend sandbox's Sync while serving a SyncGit RPC",
           "system": "gatewayd.Server",
           "action": "pass a context that carries the RPC's principal",
-          "contract": "PrincipalFromContext returns the SyncGit RPC's principal and ok == true"
+          "contract": "PrincipalFromContext returns the SyncGit RPC's principal and ok == true",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a callback-mode server mapping 'tok-a' to 'tenant-1'",
+              "gwtest.Counting as backend and a created sandbox"
+            ],
+            "pseudocode": "syncGit(p, id); reapRPC(p); assert counting.SyncPrincipals()[0]==('tenant-1',true); assert counting.ReapPrincipals()[last]==('tenant-1',true)"
+          }
         },
         {
-          "id": "25-REQ-7.4",
+          "id": "REQ-7.4",
           "pattern": "event_driven",
           "condition": "the server calls Backend.Reap while serving a Gateway.Reap RPC",
           "system": "gatewayd.Server",
           "action": "pass a context that carries the RPC's principal",
-          "contract": "PrincipalFromContext returns the Reap RPC's principal and ok == true"
+          "contract": "PrincipalFromContext returns the Reap RPC's principal and ok == true",
+          "check": {
+            "same_as": "REQ-7.3"
+          }
         },
         {
-          "id": "25-REQ-7.5",
+          "id": "REQ-7.5",
           "pattern": "event_driven",
           "condition": "the server runs its periodic reap at Serve start or after each ReapInterval",
           "system": "gatewayd.Server",
           "action": "call Backend.Reap with a context that carries no principal",
-          "contract": "PrincipalFromContext returns (\"\", false)"
+          "contract": "PrincipalFromContext returns (\"\", false)",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a server with a short ReapInterval and gwtest.Counting as backend, in either mode"
+            ],
+            "pseudocode": "env := Start(Config{Backend:counting, Authenticate:fn, ReapInterval:20ms}); eventually(len(counting.ReapPrincipals())>=3); for r in ReapPrincipals(): assert r == ('', false)"
+          }
         },
         {
-          "id": "25-REQ-7.6",
+          "id": "REQ-7.6",
           "pattern": "event_driven",
           "condition": "the server closes a backend sandbox on its own, for a client Destroy, TTL expiry, unavailability, Shutdown or a Create error path",
           "system": "gatewayd.Server",
           "action": "call the sandbox's Close with a context that carries no principal",
-          "contract": "PrincipalFromContext returns (\"\", false) on every such Close context"
+          "contract": "PrincipalFromContext returns (\"\", false) on every such Close context",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a callback-mode server wrapping a backend whose sandboxes record the Close context",
+              "sandboxes ended by a client Destroy, a short TTL expiry, a dead backend sandbox found on access, Shutdown, and a Create whose post-create step fails"
+            ],
+            "pseudocode": "for scenario in scenarios: trigger(); c := rec.closeCtx; assert principal(c)==('',false); assert c.Done()==nil; assert deadline(c) absent"
+          }
         },
         {
-          "id": "25-REQ-7.7",
+          "id": "REQ-7.7",
           "pattern": "unwanted",
           "condition": "PrincipalFromContext receives a context the server did not make, such as context.Background() or a context with a string-keyed value 'principal'",
           "system": "PrincipalFromContext",
           "action": "report no principal",
-          "contract": "returns (\"\", false)"
+          "contract": "returns (\"\", false)",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "context.Background()",
+              "a context with the string-keyed value 'principal' set to 'x'",
+              "a context derived from a server-made context's parent but not from the server"
+            ],
+            "pseudocode": "for c in [Background(), WithValue(Background(),'principal','x')]: p, ok := PrincipalFromContext(c); assert p=='' && !ok"
+          }
         }
       ]
     },
     {
-      "id": "25-REQ-8",
+      "id": "REQ-8",
       "title": "Destroy from the embedder",
       "rationale": "An embedder has to end a tenant's sandbox from its own side, for example when a lease ends, without holding a client token.",
       "criteria": [
         {
-          "id": "25-REQ-8.1",
+          "id": "REQ-8.1",
           "pattern": "event_driven",
           "condition": "the embedder calls (*Server).Destroy(ctx, id) for a held sandbox, whatever its principal",
           "system": "gatewayd.Server",
           "action": "remove the entry through the registry's single removal path with reason 'embedder', stop its TTL timer, call the backend sandbox's Close with ctx (which ends the relayed calls in flight), and log 'sandbox destroyed' with reason 'embedder'",
-          "contract": "returns nil when Close returns nil; the backend's Close count rises by 1 and its context is the caller's ctx"
+          "contract": "returns nil when Close returns nil; the backend's Close count rises by 1 and its context is the caller's ctx",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a callback-mode server with a short-TTL-capable registry and a log capture",
+              "a sandbox created under principal P whose backend Close records its context",
+              "a caller ctx carrying a test value"
+            ],
+            "pseudocode": "id := create(); err := srv.Destroy(ctx, id); assert err==nil; assert closes==1 && closeCtx.Value(k)==v; assert destroyReason(logs,id)=='embedder'; sleep(ttl); assert no second destroy log"
+          }
         },
         {
-          "id": "25-REQ-8.2",
+          "id": "REQ-8.2",
           "pattern": "unwanted",
           "condition": "the backend sandbox's Close fails or ctx is cancelled during (*Server).Destroy",
           "system": "gatewayd.Server",
           "action": "leave the entry removed and return the Close error wrapped with the id",
-          "contract": "the returned error names the id, and errors.Is and errors.As reach the backend's error; a later Destroy for that id returns ErrNotHeld"
+          "contract": "the returned error names the id, and errors.Is and errors.As reach the backend's error; a later Destroy for that id returns ErrNotHeld",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a sandbox whose backend Close returns a sentinel error, and another whose Close returns ctx.Err()"
+            ],
+            "pseudocode": "err := srv.Destroy(ctx,id); assert contains(err.Error(),id) && errors.Is(err, sentinel); assert id not in list(); assert errors.Is(srv.Destroy(ctx,id), gatewayd.ErrNotHeld)"
+          }
         },
         {
-          "id": "25-REQ-8.3",
+          "id": "REQ-8.3",
           "pattern": "unwanted",
           "condition": "(*Server).Destroy is called for an id the server does not hold: unknown, already removed by any path including a previous Destroy, before Serve, or after Shutdown",
           "system": "gatewayd.Server",
           "action": "return without calling any backend method",
-          "contract": "returns an error that names the id and satisfies errors.Is(err, gatewayd.ErrNotHeld), where ErrNotHeld = errors.New(\"gatewayd: sandbox not held\")"
+          "contract": "returns an error that names the id and satisfies errors.Is(err, gatewayd.ErrNotHeld), where ErrNotHeld = errors.New(\"gatewayd: sandbox not held\")",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "gwtest.Counting as backend",
+              "ids that are unknown, already removed by client Destroy, by expiry, by a previous embedder Destroy",
+              "a server not yet serving and a server after Shutdown"
+            ],
+            "pseudocode": "for id in cases: err := srv.Destroy(ctx,id); assert errors.Is(err, ErrNotHeld) && contains(err.Error(), id); assert counting.Closes()==before"
+          }
         },
         {
-          "id": "25-REQ-8.4",
+          "id": "REQ-8.4",
           "pattern": "unwanted",
           "condition": "(*Server).Destroy is called for an id whose backend Create has returned but which gatewayService.Create has not yet recorded",
           "system": "gatewayd.Server",
           "action": "treat the id as not held",
-          "contract": "returns an error matching ErrNotHeld"
+          "contract": "returns an error matching ErrNotHeld",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a backend whose Create has returned but a hook blocks gatewayService.Create before the entry is recorded (Counting.SetAfterCreate)"
+            ],
+            "pseudocode": "SetAfterCreate(func(){ id=last.ID(); err=srv.Destroy(ctx,id); signal }); create(); assert errors.Is(err, ErrNotHeld); assert closes==0"
+          }
         },
         {
-          "id": "25-REQ-8.5",
-          "pattern": "complex_event",
-          "condition": "(*Server).Destroy has found a held entry",
-          "guard": "a concurrent removal of the same entry (client Destroy, expiry, unavailability or Shutdown) deletes it first",
+          "id": "REQ-8.5",
+          "pattern": "event_driven",
+          "condition": "(*Server).Destroy has found a held entry and a concurrent removal of the same entry (client Destroy, expiry, unavailability or Shutdown) deletes it first",
           "system": "gatewayd.Server",
           "action": "skip the Close and the destroy log of its own",
-          "contract": "returns nil; the backend sandbox's Close is called exactly once in total"
+          "contract": "returns nil; the backend sandbox's Close is called exactly once in total",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "many held sandboxes with a Close that counts calls"
+            ],
+            "pseudocode": "parallel for id in ids: go srv.Destroy(ctx,id); go client.Destroy(id); wait; for id: assert closeCount[id]==1 && count(destroyLogs[id])==1"
+          }
         },
         {
-          "id": "25-REQ-8.6",
+          "id": "REQ-8.6",
           "pattern": "event_driven",
           "condition": "(*Server).Destroy has removed a client's sandbox",
           "system": "gatewayd.Server",
           "action": "answer that client as it answers after TTL expiry",
-          "contract": "the next proxy tool call returns the sandbox_unavailable error; List omits the id; the client Destroy RPC answers OK; SyncGit answers codes.Unavailable naming the id"
+          "contract": "the next proxy tool call returns the sandbox_unavailable error; List omits the id; the client Destroy RPC answers OK; SyncGit answers codes.Unavailable naming the id",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a client holding a sandbox with an execute tool call about to be issued",
+              "a callback-mode server"
+            ],
+            "pseudocode": "srv.Destroy(ctx,id); _, err := toolOf(sb,'execute').Run(...); assert isSandboxUnavailable(err); assert id not in list(); assert provider.Destroy(id)==nil; assert Unavailable == code(syncGit(id))"
+          }
         },
         {
-          "id": "25-REQ-8.7",
+          "id": "REQ-8.7",
           "pattern": "ubiquitous",
           "system": "gatewayd registry",
-          "action": "close backend sandboxes with context.Background() for every removal reason other than 'embedder' (client, expired, unavailable, shutdown)"
+          "action": "close backend sandboxes with context.Background() for every removal reason other than 'embedder' (client, expired, unavailable, shutdown)",
+          "check": {
+            "same_as": "REQ-7.6"
+          }
         }
       ]
     },
     {
-      "id": "25-REQ-9",
+      "id": "REQ-9",
       "title": "Compatibility, test harness and exported surface",
       "rationale": "Existing deployments, the command and spec 19's tests must not move, and the harness must reach callback mode without a new builder.",
       "criteria": [
         {
-          "id": "25-REQ-9.1",
+          "id": "REQ-9.1",
           "pattern": "ubiquitous",
           "system": "agentkit-gateway command",
           "action": "fill Config.Tokens from --token-file, never set Config.Authenticate, and keep every flag and exit code unchanged",
-          "contract": "an authentication refusal logs 'authentication refused' with peer and a reason of 'no token' or 'refused'"
+          "contract": "an authentication refusal logs 'authentication refused' with peer and a reason of 'no token' or 'refused'",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the command's run function started in process with a --token-file",
+              "a log capture"
+            ],
+            "pseudocode": "stop := runCommand(tokenFile); invoke(noToken); invoke(wrong); assert reasons == ['no token','refused']; assert !contains(source('run.go'),'Authenticate')"
+          }
         },
         {
-          "id": "25-REQ-9.2",
+          "id": "REQ-9.2",
           "pattern": "state_driven",
           "condition": "the server runs in static mode",
           "system": "gatewayd.Server",
           "action": "keep spec 19's refusals, status codes, error texts and log messages, adding only the reason attribute on 'authentication refused'",
-          "contract": "every existing spec 19 test in sandbox/gatewayd and its command passes without modification"
+          "contract": "every existing spec 19 test in sandbox/gatewayd and its command passes without modification",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a static-mode server with a log capture"
+            ],
+            "pseudocode": "err := invoke('x'*40); assert code==Unauthenticated && msg==text; rec := logs.Messages('authentication refused')[0]; assert keys(rec)-{time,level,msg} == {peer, reason}"
+          }
         },
         {
-          "id": "25-REQ-9.3",
+          "id": "REQ-9.3",
           "pattern": "event_driven",
           "condition": "gwtest.Start receives a Config",
           "system": "gwtest harness",
           "action": "set Tokens to [Token, TokenB] only when both Tokens and Authenticate are unset",
-          "contract": "a Config with Authenticate set starts a callback-mode server with Tokens left empty"
+          "contract": "a Config with Authenticate set starts a callback-mode server with Tokens left empty",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "gwtest.Start called with three Configs"
+            ],
+            "pseudocode": "e1 := Start(t, Config{Backend:b}); assert e1.Dial(t,Token) ok && e1.Dial(t,TokenB) ok; e2 := Start(t, Config{Backend:b, Authenticate:fn}); assert Token refused unless fn accepts it"
+          }
         },
         {
-          "id": "25-REQ-9.4",
+          "id": "REQ-9.4",
           "pattern": "ubiquitous",
           "system": "gwtest.Counting backend",
-          "action": "record the (principal, ok) result of PrincipalFromContext for every Create, Reap and sandbox Sync it serves, readable through accessors"
+          "action": "record the (principal, ok) result of PrincipalFromContext for every Create, Reap and sandbox Sync it serves, readable through accessors",
+          "contract": "the accessors return one (principal, ok) pair per Create, per Reap (RPC and periodic) and per sandbox Sync; RPC-driven entries carry the principal with ok == true and the periodic Reap carries ('', false)",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a callback-mode server with gwtest.Counting as backend"
+            ],
+            "pseudocode": "assert counting.CreatePrincipals() == [('tenant-1',true)]; assert counting.SyncPrincipals() == [('tenant-1',true)]; assert ('tenant-1',true) in counting.ReapPrincipals() && ('',false) in counting.ReapPrincipals()"
+          }
         },
         {
-          "id": "25-REQ-9.5",
+          "id": "REQ-9.5",
           "pattern": "ubiquitous",
           "system": "gatewayd package",
           "action": "add exactly five exported identifiers relative to spec 19 (Authenticator, Config.Authenticate, PrincipalFromContext, (*Server).Destroy and ErrNotHeld), and change neither gateway.proto, sandbox.proto, the sandbox/gateway client package nor sandbox.ProtocolMinor (2)",
-          "contract": "an unchanged sandbox/gateway Provider works against servers in both modes"
+          "contract": "an unchanged sandbox/gateway Provider works against servers in both modes",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the exported identifiers of gatewayd as listed by spec 19, recorded in a golden list",
+              "one static-mode and one callback-mode server over local through gwtest"
+            ],
+            "pseudocode": "added := exported(gatewayd) - spec19Golden; assert added == {5 names}; assert sandbox.ProtocolMinor == 2\nfor env in [static, callback]: p := env.Dial(t,tok); sb := create(p); assert run(sb,'echo hi')=='hi'; assert id in p.List(); assert p.Destroy(id)==nil"
+          }
         }
       ]
     }
   ],
   "execution_paths": [
     {
-      "id": "25-PATH-1",
+      "id": "PATH-1",
       "title": "An embedder authenticates a lease token and its backend sees the principal at Create",
       "steps": [
         {
@@ -469,10 +785,31 @@
           "actor": "client",
           "action": "runs a tool through the relay and receives its result"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "gatewayd.Server",
+          "tap handle and interceptors",
+          "registry",
+          "sandbox/gateway client",
+          "Agent relay",
+          "local provider via gwtest.Counting",
+          "in-memory gRPC listener"
+        ],
+        "setup": [
+          "gatewayd.New(Config{Backend: counting, Authenticate: fn}) served on gwtest's in-memory listener",
+          "a log capture"
+        ],
+        "end_state": [
+          "the authenticator was called once for the Create RPC",
+          "the backend recorded the principal the authenticator returned with ok == true",
+          "'sandbox created' was logged with owner equal to the principal",
+          "the tool result reaches the client"
+        ]
+      }
     },
     {
-      "id": "25-PATH-2",
+      "id": "PATH-2",
       "title": "The embedder ends a leased sandbox and the client sees it gone",
       "steps": [
         {
@@ -495,10 +832,30 @@
           "actor": "embedder",
           "action": "calls Destroy again for the same id and gets an error matching ErrNotHeld"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "gatewayd.Server",
+          "registry removal path",
+          "sandbox/gateway client",
+          "Agent relay",
+          "local provider via gwtest.Counting",
+          "in-memory gRPC listener"
+        ],
+        "setup": [
+          "a callback-mode server with gwtest.Counting",
+          "a client with a sandbox and a long tool call in flight"
+        ],
+        "end_state": [
+          "the in-flight call ends and the next proxy call returns sandbox_unavailable",
+          "List omits the id",
+          "'sandbox destroyed' was logged with reason 'embedder' and the backend Close count is 1",
+          "the second Destroy returns an error matching ErrNotHeld"
+        ]
+      }
     },
     {
-      "id": "25-PATH-3",
+      "id": "PATH-3",
       "title": "Two tokens of one principal share a sandbox until one is revoked",
       "steps": [
         {
@@ -525,10 +882,30 @@
           "actor": "client B",
           "action": "still reaches the sandbox with token B"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "gatewayd.Server",
+          "tap handle and interceptors",
+          "registry",
+          "sandbox/gateway client",
+          "Agent relay",
+          "local provider via gwtest.Counting",
+          "in-memory gRPC listener"
+        ],
+        "setup": [
+          "a callback-mode server mapping token A and token B to principal P and token C to principal Q, with a revocable authenticator and a log capture"
+        ],
+        "end_state": [
+          "B's List includes the sandbox",
+          "C's List omits it and C's SyncGit returns codes.Unavailable naming the id",
+          "A's RPC after revocation returns codes.Unauthenticated and the log has reason 'refused'",
+          "B still reaches the sandbox through the relay"
+        ]
+      }
     },
     {
-      "id": "25-PATH-4",
+      "id": "PATH-4",
       "title": "A static-mode server exposes the token hash as the principal",
       "steps": [
         {
@@ -551,7 +928,26 @@
           "actor": "gatewayd.Server",
           "action": "logs 'sandbox created' with the 8-character owner fingerprint and never the full hash"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "gatewayd.Server",
+          "tap handle and both interceptors",
+          "registry",
+          "sandbox/gateway client",
+          "local provider via gwtest.Counting",
+          "in-memory gRPC listener"
+        ],
+        "setup": [
+          "a server started through gwtest.Start with Config.Tokens only and gwtest.Counting as backend",
+          "a log capture"
+        ],
+        "end_state": [
+          "the backend recorded the 64-character lowercase hex SHA-256 of Token as principal with ok == true",
+          "'sandbox created' was logged with the first 8 hex characters as owner",
+          "no log line contains the full hash"
+        ]
+      }
     }
   ],
   "external_apis": [

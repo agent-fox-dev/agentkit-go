@@ -4,9 +4,8 @@ spec_name: "nested_tool_calls"
 title: "Nested Tool Calls, Reachability Declarations, and Transitive Policy Enforcement"
 status: "active"
 created_at: "2026-10-08T14:55:20.462183Z"
-updated_at: "2026-10-08T14:55:20.462183Z"
 intent_hash: "9e6e36a804498120ff9529ca46c6c6defa44ce0356935abcf2ede7a641ef611c"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/08-run-tool-calls-from-model-written-scripts.md"
 ---
 ## Intent
@@ -144,3 +143,11 @@ What exists today:
 |---|---|
 | `06_tool_output_schemas` | Builds on `OutputSchema` on `core.Tool` to ensure wrapper tools and nested execution observe typed structured outputs. |
 | `04_runner_and_tool_metadata` | Uses shell tool metadata definitions and `guard.IsShellTool` for transitive unguarded shell checks. |
+
+## Glossary
+
+- **leaf tool**: A tool that declares no child tools in ReachableTools.
+- **nested tool call**: An invocation of a tool by a wrapper tool via CallNested rather than directly by the model provider.
+- **parent tool-use ID**: The unique identifier of the wrapper tool call that initiated a nested tool call.
+- **terminating tool**: A tool marked with Terminating: true that signals the agent run should terminate upon successful completion.
+- **wrapper tool**: A tool that declares child tools in ReachableTools and invokes them programmatically during execution.

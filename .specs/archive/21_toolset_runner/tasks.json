@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "21",
   "spec_name": "toolset_runner",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -29,34 +29,21 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Introduce Toolset, the new Config and NewRunner; migrate every Config consumer",
       "criteria": [
-        "21-REQ-1",
-        "21-REQ-2.1",
-        "21-REQ-2.2",
-        "21-REQ-2.3",
-        "21-REQ-2.4",
-        "21-REQ-2.5",
-        "21-REQ-2.6",
-        "21-REQ-3",
-        "21-REQ-8.1",
-        "21-REQ-8.2",
-        "21-REQ-8.3",
-        "21-REQ-9.1",
-        "21-REQ-9.2"
-      ],
-      "tests": [
-        "TS-21-1",
-        "TS-21-2",
-        "TS-21-4",
-        "TS-21-5",
-        "TS-21-6",
-        "TS-21-7",
-        "TS-21-8",
-        "TS-21-9",
-        "TS-21-49",
-        "TS-21-50"
+        "REQ-1",
+        "REQ-2.1",
+        "REQ-2.2",
+        "REQ-2.3",
+        "REQ-2.4",
+        "REQ-2.5",
+        "REQ-2.6",
+        "REQ-3",
+        "REQ-8.1",
+        "REQ-8.2",
+        "REQ-8.3",
+        "REQ-9.1",
+        "REQ-9.2"
       ],
       "steps": [
         "Write TS-21-1, 2, 4-9, 49 and 50 first (reflection on Toolset and Config, NewRunner refusal texts and order, the New/NewRunner parity property, copy-on-construct, AST scan of Config literals, sandbox unguarded-shell refusal) and confirm they fail",
@@ -100,31 +87,17 @@
       ],
       "done_when": [
         "`make test` passes in the root module with all Config literals migrated"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Move the batch executor and nested caller onto the runner; add Runner.Call",
       "criteria": [
-        "21-REQ-4",
-        "21-REQ-5.4",
-        "21-REQ-5.5",
-        "21-REQ-8.7",
-        "21-REQ-8.8"
-      ],
-      "tests": [
-        "TS-21-14",
-        "TS-21-15",
-        "TS-21-16",
-        "TS-21-17",
-        "TS-21-18",
-        "TS-21-19",
-        "TS-21-20",
-        "TS-21-21",
-        "TS-21-47",
-        "TS-21-48"
+        "REQ-4",
+        "REQ-5.4",
+        "REQ-5.5",
+        "REQ-8.7",
+        "REQ-8.8"
       ],
       "steps": [
         "Write TS-21-14 to 21, 47 and 48 first and confirm they fail",
@@ -152,29 +125,18 @@
       ],
       "done_when": [
         "`go test . -count=1` passes with `Agent.executeBatch` removed"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Verify and complete Runner.Batch semantics: prepare, abort, concurrency, final votes",
       "criteria": [
-        "21-REQ-5.1",
-        "21-REQ-5.2",
-        "21-REQ-5.3",
-        "21-REQ-5.6",
-        "21-REQ-5.7",
-        "21-REQ-5.8"
-      ],
-      "tests": [
-        "TS-21-22",
-        "TS-21-23",
-        "TS-21-24",
-        "TS-21-25",
-        "TS-21-26",
-        "TS-21-27",
-        "TS-21-28"
+        "REQ-5.1",
+        "REQ-5.2",
+        "REQ-5.3",
+        "REQ-5.6",
+        "REQ-5.7",
+        "REQ-5.8"
       ],
       "steps": [
         "Write TS-21-22 to 28 first and confirm which fail",
@@ -196,24 +158,13 @@
       ],
       "done_when": [
         "`go test . -race -count=1` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Verify and complete nested calls through the runner, including code mode with no agent",
       "criteria": [
-        "21-REQ-6"
-      ],
-      "tests": [
-        "TS-21-29",
-        "TS-21-30",
-        "TS-21-31",
-        "TS-21-32",
-        "TS-21-33",
-        "TS-21-34",
-        "TS-21-35"
+        "REQ-6"
       ],
       "steps": [
         "Write TS-21-29 to 35 first and confirm which fail",
@@ -234,24 +185,14 @@
       ],
       "done_when": [
         "`go test . -count=1 -run 'TS21|TS_21'` passes for the nested tests"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Verify and complete execution events and concurrency safety of the runner",
       "criteria": [
-        "21-REQ-2.7",
-        "21-REQ-7"
-      ],
-      "tests": [
-        "TS-21-10",
-        "TS-21-36",
-        "TS-21-37",
-        "TS-21-38",
-        "TS-21-39",
-        "TS-21-40"
+        "REQ-2.7",
+        "REQ-7"
       ],
       "steps": [
         "Write TS-21-10, 36 to 40 first and confirm which fail",
@@ -274,30 +215,16 @@
       ],
       "done_when": [
         "`go test -race . -count=1` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Verify the agent as a consumer of the runner: stream events, Runner isolation, loop unchanged",
       "criteria": [
-        "21-REQ-8.4",
-        "21-REQ-8.5",
-        "21-REQ-8.6",
-        "21-REQ-7.6"
-      ],
-      "tests": [
-        "TS-21-3",
-        "TS-21-11",
-        "TS-21-12",
-        "TS-21-13",
-        "TS-21-41",
-        "TS-21-42",
-        "TS-21-43",
-        "TS-21-44",
-        "TS-21-45",
-        "TS-21-46"
+        "REQ-8.4",
+        "REQ-8.5",
+        "REQ-8.6",
+        "REQ-7.6"
       ],
       "steps": [
         "Write TS-21-3, 11, 12, 13, 41 to 46 first and confirm which fail",
@@ -319,25 +246,17 @@
       ],
       "done_when": [
         "`go test . -race -count=1` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Rebuild the harness example on Runner.Call and remove its hand-rolled pipeline",
       "criteria": [
-        "21-REQ-9.3",
-        "21-REQ-9.4",
-        "21-REQ-9.5",
-        "21-REQ-9.6",
-        "21-REQ-9.7"
-      ],
-      "tests": [
-        "TS-21-51",
-        "TS-21-52",
-        "TS-21-53",
-        "TS-21-54"
+        "REQ-9.3",
+        "REQ-9.4",
+        "REQ-9.5",
+        "REQ-9.6",
+        "REQ-9.7"
       ],
       "steps": [
         "Write TS-21-51 (AST check of server.go), 52, 53 (codes blocked_by_policy, unknown_tool, invalid_arguments x2, runtime_error `undefined: code_mode`; blocked count 3; log has blocked and nested run lines) and 54 (MCP client with the token) first and confirm they fail",
@@ -361,20 +280,14 @@
       ],
       "done_when": [
         "`make test` passes in examples/harness"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Regenerate the API golden and generated docs; update documentation and the erratum",
       "criteria": [
-        "21-REQ-10.1",
-        "21-REQ-10.2"
-      ],
-      "tests": [
-        "TS-21-55",
-        "TS-21-56"
+        "REQ-10.1",
+        "REQ-10.2"
       ],
       "steps": [
         "Update doc comments: core.ErrNoNestedCaller, core.CallNested and core.WithNestedCaller say `an agent run or a Runner`; the root package doc names Toolset and Runner",
@@ -404,38 +317,7 @@
       ],
       "done_when": [
         "`make check` exits 0 in every module in MODULES"
-      ],
-      "state": "done"
-    },
-    {
-      "id": 9,
-      "kind": "integration",
-      "title": "Verify the runner, agent, refusal and harness paths end to end",
-      "tests": [
-        "TS-21-57",
-        "TS-21-58",
-        "TS-21-59",
-        "TS-21-60"
-      ],
-      "steps": [
-        "Write TS-21-57 (code mode via Runner.Call on a real workspace and tools.For), TS-21-58 (agent run with two tool calls through its runner), TS-21-59 (unguarded run_command refused before any request) and TS-21-60 (harness offline run prints `Harness example completed successfully`) and confirm they pass",
-        "Trace 21-PATH-1 to 21-PATH-4 through the real code: NewRunner -> Runner.Call -> batch engine -> nested caller -> emitter; New -> NewRunner -> loop runTools -> engine with the run's stream; New -> NewRunner refusal; harness main -> NewRunner -> Runner.Call; confirm each step calls the next and no stub remains",
-        "For every criterion with a contract (e.g. Runner.Tools consumed by ToolWires/prompt.Build/the harness prompt, Terminate vote consumed by the loop, Runner.Call result consumed by the harness MCP handler), confirm the producer's result is consumed in production code, not only tests",
-        "Search every file in the tasks' touches for `panic(\"not implemented\")`, `TODO`, `NotImplementedError` and bare `return nil` on non-trivial paths, and remove any",
-        "Confirm Agent.Runner, NewRunner and Runner.Call are called from production code (agent.go, loop.go, examples/harness) rather than only from tests",
-        "Run `make check` in every module in MODULES"
-      ],
-      "touches": [
-        "runner_smoke_test.go",
-        "examples/harness/main_test.go"
-      ],
-      "depends_on": [
-        8
-      ],
-      "done_when": [
-        "`make check` passes in every module in MODULES"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

@@ -4,9 +4,8 @@ spec_name: "runner_and_tool_metadata"
 title: "An embedder's process runner and tool metadata on the result message"
 status: "active"
 created_at: "2026-10-07T12:24:48.250973Z"
-updated_at: "2026-10-07T12:24:48.250973Z"
 intent_hash: "bb3e648353b730648e5e6de9c418d2b130ed48bbd0bd4c2f636b7bcd03332029"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/06-support-multi-phase-coding-pipelines.md"
 ---
 ## Intent
@@ -232,3 +231,18 @@ Session-log golden:
     - The one remaining §5 item, retrying the summarizer request, moves to `transcript_pruning`, because it reverses REQ-GO-12.3's routing and belongs with the other transcript-transform changes.
 17. **The examples are not migrated here.** The cleaner's `git`/`gh` calls deliberately inherit the full environment for `gh`'s token, and `examples/flatline` is a separate module. Migrating them changes example behaviour, and none of this spec's goals need it.
 18. **In the split, the change journal comes before read dedupe and symbol parity.** The input orders §10 and §11 after §4. But §4's read dedupe invalidates through the journal, so the journal goes first and dedupe becomes its own scope after it.
+
+## Glossary
+
+- **ExecOptions**: The options struct of tools.Run and tools.RunArgv (Dir, Timeout, MaxBytes, KeepHead, SpillDir, LogPath, Stdin, Env, DrainIdle, DrainCeiling).
+- **ExecResult**: The value tools.Run and tools.RunArgv return for a started process: Output, Outcome, ExitCode, Truncated, TotalBytes, SpillPath, Duration and IOErr.
+- **IOErr**: The ExecResult field reporting a failure to move bytes between the caller and the process (stdin read, log or spill write, Wait I/O completion) that did not stop the process.
+- **Outcome**: tools.Outcome, one of ok, exit, signal, timeout or abort, classified by ClassifyOutcome with the precedence abort > timeout > signal > exit.
+- **handler-less result**: A tool result finalized without running a tool's Execute function: unknown tool, invalid arguments, BeforeToolCall block, plugin block, batch abort, max_tokens synthesis, the no_result backstop, and provider.RepairTranscript's synthetic results.
+- **head-mode marker**: The Accumulator's TruncateHead marker, appended after the retained bytes: `[N bytes elided of T total. Full output: PATH]`, without the path clause when there is no file.
+- **non-empty metadata**: A *core.ToolMetadata that is non-nil and has at least one field set: a non-zero scalar, or a non-nil ExitCode pointer.
+- **post-exit drain**: The re-arming idle read of the shared output pipe after the child exits, bounded by DrainIdle and DrainCeiling (REQ-TOOL-17.5).
+- **process tree**: The child process and every process it starts. It runs in its own process group on unix (Setpgid) and is killed with taskkill /T on Windows.
+- **request goldens**: testdata/golden/request_{anthropic,openai,openai_responses,google,ollama}.json, the byte-exact wire bodies golden_requests_test.go builds from canonicalRequest.
+- **session codec**: session.EncodeMessage / session.DecodeMessage (encodeMessage/decodeMessage in session/codec.go). It is the lossless message encoding used by the session log and, through core.MarshalEvent, by the event JSON union.
+- **spill file**: The temporary file in SpillDir into which the Accumulator writes the complete output on first write.

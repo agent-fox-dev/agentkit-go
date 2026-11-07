@@ -4,9 +4,8 @@ spec_name: "repository_cut"
 title: "Cut AgentKit Repository, Remove Obsolete Packages, and Rename Module"
 status: "active"
 created_at: "2026-10-09T11:10:14.707403Z"
-updated_at: "2026-10-09T11:10:14.707403Z"
 intent_hash: "37b3682418de4d991869e934ca72d2e78bb386b77a0b32ef408f7b0b40e1e42d"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/10-cut-agentkit-down-to-the-hands.md"
 ---
 ## Intent
@@ -135,3 +134,10 @@ All retained direct external dependencies are pinned in `go.mod`:
 - `github.com/tree-sitter/go-tree-sitter` and grammars: Code outlining and structure.
 - `go.starlark.net`: Code mode sandboxed Starlark runtime.
 No new external APIs are introduced in this foundational scope.
+
+## Glossary
+
+- **dependency_allowlist**: The policy-enforced list of approved direct module dependencies in the root go.mod.
+- **driver_scaffolding**: The agent runtime loop and tool dispatch engine that coordinates interactions between language models and workspace tools.
+- **image_magic_bytes**: The initial signature bytes of a binary file used to identify image formats such as PNG, JPEG, GIF, and WebP.
+- **the_hands**: The core workspace mechanics and code navigation tools of AgentKit, including file read/write/edit, symbol search, and command execution.

@@ -4,9 +4,8 @@ spec_name: "sandbox_images"
 title: "Sandbox images: the base and overlay images carrying agentkit-sandboxd, local builds and the release workflow"
 status: "active"
 created_at: "2026-10-12T15:01:42.819368Z"
-updated_at: "2026-10-12T15:01:42.819368Z"
 intent_hash: "1bc028b13b4ca442d8801d54651481d6ebb5bfd6c1d76bfeb5301d29a766d93b"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/11-run-tools-in-an-isolated-sandbox.md"
 ---
 ## Intent
@@ -425,3 +424,21 @@ Per steering, run `make doc`, then update:
 - GHCR creates a new package as private and links it to the repository through `org.opencontainers.image.source`.
 
 **`kernel.org/pub/linux/libs/security/libcap/psx`** is indirect and never called here. **Unverified**: its cgo variant links with `-Wl,-wrap,pthread_create`. Whether Go's cgo flag allowlist accepts that flag without `CGO_LDFLAGS_ALLOW` is the open condition DD 19 handles.
+
+## Glossary
+
+- **CA bundle**: The Debian CA certificate bundle at /etc/ssl/certs/ca-certificates.crt, installed by the ca-certificates package.
+- **Landlock check**: The probe run through proxy execute when Agent().Landlock.ABI is 2 or more: `touch /var/tmp/agentkit-probe` must exit non-zero and `touch "$HOME/p" /tmp/p /workspace/p` must exit 0.
+- **base image**: quay.io/agentfox/agentkit-sandbox, built by `--target base`. It is FROM debian:trixie-slim and holds the cgo-built agent, git, bash, ca-certificates and the uid-1000 user agentkit.
+- **canonical release version**: `v` followed by MAJOR.MINOR.PATCH with no leading zeros and an optional `-prerelease`. It carries no `+` build metadata and is not a pseudo-version.
+- **consistency test**: sandbox/images/consistency_test.go. It reads the Containerfile, the Makefile and the release workflow, needs no container engine, and runs in make check.
+- **container engine**: podman or docker. make chooses it with the CONTAINER variable; the image tests choose it with AGENTKIT_CONTAINER, falling back to podman and then docker on PATH.
+- **derived image**: An image built from a Containerfile of `FROM <image>` followed by the single line sandbox.OverlayCopyLine(<overlay ref>). In the tests the FROM image is the base image.
+- **digest check**: 13's Tools RPC comparison of the agent's tool-definition digests with the host's. It fails with sandbox.ErrToolMismatch on any difference.
+- **expected version**: The agent version the image tests require: the value of AGENTKIT_SANDBOX_IMAGE_VERSION, or `(devel)` when that variable is empty.
+- **harness**: The helper in the test-only package sandbox/images. It starts an agent container with `run --rm -i`, wraps the child's pipes with stdioconn.New and attaches with attach.Dial.
+- **overlay image**: quay.io/agentfox/agentkit-sandboxd, built by `--target overlay`. It is a FROM scratch image with one layer, holding only the statically linked agent at sandbox.AgentPath.
+- **proxy tool**: A core.Tool returned by Sandbox.Tools whose handler runs the named tool (execute, write_file) inside the sandbox.
+- **pseudo-version**: A Go module version whose prerelease ends, at its start or after a `.`, in a 14-digit timestamp, a `-` and 12 lowercase hex digits. The three forms are vX.0.0-yyyymmddhhmmss-abcdefabcdef, vX.Y.Z-0.yyyymmddhhmmss-abcdefabcdef and vX.Y.Z-pre.0.yyyymmddhhmmss-abcdefabcdef.
+- **release workflow**: .github/workflows/sandbox-images.yml. Its images job builds, tests and publishes; its verify job pulls anonymously and runs the published agents.
+- **stamp**: The unexported string variable buildver.stamp. It is set only at link time with `-ldflags -X` from the AGENTKIT_VERSION build argument.

@@ -4,9 +4,8 @@ spec_name: "sandbox_gateway"
 title: "Sandbox gateway: a remote provider, its gRPC service and the agentkit-gateway server"
 status: "active"
 created_at: "2026-10-13T15:46:48.669554Z"
-updated_at: "2026-10-13T15:46:48.669554Z"
 intent_hash: "35b0ae3deb883913feece22c8af7f633d6a77a1b586281311ce56469004252ce"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/11-run-tools-in-an-isolated-sandbox.md"
 ---
 ## Intent
@@ -566,3 +565,17 @@ Already used at call sites in the repository (`attach.go`, `serve.go`, `relaytes
 **`google.golang.org/protobuf` v1.36.11.** Generated code only, as in spec 13. **Unverified.**
 
 **Standard library** (Go 1.27). **Unverified**: `crypto/tls`, `crypto/subtle.ConstantTimeCompare`, `crypto/sha256`, `log/slog`, `net/url`, `net/netip`, `os/signal`.
+
+## Glossary
+
+- **GitRepo slot**: Spec 17's per-sandbox rule that a `GitRepo` sync must be the first Sync and precede Tools; the gateway keeps it itself because relayed RPCs bypass the backend wrapper.
+- **backend**: The single `sandbox.Provider` a gateway holds (`local` in offline tests, `podman` in the command).
+- **gateway**: The `Gateway` gRPC service in `gateway.proto` plus the Agent relay, served by `gatewayd.Server` on a remote host.
+- **gateway client**: Package `sandbox/gateway` in the sandbox module: `Dial`, `Provider` and the sandboxes it returns.
+- **gatewayd**: The nested module `github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd` holding the server library and the `agentkit-gateway` command.
+- **network ceiling**: `gatewayd.Config.NetworkModes`: the network modes the gateway lets clients request, intersected with the backend's modes.
+- **owner**: The SHA-256 of the bearer token that created a sandbox; the only identity the server keeps. Logs show its first 8 hex characters (the fingerprint).
+- **refusal**: The typed `Refusal` message (kind UNSUPPORTED, NO_AGENT, NO_PUBLISHED_IMAGE, PROTOCOL, CAPACITY or REFUSED) a Create or SyncGit response carries instead of a gRPC error.
+- **relay**: The typed `Agent` service implementation in gatewayd that forwards Hello, Tools, Call, SyncTar, ExportTar and Rsync to the backend sandbox named by `agentkit-sandbox-id`.
+- **sandbox_unavailable**: The error class of `sandbox.ErrUnavailable`: the sandbox met a transport failure and stays unusable.
+- **shared connection**: The single gRPC client connection a `gateway.Provider` holds to its gateway, used by every sandbox it creates, with no connection watcher.

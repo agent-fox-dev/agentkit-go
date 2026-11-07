@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "24",
   "spec_name": "embedder_contract_docs",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -45,21 +45,12 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Widen apiPackages to ten entries and add the golden-coverage tests",
       "criteria": [
-        "24-REQ-1.1",
-        "24-REQ-1.4",
-        "24-REQ-1.5",
-        "24-REQ-2"
-      ],
-      "tests": [
-        "TS-24-1",
-        "TS-24-2",
-        "TS-24-3",
-        "TS-24-6",
-        "TS-24-7",
-        "TS-24-8"
+        "REQ-1.1",
+        "REQ-1.4",
+        "REQ-1.5",
+        "REQ-2"
       ],
       "steps": [
         "Write TS-24-1, TS-24-2, TS-24-3, TS-24-6, TS-24-7 and TS-24-8 in a new internal/policy/embedder_contract_24_test.go (package policy), named Test<What>_TS24_<n>, and confirm they fail",
@@ -81,25 +72,15 @@
       ],
       "done_when": [
         "go vet ./internal/policy passes (TS-13-67 may fail until the golden is regenerated in task 2)"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Regenerate and commit the ten-section exported-API golden",
       "criteria": [
-        "24-REQ-1.2",
-        "24-REQ-1.3",
-        "24-REQ-3"
-      ],
-      "tests": [
-        "TS-24-4",
-        "TS-24-5",
-        "TS-24-9",
-        "TS-24-10",
-        "TS-24-11",
-        "TS-24-12"
+        "REQ-1.2",
+        "REQ-1.3",
+        "REQ-3"
       ],
       "steps": [
         "Write TS-24-4 (golden `== ` header lines equal apiPackages in order), TS-24-10 (property: exportedAPI twice is identical, sorted, deduplicated for each apiPackages entry), TS-24-9 (first five sections equal exportedAPI output with headers; git diff against HEAD of the golden has no removed line), TS-24-5 (subprocess go test -run 'TS13_67|TS14_44|TS15_42|TS17_61' -v with AGENTKIT_UPDATE_API_GOLDEN removed from env; exit 0, PASS for each, no SKIP), TS-24-11 (back up the golden, restore via t.Cleanup, drop one core line, run TS13_67 in a subprocess, expect FAIL with `exported API gained:` and the line; do not run in parallel) and TS-24-12 (git status --porcelain -- internal/policy/testdata is empty and TS19_64 passes)",
@@ -117,20 +98,14 @@
       ],
       "done_when": [
         "`go test ./internal/policy -count=1` passes with AGENTKIT_UPDATE_API_GOLDEN unset"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Complete the API-freeze erratum, README contract, architecture data flow and stale-identifier sweep",
       "criteria": [
-        "24-REQ-4.1",
-        "24-REQ-4.3"
-      ],
-      "tests": [
-        "TS-24-13",
-        "TS-24-15"
+        "REQ-4.1",
+        "REQ-4.3"
       ],
       "steps": [
         "Write TS-24-13 (make -n test/vet/lint loops mention every module in MODULES, mcpserve included; check depends on fmt, vet, lint, test) and TS-24-15 (make test MODULES=<temp failing module> exits non-zero and output contains `go test ./... (<tempdir>)`) in internal/policy and confirm they pass against the Makefile",
@@ -164,18 +139,13 @@
       ],
       "done_when": [
         "a search for each removed identifier in the sweep scope finds only migration-note mentions"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Measure PRD 12's examples again, write the spec 24 erratum and regenerate generated docs",
       "criteria": [
-        "24-REQ-4.2"
-      ],
-      "tests": [
-        "TS-24-14"
+        "REQ-4.2"
       ],
       "steps": [
         "Write TS-24-14 (make doc exits 0, git status --porcelain -- docs/generated is empty after it, and docs/generated has output for mcpserve, guard and provider/faux) in internal/policy and confirm it fails until generated docs are committed",
@@ -198,35 +168,7 @@
       "done_when": [
         "`make doc` leaves no uncommitted change under docs/generated",
         "`make check` passes in every module in MODULES"
-      ],
-      "state": "done"
-    },
-    {
-      "id": 5,
-      "kind": "integration",
-      "title": "Verify the golden-regeneration and make-check paths end to end",
-      "tests": [
-        "TS-24-16",
-        "TS-24-17"
-      ],
-      "steps": [
-        "Write TS-24-16 (smoke; regenerate the golden with AGENTKIT_UPDATE_API_GOLDEN=1 go test ./internal/policy -run TS13_67 in a restorable copy, assert ten headers in apiPackages order, five existing sections unchanged, a second regeneration byte-identical, then all policy tests pass with the variable unset) and TS-24-17 (smoke; make check, make doc, git status --porcelain -- docs/generated empty) and confirm they pass",
-        "Trace 24-PATH-1: apiPackages -> exportedAPI parsing the real directories of all ten packages -> TS-13-67 writes/compares the golden -> TS-14-44, TS-15-42, TS-17-61, TS-19-64, TS-24-1 and TS-24-2 pass; confirm each step calls the next and no stub remains",
-        "Trace 24-PATH-2: make check runs fmt, vet, lint and test in every module in MODULES (mcpserve included), then make doc leaves docs/generated clean",
-        "Confirm exportedAPI and the apiPackages list are consumed by TS-13-67, TS-14-44, TS-15-42 and TS-17-61 in the committed tests, not only by the TS-24 tests; confirm mcpserve, guard and provider/faux exist (entry points owned by specs 22 and 23) and are reached by the golden",
-        "Search the files listed in every task's touches for panic(\"not implemented\"), TODO, TBD and placeholder text in the docs; remove any that remain",
-        "Run `make check` and `make doc` one last time and confirm git status is clean for internal/policy/testdata and docs/generated"
-      ],
-      "touches": [
-        "internal/policy/embedder_contract_24_test.go"
-      ],
-      "depends_on": [
-        4
-      ],
-      "done_when": [
-        "`make check` passes in every module in MODULES and `git status --porcelain -- internal/policy/testdata docs/generated` prints nothing"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

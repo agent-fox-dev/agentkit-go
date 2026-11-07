@@ -4,9 +4,8 @@ spec_name: "indexed_code_search"
 title: "Indexed code_search tool in a separate codesearch module, with an optional index seam in tools"
 status: "active"
 created_at: "2026-10-01T19:30:41.631326Z"
-updated_at: "2026-10-01T19:30:41.631326Z"
 intent_hash: "19f9c7c4710d5286163ac2a900a793bbe543e99afdbe809f99f4a4afce23e007"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/05-add-an-indexed-code-search-module.md"
 ---
 ## Intent
@@ -196,3 +195,18 @@ The module depends on zoekt, whose source is not in this repository: there is no
 | `tools.CapMarker`, `tools.ClampLimit` | new exported wrappers of `capMarker(noun, param string, limit, max int, alternative string) string` and `clampLimit(n, def, cap int) int` | to be added by this spec; unexported originals verified by reading |
 | `core.Tool`, `core.ErrResult`, `core.OKResult`, `core.ToolResult`, `core.ToolMetadata`, `schema.Object`/`Prop`/`Opt`/`String`/`Int` | as used throughout `tools/` | verified (read call sites) |
 | Standard library: `context`, `crypto/sha256`, `errors`, `os`, `path/filepath`, `regexp`, `sync`, `time` | stable | stdlib |
+
+## Glossary
+
+- **REQ-TOOL-09b**: The rule that every truncation marker names a call that works.
+- **TruncatedByLines / TruncatedByBytes**: The Metadata.Truncated values of package tools that record a count cap and a byte cap respectively.
+- **dirty file**: A file that AgentKit's own tools may have changed since it was indexed, recorded through Index.Invalidate or found by revalidation.
+- **go/no-go gate**: The measured decision rule in Requirement 1 that must hold before any code of this spec is merged.
+- **outline backend**: The mechanism outline used for one file's symbols: go/ast, ctags, heuristic or none.
+- **overlay shard**: A small extra shard holding only the dirty but still visible files, rebuilt only when the dirty set changes.
+- **partial index**: An index whose build was stopped by the file, byte or time bound; it answers queries with partial: true and is not retried.
+- **revalidation**: A workspace walk comparing (size, mtime) with the indexed values to find changed, new and removed files.
+- **run directory**: The per-index-instance shard directory <TempDir>/agentkit-codesearch-<hash of root>/<run id>/.
+- **seam**: The standard-library-only interface in package tools (Index, SymbolQuery, SymbolAnswer, Options.Index) through which codesearch plugs into the root module.
+- **shard**: A zoekt index file written to disk for a set of documents.
+- **zoekt**: A trigram-based code search engine with a boolean query language (substring, regexp, sym:, file:, lang: atoms) and its own scoring. Used in-process through the nested module only.

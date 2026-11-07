@@ -4,9 +4,8 @@ spec_name: "code_mode"
 title: "Sandboxed Starlark Code Mode Tool for Model-Written Scripts"
 status: "active"
 created_at: "2026-10-08T15:07:59.079296Z"
-updated_at: "2026-10-08T15:07:59.079296Z"
 intent_hash: "1802691b93eee29fdc92f3c939156a9595645b9b7a771c2aa8202fb933c60687"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/08-run-tool-calls-from-model-written-scripts.md"
 ---
 ## Intent
@@ -244,3 +243,12 @@ What exists today:
 | `go.starlark.net/starlark` | `(*Thread).Cancel` | `func (th *Thread) Cancel(reason string)` | unverified (external dependency to be added to `go.mod`) |
 | `go.starlark.net/starlark` | `Value` | `type Value interface { String() string; Type() string; Freeze(); Truth() Bool; Hash() (uint32, error) }` | unverified (external dependency to be added to `go.mod`) |
 | `go.starlark.net/syntax` | `FileOptions` | `type FileOptions struct { Set bool; GlobalReassign bool; Recursion bool; ... }` | unverified (external dependency to be added to `go.mod`) |
+
+## Glossary
+
+- **Starlark**: A deterministic, hermetic Python-dialect configuration and scripting language executed in Go via go.starlark.net with no ambient host access.
+- **ToolError**: A dedicated Starlark value returned by bound tool functions on failure, allowing script-level error inspection without raising exceptions.
+- **call descriptor**: A structured Starlark representation produced by call(tool, **kwargs) specifying a tool and arguments for parallel dispatch.
+- **code mode**: A sandboxed tool execution paradigm where an LLM writes scripts in a restricted language (Starlark) to orchestrate multi-step tool workflows and data filtering in a single turn.
+- **middle truncation**: An output reduction strategy that preserves the beginning and end of text output while eliding the middle with an informational marker.
+- **telemetry ledger**: An in-memory audit record tracking the status, arguments, and outcomes of all nested tool calls executed within a script.

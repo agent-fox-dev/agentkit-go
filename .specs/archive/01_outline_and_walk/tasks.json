@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "01",
   "spec_name": "outline_and_walk",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -12,25 +12,15 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Create the outline package scaffold: data model, signature sanitising, language table and eligibility checks",
       "criteria": [
-        "01-REQ-1.4",
-        "01-REQ-1.5",
-        "01-REQ-1.6",
-        "01-REQ-1.7",
-        "01-REQ-2.2",
-        "01-REQ-2.4",
-        "01-REQ-2.6"
-      ],
-      "tests": [
-        "TS-01-4",
-        "TS-01-5",
-        "TS-01-6",
-        "TS-01-7",
-        "TS-01-9",
-        "TS-01-11",
-        "TS-01-13"
+        "REQ-1.4",
+        "REQ-1.5",
+        "REQ-1.6",
+        "REQ-1.7",
+        "REQ-2.2",
+        "REQ-2.4",
+        "REQ-2.6"
       ],
       "steps": [
         "Write TS-01-4, 5, 6, 7, 9, 11 and 13 in outline/*_test.go (package outline, or outline_test) and confirm they fail; TS-01-6 and 7 only assert File.Path so they hold even before the Go backend exists",
@@ -45,34 +35,21 @@
         "outline/lang.go",
         "outline/sig.go",
         "outline/outline_test.go"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Implement the Go backend with go/ast ranges and signatures",
       "criteria": [
-        "01-REQ-2.1",
-        "01-REQ-2.3",
-        "01-REQ-3.1",
-        "01-REQ-3.2",
-        "01-REQ-3.3",
-        "01-REQ-3.4",
-        "01-REQ-3.5",
-        "01-REQ-3.6",
-        "01-REQ-3.7"
-      ],
-      "tests": [
-        "TS-01-8",
-        "TS-01-10",
-        "TS-01-16",
-        "TS-01-17",
-        "TS-01-18",
-        "TS-01-19",
-        "TS-01-20",
-        "TS-01-21",
-        "TS-01-22"
+        "REQ-2.1",
+        "REQ-2.3",
+        "REQ-3.1",
+        "REQ-3.2",
+        "REQ-3.3",
+        "REQ-3.4",
+        "REQ-3.5",
+        "REQ-3.6",
+        "REQ-3.7"
       ],
       "steps": [
         "Write TS-01-8, 10, 16, 17, 18, 19, 20, 21 and 22 and confirm they fail; TS-01-19 compares against an independent go/ast parse in the test over fixture and generated sources including doc comments and grouped decls; add outline/testdata/go golden file",
@@ -88,36 +65,22 @@
         "outline/outline.go",
         "outline/goast_test.go",
         "outline/testdata/"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Implement OutlineMany, ctags batching, argument list and JSON-line parsing",
       "criteria": [
-        "01-REQ-2.5",
-        "01-REQ-2.7",
-        "01-REQ-2.8",
-        "01-REQ-4.1",
-        "01-REQ-4.2",
-        "01-REQ-4.3",
-        "01-REQ-4.5",
-        "01-REQ-4.6",
-        "01-REQ-4.7",
-        "01-REQ-4.8"
-      ],
-      "tests": [
-        "TS-01-12",
-        "TS-01-14",
-        "TS-01-15",
-        "TS-01-24",
-        "TS-01-25",
-        "TS-01-26",
-        "TS-01-28",
-        "TS-01-29",
-        "TS-01-30",
-        "TS-01-31"
+        "REQ-2.5",
+        "REQ-2.7",
+        "REQ-2.8",
+        "REQ-4.1",
+        "REQ-4.2",
+        "REQ-4.3",
+        "REQ-4.5",
+        "REQ-4.6",
+        "REQ-4.7",
+        "REQ-4.8"
       ],
       "steps": [
         "Write TS-01-12, 14, 15, 24, 25, 26, 28, 29, 30 and 31 using a recording fake Runner returning canned JSON lines, and confirm they fail",
@@ -132,32 +95,20 @@
         "outline/many.go",
         "outline/ctags.go",
         "outline/many_test.go"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Map ctags kinds, scope, end line, signature and Exported; fall through when Go parse yields no AST",
       "criteria": [
-        "01-REQ-1.2",
-        "01-REQ-1.3",
-        "01-REQ-3.8",
-        "01-REQ-5.1",
-        "01-REQ-5.2",
-        "01-REQ-5.3",
-        "01-REQ-5.4",
-        "01-REQ-5.5"
-      ],
-      "tests": [
-        "TS-01-2",
-        "TS-01-3",
-        "TS-01-23",
-        "TS-01-32",
-        "TS-01-33",
-        "TS-01-34",
-        "TS-01-35",
-        "TS-01-36"
+        "REQ-1.2",
+        "REQ-1.3",
+        "REQ-3.8",
+        "REQ-5.1",
+        "REQ-5.2",
+        "REQ-5.3",
+        "REQ-5.4",
+        "REQ-5.5"
       ],
       "steps": [
         "Write TS-01-2, 3, 23, 32, 33, 34, 35 and 36 with fake Runner output and confirm they fail; TS-01-23 swaps the parseGo seam for a stub returning nil, nil",
@@ -171,33 +122,21 @@
         "outline/ctags.go",
         "outline/outline.go",
         "outline/ctags_test.go"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Implement heuristic and none backends and ctags failure fallback",
       "criteria": [
-        "01-REQ-1.1",
-        "01-REQ-4.4",
-        "01-REQ-5.6",
-        "01-REQ-5.7",
-        "01-REQ-6.1",
-        "01-REQ-6.2",
-        "01-REQ-6.3",
-        "01-REQ-6.4",
-        "01-REQ-6.5"
-      ],
-      "tests": [
-        "TS-01-1",
-        "TS-01-27",
-        "TS-01-37",
-        "TS-01-38",
-        "TS-01-39",
-        "TS-01-40",
-        "TS-01-41",
-        "TS-01-42"
+        "REQ-1.1",
+        "REQ-4.4",
+        "REQ-5.6",
+        "REQ-5.7",
+        "REQ-6.1",
+        "REQ-6.2",
+        "REQ-6.3",
+        "REQ-6.4",
+        "REQ-6.5"
       ],
       "steps": [
         "Write TS-01-1, 27, 37, 38, 39, 40, 41 and 42 and add golden fixtures under outline/testdata/ for Python, JavaScript, TypeScript, Rust, Java, Kotlin, C#, Ruby, C and C++ (column-0 declarations after modifiers export, export default, async, pub, pub(crate), public, static) plus a none case; confirm they fail",
@@ -213,24 +152,13 @@
         "outline/many.go",
         "outline/heuristic_test.go",
         "outline/testdata/"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Add tools.CtagsRunner and ErrCtagsUnavailable",
       "criteria": [
-        "01-REQ-7"
-      ],
-      "tests": [
-        "TS-01-43",
-        "TS-01-44",
-        "TS-01-45",
-        "TS-01-46",
-        "TS-01-47",
-        "TS-01-48",
-        "TS-01-49"
+        "REQ-7"
       ],
       "steps": [
         "Write TS-01-43 through TS-01-49 (fake ctags shell scripts on a temp PATH, skipped on windows; real ctags checks skip when ctags is absent or not Universal Ctags, in the manner of the ripgrep tests) and confirm they fail",
@@ -247,28 +175,18 @@
       ],
       "depends_on": [
         1
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Add the single unexported walk and the exported tools.Walk",
       "criteria": [
-        "01-REQ-8.1",
-        "01-REQ-8.2",
-        "01-REQ-8.3",
-        "01-REQ-8.4",
-        "01-REQ-8.5",
-        "01-REQ-8.6"
-      ],
-      "tests": [
-        "TS-01-50",
-        "TS-01-51",
-        "TS-01-52",
-        "TS-01-53",
-        "TS-01-54",
-        "TS-01-55"
+        "REQ-8.1",
+        "REQ-8.2",
+        "REQ-8.3",
+        "REQ-8.4",
+        "REQ-8.5",
+        "REQ-8.6"
       ],
       "steps": [
         "Read tools/tools.go (find_files loop), tools/search.go (searchNative, countCandidates), tools/ignore.go and tools/path.go to copy the exact existing semantics",
@@ -284,29 +202,16 @@
       ],
       "depends_on": [
         1
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Migrate find_files, searchNative and countCandidates onto the shared walk",
       "criteria": [
-        "01-REQ-8.7",
-        "01-REQ-8.8",
-        "01-REQ-9",
-        "01-REQ-10.5"
-      ],
-      "tests": [
-        "TS-01-56",
-        "TS-01-57",
-        "TS-01-58",
-        "TS-01-59",
-        "TS-01-60",
-        "TS-01-61",
-        "TS-01-62",
-        "TS-01-63",
-        "TS-01-68"
+        "REQ-8.7",
+        "REQ-8.8",
+        "REQ-9",
+        "REQ-10.5"
       ],
       "steps": [
         "Write TS-01-56 to TS-01-62 and TS-01-68 (TS-01-56 parses non-test tools/*.go with go/parser and counts filepath.WalkDir, filepath.Walk and fs.WalkDir calls, expecting exactly one inside walk.go; TS-01-60 and 62 are property tests over generated trees comparing find_files, tools.Walk and native search results); confirm they fail",
@@ -324,24 +229,16 @@
       ],
       "depends_on": [
         7
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 9,
-      "kind": "implement",
       "title": "Verify dependency, build and platform constraints for outline",
       "criteria": [
-        "01-REQ-10.1",
-        "01-REQ-10.2",
-        "01-REQ-10.3",
-        "01-REQ-10.4"
-      ],
-      "tests": [
-        "TS-01-64",
-        "TS-01-65",
-        "TS-01-66",
-        "TS-01-67"
+        "REQ-10.1",
+        "REQ-10.2",
+        "REQ-10.3",
+        "REQ-10.4"
       ],
       "steps": [
         "Write TS-01-64 in outline/ (go list -json ./outline asserts every import is standard library, no //go:build or +build line, no GOOS/GOARCH filename suffix, no import of \"C\") and TS-01-65 (go.mod has no require, internal/policy tests unmodified and passing, allowedModules unchanged)",
@@ -358,22 +255,15 @@
       "depends_on": [
         5,
         6
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 10,
-      "kind": "implement",
       "title": "Update architecture, README and GAPS documentation",
       "criteria": [
-        "01-REQ-10.6",
-        "01-REQ-10.7",
-        "01-REQ-10.8"
-      ],
-      "tests": [
-        "TS-01-69",
-        "TS-01-70",
-        "TS-01-71"
+        "REQ-10.6",
+        "REQ-10.7",
+        "REQ-10.8"
       ],
       "steps": [
         "Write TS-01-69, 70 and 71 as doc checks (read the files and assert content; TS-01-71 also asserts docs/api.md has no diff and make check passes) and confirm they fail",
@@ -390,45 +280,7 @@
       "depends_on": [
         8,
         9
-      ],
-      "state": "done"
-    },
-    {
-      "id": 11,
-      "kind": "integration",
-      "title": "Verify every outline and walk execution path end to end",
-      "tests": [
-        "TS-01-72",
-        "TS-01-73",
-        "TS-01-74",
-        "TS-01-75",
-        "TS-01-76",
-        "TS-01-77",
-        "TS-01-78"
-      ],
-      "steps": [
-        "Write smoke tests TS-01-72 to TS-01-78 against the real packages (outline with tools.CtagsRunner, tools.Walk, find_files, native search, CountCandidates, a real filesystem); TS-01-73 skips when universal-ctags is absent; put cross-package smoke tests in an external test package so tools and outline stay free of a mutual import",
-        "Trace 01-PATH-1 to 01-PATH-3 through real code: Outline/OutlineMany to extension and size checks, to Go backend or batched Runner call, to tools.CtagsRunner, to JSON parsing, to heuristic fallback; confirm each step calls the next and no stub remains",
-        "Trace 01-PATH-4 to 01-PATH-7: tools.Walk to ignore engine to callback to OutlineMany; the within check refusing an outside root; find_files calling tools.Walk with IncludeHidden true; searchNative and countCandidates calling the unexported walk with hidden excluded",
-        "For each criterion with a contract (for example 01-REQ-1.5, 2.2, 5.6, 7.3, 7.6, 8.5) confirm the producer's result is consumed in production code (for example ErrCtagsUnavailable and Runner errors consumed by the fallback in OutlineMany, Walk's ErrPathNotAllowed consumed by find_files), not only by tests",
-        "Search outline/ and tools/ and every task's touched files for panic(\"not implemented\"), TODO, FIXME and bare return nil on non-trivial paths, and remove any that remain",
-        "Run make test, make lint and make check and confirm they pass"
-      ],
-      "touches": [
-        "outline/smoke_test.go",
-        "tools/walk_smoke_test.go"
-      ],
-      "depends_on": [
-        5,
-        6,
-        8,
-        9,
-        10
-      ],
-      "done_when": [
-        "`make check` passes on a machine with and without universal-ctags"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

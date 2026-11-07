@@ -4,9 +4,8 @@ spec_name: "toolset_runner"
 title: "Toolset and Runner: the tool pipeline as a value, with the agent loop as one consumer"
 status: "active"
 created_at: "2026-10-16T04:41:35.870936Z"
-updated_at: "2026-10-16T04:41:35.870936Z"
 intent_hash: "d805a0ce6b4b0fb9c3e5fe7c6c4418eb41640feb6f686b86258f90b9b5656ac7"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/12-simplify-the-embedder-contract.md"
 ---
 ## Intent
@@ -271,3 +270,15 @@ This spec adds no external dependency. The only third-party code it touches is t
 | same | `CallToolResult` | `&sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: …}}, IsError: bool}` | Unverified, from the same call site. |
 
 The root module's own symbols that the work relies on (`core.PrepareArguments(t Tool, c ToolUseBlock) (PreparedArguments, error)`, `core.NewToolUse(id, name string, raw json.RawMessage) (ToolUseBlock, error)`, `core.WithNestedCaller`, `core.CallNested`, `core.ReachableTools`, `core.WithUsageReporter(ctx, func(core.Usage))`, `(core.ToolPolicy).Resolve([]Tool) []Tool`, `guard.IsShellTool`) were read in the repository.
+
+## Glossary
+
+- **Runner**: The immutable `*agentkit.Runner` built by `NewRunner` (or returned by `Agent.Runner`) that runs tool calls through the full pipeline.
+- **Toolset**: The root-package struct `agentkit.Toolset{Tools, Policy, Guard, After, Events}` describing the tool side of an agent.
+- **batch**: A set of tool calls run together under the driver's rules: sequential prepare, a single abort decision, concurrent or sequential handlers, serialized finalization.
+- **event sink**: The `func(core.Event)` a runner emits execution events to: `Toolset.Events` outside a run, the run's `core.EventStream` inside one.
+- **final vote**: A call's terminate decision after the pipeline: the handler's `Terminate`, replaced by a non-nil `After` decision, forced true for a wrapper whose nested call was terminated, or the guard decision's `Terminate` for a blocked call.
+- **nested call**: A tool call a wrapper makes through the `core.NestedCaller` on its context; it gets a `nested_…` id and its events carry `ParentToolUseID`.
+- **pipeline**: The steps one tool call goes through: start event, tool lookup, `core.PrepareArguments`, `Guard`, the handler with a nested caller attached, `After`, end event and, for top-level calls, the result event.
+- **run**: One `Agent.Run` or `Agent.Stream` invocation, which owns a transcript, usage, the run slot and an event stream.
+- **wrapper**: A tool that declares `ReachableTools` and calls other tools through `core.CallNested`, such as `code_mode`.

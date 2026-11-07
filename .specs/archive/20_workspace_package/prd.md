@@ -4,9 +4,8 @@ spec_name: "workspace_package"
 title: "The workspace package: containment, ignore rules and the walk, with tools built for a workspace"
 status: "active"
 created_at: "2026-10-15T20:16:45.947372Z"
-updated_at: "2026-10-15T20:16:45.947372Z"
 intent_hash: "909b8efa77edf1c346a1413a549fb0f8c35d4c092c8efec0e3aa8b5d07fb52ac"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/12-simplify-the-embedder-contract.md"
 ---
 ## Intent
@@ -248,3 +247,14 @@ The identifiers in Goal 4 are deleted. `tools` keeps no alias, type alias, varia
 | `github.com/bmatcuk/doublestar/v4` (v4.10.2, root `go.mod`) | `doublestar.Match` | `func Match(pattern, name string) (bool, error)` | Unverified against source (the module cache is outside the repository). The signature is taken from the existing call site `ok, err := doublestar.Match(pattern, name)` in `tools/glob.go` (`globMatch`), which compiles today. |
 
 Standard-library symbols the move relies on (`sync.OnceValue`, `filepath.WalkDir`, `filepath.EvalSymlinks`, `filepath.Rel`, `os.UserHomeDir`, `os/user.Lookup`) are already used by the code that moves.
+
+## Glossary
+
+- **MODULES**: The list of Go modules in the Makefile over which make test, make vet, make lint and make tidy run.
+- **exported-API golden**: internal/policy/testdata/exported-api.golden, the recorded exported API of the packages in apiPackages, checked by TS-13-67 and regenerated when AGENTKIT_UPDATE_API_GOLDEN=1.
+- **global layer**: The lowest-precedence ignore layer, read from the file named by git's core.excludesFile; workspace.NoGlobalExcludes() makes it empty.
+- **ignore rules**: The layered gitignore-style exclusions of a workspace: the global excludes file (core.excludesFile), .git/info/exclude, then .gitignore files from the scan root down; the last matching pattern wins, and `.git` segments are always excluded.
+- **nested-repository boundary**: A directory containing `.git` below the scan root; ignore files above it stop applying and a new ignore root starts there.
+- **scan root**: The directory where the ignore engine starts loading .gitignore files: the `sub` argument of Walk, or the workspace root for Ignored.
+- **tool digest**: The hash of a tool's definition computed by sandbox/internal/tooldigest, compared between host and sandbox agent to decide compatibility.
+- **workspace**: A *workspace.Workspace returned by workspace.Open: an absolute, symlink-resolved root plus the ignore rules that apply under it. Immutable after Open.

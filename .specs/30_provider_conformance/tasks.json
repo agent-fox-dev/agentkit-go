@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "30",
   "spec_name": "provider_conformance",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -37,15 +37,10 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Create the tests-only package, its policy test and the provider-live-test make target",
       "criteria": [
-        "30-REQ-1.1",
-        "30-REQ-6.7"
-      ],
-      "tests": [
-        "TS-30-1",
-        "TS-30-33"
+        "REQ-1.1",
+        "REQ-6.7"
       ],
       "steps": [
         "Write TS-30-1 and TS-30-33 and confirm they fail (TS-30-1 as a go/parser scan test in internal/providerconformance, TS-30-33 running `make -n provider-live-test` and expanding check/check-release prerequisites)",
@@ -63,24 +58,13 @@
       ],
       "done_when": [
         "`make check` passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Write the three vendor fakes with rendering, recording and request decoding",
       "criteria": [
-        "30-REQ-2"
-      ],
-      "tests": [
-        "TS-30-7",
-        "TS-30-8",
-        "TS-30-9",
-        "TS-30-10",
-        "TS-30-11",
-        "TS-30-12"
+        "REQ-2"
       ],
       "steps": [
         "Write TS-30-7 to TS-30-12 and confirm they fail",
@@ -104,24 +88,16 @@
       ],
       "done_when": [
         "the fake files import no vendor SDK, no provider test helper and only standard library packages"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Build the case harness: agent construction, timeout, common checks and faux reference",
       "criteria": [
-        "30-REQ-1.3",
-        "30-REQ-1.5",
-        "30-REQ-1.6",
-        "30-REQ-3"
-      ],
-      "tests": [
-        "TS-30-5",
-        "TS-30-6",
-        "TS-30-16"
+        "REQ-1.3",
+        "REQ-1.5",
+        "REQ-1.6",
+        "REQ-3"
       ],
       "steps": [
         "Write TS-30-5, TS-30-6 and TS-30-16 and confirm they fail",
@@ -143,26 +119,13 @@
       ],
       "done_when": [
         "no model id literal appears in any file of internal/providerconformance"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Add the cases that end normally: text, tool_call, tool_call_stop and thinking",
       "criteria": [
-        "30-REQ-4"
-      ],
-      "tests": [
-        "TS-30-14",
-        "TS-30-17",
-        "TS-30-18",
-        "TS-30-19",
-        "TS-30-20",
-        "TS-30-21",
-        "TS-30-22",
-        "TS-30-52"
+        "REQ-4"
       ],
       "steps": [
         "Write TS-30-14, TS-30-17 to TS-30-22 and TS-30-52 and confirm they fail",
@@ -185,24 +148,13 @@
       ],
       "done_when": [
         "each failing case is resolved by fixing the provider or recording an erratum for its spec, never by weakening the case for one provider"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Add the failing cases: cut_off, error_status and error_in_stream",
       "criteria": [
-        "30-REQ-5"
-      ],
-      "tests": [
-        "TS-30-13",
-        "TS-30-15",
-        "TS-30-23",
-        "TS-30-24",
-        "TS-30-25",
-        "TS-30-26"
+        "REQ-5"
       ],
       "steps": [
         "Write TS-30-13, TS-30-15, TS-30-23, TS-30-24, TS-30-25 and TS-30-26 and confirm they fail",
@@ -222,22 +174,14 @@
       ],
       "done_when": [
         "no case is weakened for one provider; a provider mismatch is fixed or recorded as an erratum"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Verify the suite as a whole: 21 named subtests, hermetic environment and architecture docs",
       "criteria": [
-        "30-REQ-1.2",
-        "30-REQ-1.4"
-      ],
-      "tests": [
-        "TS-30-2",
-        "TS-30-3",
-        "TS-30-4"
+        "REQ-1.2",
+        "REQ-1.4"
       ],
       "steps": [
         "Write TS-30-2, TS-30-3 and TS-30-4 and confirm they fail or are not yet satisfied",
@@ -257,31 +201,19 @@
       ],
       "done_when": [
         "`go test -short ./internal/providerconformance` reports 21 passing conformance subtests"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Add the opt-in live smoke tests TestLive and their configuration docs",
       "criteria": [
-        "30-REQ-6.1",
-        "30-REQ-6.2",
-        "30-REQ-6.3",
-        "30-REQ-6.4",
-        "30-REQ-6.5",
-        "30-REQ-6.6",
-        "30-REQ-7"
-      ],
-      "tests": [
-        "TS-30-27",
-        "TS-30-28",
-        "TS-30-29",
-        "TS-30-30",
-        "TS-30-31",
-        "TS-30-32",
-        "TS-30-35"
+        "REQ-6.1",
+        "REQ-6.2",
+        "REQ-6.3",
+        "REQ-6.4",
+        "REQ-6.5",
+        "REQ-6.6",
+        "REQ-7"
       ],
       "steps": [
         "Write TS-30-27 to TS-30-32 and TS-30-35 and confirm they fail; the subprocess tests run `go test -run TestLive` with a controlled environment and a recording loopback server (follow sandbox/gatewayd/podman_optin_test.go for the skip pattern and its hint)",
@@ -303,21 +235,14 @@
       ],
       "done_when": [
         "TestLive reports SKIP under -short and without AGENTKIT_LIVE=1, with no request to any service"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Move examples/codingagent to AGENTKIT_PROVIDER, AGENTKIT_MODEL and AGENTKIT_EFFORT",
       "criteria": [
-        "30-REQ-8",
-        "30-REQ-9"
-      ],
-      "tests": [
-        "TS-30-42",
-        "TS-30-45"
+        "REQ-8",
+        "REQ-9"
       ],
       "steps": [
         "Write TS-30-42 and TS-30-45 in examples/codingagent/main_test.go and confirm they fail",
@@ -339,21 +264,14 @@
       ],
       "done_when": [
         "`go test ./examples/codingagent` passes without network or credentials"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 9,
-      "kind": "implement",
       "title": "Move examples/customtools to AGENTKIT_PROVIDER, AGENTKIT_MODEL and AGENTKIT_EFFORT",
       "criteria": [
-        "30-REQ-8",
-        "30-REQ-9"
-      ],
-      "tests": [
-        "TS-30-43",
-        "TS-30-46"
+        "REQ-8",
+        "REQ-9"
       ],
       "steps": [
         "Write TS-30-43 and TS-30-46 in examples/customtools/main_test.go and confirm they fail",
@@ -375,28 +293,14 @@
       ],
       "done_when": [
         "`go test ./examples/customtools` passes without network or credentials"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 10,
-      "kind": "implement",
       "title": "Move examples/mcp to the selection variables and verify all three examples and the README quick start",
       "criteria": [
-        "30-REQ-8",
-        "30-REQ-9"
-      ],
-      "tests": [
-        "TS-30-36",
-        "TS-30-37",
-        "TS-30-38",
-        "TS-30-39",
-        "TS-30-40",
-        "TS-30-41",
-        "TS-30-44",
-        "TS-30-47",
-        "TS-30-48"
+        "REQ-8",
+        "REQ-9"
       ],
       "steps": [
         "Write the listed tests and confirm they fail; TS-30-36, TS-30-38 and TS-30-41 are go/parser scans placed in examples/mcp/structure_test.go (reading the other examples' directories by relative path); TS-30-40 calls each example's summary function from an internal test in each example's directory",
@@ -427,45 +331,7 @@
       "done_when": [
         "the README quick start has no anthropic.Resolve and no SDK import",
         "`make check` passes"
-      ],
-      "state": "done",
-      "optional": false
-    },
-    {
-      "id": 11,
-      "kind": "integration",
-      "title": "Verify the conformance, live and example paths end to end",
-      "tests": [
-        "TS-30-34",
-        "TS-30-49",
-        "TS-30-50",
-        "TS-30-51"
-      ],
-      "steps": [
-        "Write the smoke tests TS-30-34 (make provider-live-test with at least one ready provider, skipping cleanly if none), TS-30-49 (the openrouter/tool_call subtest alone through go test -short -run), TS-30-50 (go run ./examples/customtools on Ollama with SIMPLE and high) and TS-30-51 (go run ./examples/codingagent with AGENTKIT_PROVIDER=openai) against real components, and confirm they pass",
-        "Trace 30-PATH-1 through the real code: suite -> agentkit.New -> catalog.Select -> provider/openrouter -> fake -> loop -> assertions; confirm each step calls the next and no stub remains",
-        "Trace 30-PATH-2 (Makefile -> TestLive -> agentkit.New -> read_file -> assertions) and 30-PATH-3 and 30-PATH-4 (example -> agentkit.Config -> agentkit.New -> provider or error:/exit 1)",
-        "Confirm that the producers of each contract are consumed in production code: Agent.Resolution() is read by each example's summary line and Config.Provider/Model/Effort reach agentkit.New from each example's main",
-        "Confirm entry points owned by other specs (agentkit.New with Provider names, Agent.Resolution, catalog.Select, ollama.New().Host) are called from production code",
-        "Search every file listed in the tasks' touches for panic(\"not implemented\"), TODO, and bare `return nil` on non-trivial paths, and remove any that remain",
-        "Run `make check` (not make check-release or the full make test) and note in the handoff that the full gate was left to the user"
-      ],
-      "touches": [
-        "internal/providerconformance/smoke_test.go",
-        "examples/customtools/smoke_test.go",
-        "examples/codingagent/smoke_test.go"
-      ],
-      "depends_on": [
-        6,
-        7,
-        10
-      ],
-      "done_when": [
-        "`make check` passes",
-        "every execution path 30-PATH-1 to 30-PATH-4 is live in production code"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     }
   ]
 }

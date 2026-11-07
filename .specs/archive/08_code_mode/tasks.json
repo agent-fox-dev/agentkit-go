@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "08",
   "spec_name": "code_mode",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -25,18 +25,9 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Add go.starlark.net dependency, implement codemode constructor, options defaults, and reachability validation",
       "criteria": [
-        "08-REQ-1"
-      ],
-      "tests": [
-        "TS-08-1",
-        "TS-08-2",
-        "TS-08-3",
-        "TS-08-4",
-        "TS-08-5",
-        "TS-08-6"
+        "REQ-1"
       ],
       "steps": [
         "Add `go.starlark.net` to `go.mod` using `go get go.starlark.net` and verify `go.sum` updates cleanly.",
@@ -57,22 +48,13 @@
       ],
       "done_when": [
         "`go test ./codemode/... -run 'Test(New|Options|BuildInfo|Schema)'` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Implement dynamic description rendering and typed Starlark function signature generation from tool schemas",
       "criteria": [
-        "08-REQ-2"
-      ],
-      "tests": [
-        "TS-08-7",
-        "TS-08-8",
-        "TS-08-9",
-        "TS-08-10",
-        "TS-08-11"
+        "REQ-2"
       ],
       "steps": [
         "In `codemode/schema.go`, implement schema type translation converting JSON Schema types (schema.TypeString, TypeInteger, TypeNumber, TypeBoolean, TypeArray, TypeObject) to Starlark signature types (str, int, float, bool, list, dict).",
@@ -95,26 +77,14 @@
       ],
       "done_when": [
         "`go test ./codemode/... -run 'Test(RenderSignature|Description)'` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Implement sandboxed Starlark thread initialization, keyword-argument tool bindings, and CallNested dispatch",
       "criteria": [
-        "08-REQ-3",
-        "08-REQ-4"
-      ],
-      "tests": [
-        "TS-08-12",
-        "TS-08-13",
-        "TS-08-14",
-        "TS-08-15",
-        "TS-08-16",
-        "TS-08-17",
-        "TS-08-18",
-        "TS-08-19"
+        "REQ-3",
+        "REQ-4"
       ],
       "steps": [
         "In `codemode/runtime.go`, implement thread creation using `starlark.Thread`, configuring `thread.Load` to fail unconditionally with 'load is not permitted in code_mode scripts', and populating safe language builtins (len, range, str, int, float, bool, list, dict, min, max, sorted, enumerate, zip, print, type, repr, abs, hasattr, getattr, dir) while strictly omitting host primitives (open, os, socket, http, environ, subprocess, time).",
@@ -138,26 +108,14 @@
       ],
       "done_when": [
         "`go test ./codemode/... -run 'Test(Runtime|Sandbox|Binding|CallNested)'` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Implement non-exceptional ToolError value type and parallel tool call concurrency helper",
       "criteria": [
-        "08-REQ-5",
-        "08-REQ-6"
-      ],
-      "tests": [
-        "TS-08-20",
-        "TS-08-21",
-        "TS-08-22",
-        "TS-08-23",
-        "TS-08-24",
-        "TS-08-25",
-        "TS-08-26",
-        "TS-08-27"
+        "REQ-5",
+        "REQ-6"
       ],
       "steps": [
         "In `codemode/toolerror.go`, define custom `starlark.Value` type `ToolError` implementing `starlark.Mapping` and `starlark.HasAttrs` with `Type() == 'tool_error'`, attributes ok = False, is_error = True, error (string code), detail (string description), and data (structured payload).",
@@ -182,22 +140,13 @@
       ],
       "done_when": [
         "`go test ./codemode/... -run 'Test(ToolError|Parallel|Call)'` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Enforce execution limits: wall timeout, Starlark step count, nested call count, and output byte limit",
       "criteria": [
-        "08-REQ-7"
-      ],
-      "tests": [
-        "TS-08-28",
-        "TS-08-29",
-        "TS-08-30",
-        "TS-08-31",
-        "TS-08-32"
+        "REQ-7"
       ],
       "steps": [
         "In `codemode/limits.go`, implement limit tracker monitoring timeout context (`opts.MaxTimeout`), execution steps (`opts.MaxSteps`), nested call count (`opts.MaxCalls`), and cumulative output bytes (`opts.MaxOutputBytes`).",
@@ -221,23 +170,13 @@
       ],
       "done_when": [
         "`go test ./codemode/... -run 'TestLimits'` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Implement output buffering, return value resolution, middle truncation, and spill file management",
       "criteria": [
-        "08-REQ-8"
-      ],
-      "tests": [
-        "TS-08-33",
-        "TS-08-34",
-        "TS-08-35",
-        "TS-08-36",
-        "TS-08-37",
-        "TS-08-38"
+        "REQ-8"
       ],
       "steps": [
         "In `codemode/output.go`, implement output capture hooking `thread.Print` to route printed lines into an internal `tools.Accumulator` configured with `tools.TruncateMiddle`, capacity `opts.MaxOutputBytes`, and spill directory `opts.SpillDir`.",
@@ -258,22 +197,13 @@
       ],
       "done_when": [
         "`go test ./codemode/... -run 'TestOutput'` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Implement script syntax/runtime error classification, telemetry ledger tracking, and cancellation handling",
       "criteria": [
-        "08-REQ-9"
-      ],
-      "tests": [
-        "TS-08-39",
-        "TS-08-40",
-        "TS-08-41",
-        "TS-08-42",
-        "TS-08-43"
+        "REQ-9"
       ],
       "steps": [
         "In `codemode/ledger.go`, define execution ledger recording `{tool: string, arguments: map[string]any, ok: bool, error: string}` for every nested tool call dispatched during a script run.",
@@ -297,18 +227,13 @@
       ],
       "done_when": [
         "`go test ./codemode/... -run 'Test(Diagnostics|Ledger)'` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Implement offline example application, dependency governance documentation, and architectural updates",
       "criteria": [
-        "08-REQ-10"
-      ],
-      "tests": [
-        "TS-08-44"
+        "REQ-10"
       ],
       "steps": [
         "Create `examples/codemode/main.go` demonstrating an offline agent using `provider/faux` that binds navigation tools (read_file, list_files, find_files) and an in-memory MCP tool into a `code_mode` tool, running multi-step filtering and parallel tool queries.",
@@ -336,50 +261,7 @@
       "done_when": [
         "`go test ./codemode/... -run 'TestDeps'` passes",
         "`go run ./examples/codemode` runs without error"
-      ],
-      "state": "done"
-    },
-    {
-      "id": 9,
-      "kind": "integration",
-      "title": "Verify execution paths, error contracts, and complete end-to-end integration for code mode",
-      "tests": [
-        "TS-08-45",
-        "TS-08-46",
-        "TS-08-47",
-        "TS-08-48",
-        "TS-08-49"
-      ],
-      "steps": [
-        "Write smoke tests TS-08-45, TS-08-46, TS-08-47, TS-08-48 in `codemode/smoke_test.go` and TS-08-49 in `examples/codemode/main_test.go` confirming they execute against real components (codemode.New, starlark.Thread, core.CallNested, tools.ListFiles, tools.ReadFile, tools.Accumulator, provider/faux) and pass.",
-        "Trace 08-PATH-1 through codemode.New, thread initialization, list_files keyword binding, CallNested execution, in-memory filtering, print accumulation, and ToolResult return; confirm each step calls the next with no stubs.",
-        "Trace 08-PATH-2 through parallel helper, call descriptors, MaxConcurrentCalls batching, concurrent CallNested execution, original order preservation, and telemetry ledger recording; confirm end-to-end execution with no stubs.",
-        "Trace 08-PATH-3 through Accumulator buffering, MaxOutputBytes limit detection, middle truncation with elided marker, spill file creation in SpillDir, and ToolMetadata population with SpillPath and TruncatedBy; confirm each step calls the next.",
-        "Trace 08-PATH-4 through failing nested tool call via CallNested, ToolError construction, Starlark script is_error inspection, and fallback output generation with OK=true; confirm no exceptions are raised.",
-        "Trace 08-PATH-5 through examples/codemode/main.go execution with provider/faux, verifying navigation and parallel query execution runs offline and exits with zero status.",
-        "For every criterion with a contract (08-REQ-1.3, 08-REQ-1.4, 08-REQ-3.2, 08-REQ-4.1, 08-REQ-4.5, 08-REQ-4.6, 08-REQ-6.4, 08-REQ-7.1, 08-REQ-7.2, 08-REQ-7.3, 08-REQ-7.4, 08-REQ-9.1, 08-REQ-9.2, 08-REQ-9.5), confirm the producer's result is consumed by a caller in production code, not only by tests.",
-        "Search all files listed in every task's touches (codemode/*.go, examples/codemode/*.go) for stub markers including panic(\"not implemented\"), TODO, NotImplementedError, and bare return nil / None on non-trivial paths, confirming none remain.",
-        "Run `make check` to ensure all tests, formatting, and linters pass cleanly."
-      ],
-      "touches": [
-        "codemode/smoke_test.go",
-        "examples/codemode/main_test.go"
-      ],
-      "depends_on": [
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-        7,
-        8
-      ],
-      "done_when": [
-        "`make check` passes completely without errors or linter warnings",
-        "`go test ./codemode/... ./examples/codemode/... -count=1` passes with all smoke tests green"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

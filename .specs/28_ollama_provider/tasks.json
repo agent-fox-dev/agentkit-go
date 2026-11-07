@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "28",
   "spec_name": "ollama_provider",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -41,15 +41,9 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Approve and pin github.com/ollama/ollama v0.40.7 and restate the policy tests",
       "criteria": [
-        "28-REQ-9"
-      ],
-      "tests": [
-        "TS-28-43",
-        "TS-28-44",
-        "TS-28-45"
+        "REQ-9"
       ],
       "steps": [
         "Verify the names spec 26 and 27 produced (catalog.Select, catalog.OllamaDefaultContextWindow, provider.RepairToolPairing and its report type); if the repair helper is absent create it in provider/repair.go from rules 2, 2b and 6 of provider/anthropic/repair.go without the thinking rules",
@@ -83,32 +77,19 @@
       "done_when": [
         "`go list -m github.com/ollama/ollama` reports v0.40.7 in the root module",
         "the restated TS-13-65, TS-14-42, TS-15-40 and TS-17-60 still exist and pass"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Build ollama.New with host resolution, host parsing and refusals",
       "criteria": [
-        "28-REQ-1.1",
-        "28-REQ-1.2",
-        "28-REQ-1.3",
-        "28-REQ-1.4",
-        "28-REQ-1.5",
-        "28-REQ-1.6",
-        "28-REQ-1.7"
-      ],
-      "tests": [
-        "TS-28-1",
-        "TS-28-2",
-        "TS-28-3",
-        "TS-28-4",
-        "TS-28-5",
-        "TS-28-6",
-        "TS-28-7",
-        "TS-28-8"
+        "REQ-1.1",
+        "REQ-1.2",
+        "REQ-1.3",
+        "REQ-1.4",
+        "REQ-1.5",
+        "REQ-1.6",
+        "REQ-1.7"
       ],
       "steps": [
         "Write TS-28-1 to TS-28-8 as external tests (package ollama_test) and confirm they fail",
@@ -129,30 +110,19 @@
       ],
       "depends_on": [
         1
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Stream core: credential-free transport, base request, text and thinking decode, final message",
       "criteria": [
-        "28-REQ-1.8",
-        "28-REQ-2.1",
-        "28-REQ-2.2",
-        "28-REQ-6.1",
-        "28-REQ-6.2",
-        "28-REQ-6.5",
-        "28-REQ-6.6"
-      ],
-      "tests": [
-        "TS-28-9",
-        "TS-28-10",
-        "TS-28-11",
-        "TS-28-26",
-        "TS-28-27",
-        "TS-28-30"
+        "REQ-1.8",
+        "REQ-2.1",
+        "REQ-2.2",
+        "REQ-6.1",
+        "REQ-6.2",
+        "REQ-6.5",
+        "REQ-6.6"
       ],
       "steps": [
         "Write TS-28-9, 10, 11, 26, 27 and 30 using an httptest recording server that serves application/x-ndjson lines, and confirm they fail; put recorder helpers in provider/ollama/recorder_test.go",
@@ -173,27 +143,17 @@
       ],
       "depends_on": [
         2
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Decode tool calls with wire key order and unique ids, report netted zero-cost usage, prove concurrency safety",
       "criteria": [
-        "28-REQ-6.3",
-        "28-REQ-6.4",
-        "28-REQ-6.7",
-        "28-REQ-8.1",
-        "28-REQ-8.2"
-      ],
-      "tests": [
-        "TS-28-28",
-        "TS-28-29",
-        "TS-28-31",
-        "TS-28-40",
-        "TS-28-41"
+        "REQ-6.3",
+        "REQ-6.4",
+        "REQ-6.7",
+        "REQ-8.1",
+        "REQ-8.2"
       ],
       "steps": [
         "Write TS-28-28, 29, 31, 40 and 41 (property tests with testing/quick or a generator loop; TS-28-31 with 32 goroutines under -race) and confirm they fail",
@@ -213,24 +173,14 @@
       ],
       "depends_on": [
         3
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Replay the transcript: message order, repair, thinking, tool calls and results",
       "criteria": [
-        "28-REQ-2.3",
-        "28-REQ-4"
-      ],
-      "tests": [
-        "TS-28-12",
-        "TS-28-19",
-        "TS-28-20",
-        "TS-28-21",
-        "TS-28-22"
+        "REQ-2.3",
+        "REQ-4"
       ],
       "steps": [
         "Write TS-28-12, 19, 20, 21 (property test over generated JSON objects with non-alphabetical, nested and unicode keys, comparing key order in the raw recorded body) and 22, and confirm they fail",
@@ -248,30 +198,16 @@
       ],
       "depends_on": [
         4
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Encode num_predict, sampling, tools, tool choice and effort as think",
       "criteria": [
-        "28-REQ-2.4",
-        "28-REQ-2.5",
-        "28-REQ-3",
-        "28-REQ-5"
-      ],
-      "tests": [
-        "TS-28-13",
-        "TS-28-14",
-        "TS-28-15",
-        "TS-28-16",
-        "TS-28-17",
-        "TS-28-18",
-        "TS-28-23",
-        "TS-28-24",
-        "TS-28-25"
+        "REQ-2.4",
+        "REQ-2.5",
+        "REQ-3",
+        "REQ-5"
       ],
       "steps": [
         "Write TS-28-13 to TS-28-18 and TS-28-23 to TS-28-25 and confirm they fail; TS-28-25 uses catalog.Select(\"ollama\",\"STANDARD\",\"\")",
@@ -291,28 +227,14 @@
       ],
       "depends_on": [
         3
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Classify failures: truncation, cancellation, unreachable, 404, context window, auth and other statuses",
       "criteria": [
-        "28-REQ-7",
-        "28-REQ-8.3"
-      ],
-      "tests": [
-        "TS-28-32",
-        "TS-28-33",
-        "TS-28-34",
-        "TS-28-35",
-        "TS-28-36",
-        "TS-28-37",
-        "TS-28-38",
-        "TS-28-39",
-        "TS-28-42"
+        "REQ-7",
+        "REQ-8.3"
       ],
       "steps": [
         "Write TS-28-32 to TS-28-39 and TS-28-42 against the recording server (closed port for unreachable, a blocking handler for cancellation) and confirm they fail",
@@ -333,52 +255,7 @@
       ],
       "depends_on": [
         3
-      ],
-      "state": "done",
-      "optional": false
-    },
-    {
-      "id": 8,
-      "kind": "integration",
-      "title": "Verify the tool loop, error and truncation paths end to end and update the documentation",
-      "tests": [
-        "TS-28-46",
-        "TS-28-47",
-        "TS-28-48",
-        "TS-28-49"
-      ],
-      "steps": [
-        "Write TS-28-47, TS-28-48 and TS-28-49 as smoke tests with the real agentkit.Agent loop, provider/ollama, the SDK client, catalog.Select, provider.RepairToolPairing and an httptest server (no mocks of these components); confirm they pass",
-        "Trace 28-PATH-1, 28-PATH-2 and 28-PATH-3 through the real code: Agent.Run -> Stream -> request encoding -> api.Client.Chat -> decode -> final message -> tool run or short-circuit; confirm each step calls the next",
-        "For every criterion with a contract confirm its producer result (Host(), final Usage with cost presence bit, ErrModelNotFound/ErrUnreachable/ErrStreamTruncated, repaired transcript) is consumed by production code (agent loop or Stream), not only by tests",
-        "Search every file in every task's touches for panic(\"not implemented\"), TODO, and bare `return nil` on non-trivial paths, including the temporary Stream stub from the construction task, and remove them",
-        "Confirm agentkit.Config.Provider accepts *ollama.Client directly (no change to agent.go, which belongs to provider_selection)",
-        "Update docs/configuration.md with an ollama.Options section (fields, OLLAMA_HOST rules and refusals, num_ctx, truncate:false, think, num_predict, tool-schema subset, loaded-model caveat, zero cost); add a provider/ollama row to docs/architecture.md package graph (imports catalog, core, provider; third-party github.com/ollama/ollama/api) and Packages table; add a package row to docs/api.md",
-        "Run `make doc` and commit docs/generated/provider/ollama.txt",
-        "Confirm no *_test.go under provider/anthropic or provider/faux changed (TS-28-46) and run `make check`; note in the handoff that make check-release and the Windows cross-target build of ollama/api were left to the user"
-      ],
-      "touches": [
-        "provider/ollama/smoke_test.go",
-        "docs/configuration.md",
-        "docs/architecture.md",
-        "docs/api.md",
-        "docs/generated/provider/ollama.txt"
-      ],
-      "depends_on": [
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-        7
-      ],
-      "done_when": [
-        "`make check` passes",
-        "docs/generated/provider/ollama.txt exists and matches `make doc` output"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     }
   ]
 }

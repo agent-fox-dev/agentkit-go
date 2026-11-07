@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "25",
   "spec_name": "gateway_authenticator",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make check",
     "linter": "make lint",
@@ -17,17 +17,9 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Add Authenticator, Config.Authenticate and the exactly-one-mode rule to New",
       "criteria": [
-        "25-REQ-1"
-      ],
-      "tests": [
-        "TS-25-1",
-        "TS-25-2",
-        "TS-25-3",
-        "TS-25-4",
-        "TS-25-5"
+        "REQ-1"
       ],
       "steps": [
         "Write TS-25-1..TS-25-5 in sandbox/gatewayd/config_auth_test.go (package gatewayd_test, named TestXxx_TS25_NN with a '// TS-25-NN: ... 25-REQ-x.y.' comment) and confirm they fail",
@@ -43,28 +35,18 @@
       ],
       "done_when": [
         "New returns a server for Config{Backend, Authenticate} and refuses both-set and neither-set configurations"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Key ownership by principal string, add PrincipalFromContext and the refusal reason in static mode",
       "criteria": [
-        "25-REQ-2",
-        "25-REQ-5.1",
-        "25-REQ-7.1",
-        "25-REQ-7.7",
-        "25-REQ-9.2",
-        "25-REQ-9.4"
-      ],
-      "tests": [
-        "TS-25-6",
-        "TS-25-7",
-        "TS-25-8",
-        "TS-25-28",
-        "TS-25-32",
-        "TS-25-40"
+        "REQ-2",
+        "REQ-5.1",
+        "REQ-7.1",
+        "REQ-7.7",
+        "REQ-9.2",
+        "REQ-9.4"
       ],
       "steps": [
         "Write TS-25-6, 7, 8, 28, 32, 40 (external tests in sandbox/gatewayd; TS-25-28 parses the package's exported API with go/parser/go/doc) and confirm they fail",
@@ -92,34 +74,20 @@
       ],
       "done_when": [
         "Every spec 19 test in sandbox/gatewayd and its command passes without modification"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Callback-mode authentication in the tap handle, with principal validation and panic recovery",
       "criteria": [
-        "25-REQ-3.1",
-        "25-REQ-3.2",
-        "25-REQ-3.3",
-        "25-REQ-3.4",
-        "25-REQ-3.5",
-        "25-REQ-4",
-        "25-REQ-7.2",
-        "25-REQ-9.3"
-      ],
-      "tests": [
-        "TS-25-9",
-        "TS-25-10",
-        "TS-25-11",
-        "TS-25-12",
-        "TS-25-13",
-        "TS-25-15",
-        "TS-25-16",
-        "TS-25-17",
-        "TS-25-18",
-        "TS-25-41"
+        "REQ-3.1",
+        "REQ-3.2",
+        "REQ-3.3",
+        "REQ-3.4",
+        "REQ-3.5",
+        "REQ-4",
+        "REQ-7.2",
+        "REQ-9.3"
       ],
       "steps": [
         "Write the ten tests and confirm they fail; TS-25-13 is an in-package test (package gatewayd, e.g. auth_internal_test.go) calling s.unaryAuth/s.streamAuth directly with a context carrying no principal",
@@ -143,29 +111,18 @@
       ],
       "done_when": [
         "A callback-mode server accepts exactly the tokens its authenticator accepts and refuses everything else before any message is read"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Shared and foreign principals, revocation, and the principal on Sync and Reap contexts",
       "criteria": [
-        "25-REQ-3.6",
-        "25-REQ-5.2",
-        "25-REQ-5.3",
-        "25-REQ-7.3",
-        "25-REQ-7.4",
-        "25-REQ-7.5"
-      ],
-      "tests": [
-        "TS-25-14",
-        "TS-25-19",
-        "TS-25-20",
-        "TS-25-29",
-        "TS-25-30",
-        "TS-25-42",
-        "TS-25-44"
+        "REQ-3.6",
+        "REQ-5.2",
+        "REQ-5.3",
+        "REQ-7.3",
+        "REQ-7.4",
+        "REQ-7.5"
       ],
       "steps": [
         "Write the seven tests (callback-mode servers over local through gwtest, revocable authenticator mapping several tokens to principals) and confirm which fail",
@@ -189,24 +146,13 @@
       ],
       "done_when": [
         "Principal-keyed ownership holds in both modes with the spec 19 foreign-id answers"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Log the principal and the refusal reason in both modes",
       "criteria": [
-        "25-REQ-6"
-      ],
-      "tests": [
-        "TS-25-21",
-        "TS-25-22",
-        "TS-25-23",
-        "TS-25-24",
-        "TS-25-25",
-        "TS-25-26",
-        "TS-25-27"
+        "REQ-6"
       ],
       "steps": [
         "Write the seven tests using gwtest.NewLogs and Logs.Messages / Logs.String and confirm which fail",
@@ -226,25 +172,14 @@
       ],
       "done_when": [
         "The refused-authentication line carries one of the four reason values and no log line holds a secret"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Add (*Server).Destroy and ErrNotHeld with a context on the registry removal path",
       "criteria": [
-        "25-REQ-7.6",
-        "25-REQ-8"
-      ],
-      "tests": [
-        "TS-25-31",
-        "TS-25-33",
-        "TS-25-34",
-        "TS-25-35",
-        "TS-25-36",
-        "TS-25-37",
-        "TS-25-38"
+        "REQ-7.6",
+        "REQ-8"
       ],
       "steps": [
         "Write the seven tests (a recording backend wrapper recording each sandbox Close context; Counting.SetAfterCreate for TS-25-36) and confirm they fail",
@@ -268,20 +203,14 @@
       ],
       "done_when": [
         "After Server.Destroy a client sees exactly what it sees after TTL expiry"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Keep the command in static mode, pin the exported surface and update the documentation",
       "criteria": [
-        "25-REQ-9.1",
-        "25-REQ-9.5"
-      ],
-      "tests": [
-        "TS-25-39",
-        "TS-25-43"
+        "REQ-9.1",
+        "REQ-9.5"
       ],
       "steps": [
         "Write TS-25-39 in sandbox/gatewayd/cmd/agentkit-gateway (run the command's run function in process with a --token-file, make a no-token and a wrong-token RPC, assert reasons 'no token' then 'refused', and that run.go sets Tokens and never mentions Authenticate)",
@@ -313,37 +242,7 @@
       ],
       "done_when": [
         "`make doc` output differs from spec 19's only by the five identifiers and `make check` passes in every module"
-      ],
-      "state": "done"
-    },
-    {
-      "id": 8,
-      "kind": "integration",
-      "title": "Verify the four execution paths end to end through real components",
-      "tests": [
-        "TS-25-45",
-        "TS-25-46",
-        "TS-25-47",
-        "TS-25-48"
-      ],
-      "steps": [
-        "Write TS-25-45..TS-25-48 as smoke tests (sandbox/gatewayd/smoke25_test.go) over gwtest's in-memory listener, gwtest.Counting and the sandbox/gateway client, and confirm they pass",
-        "Trace 25-PATH-1 from Config.Authenticate through the tap handle, the principal context value, gatewayService.Create, Backend.Create and logCreate to a relayed tool call; confirm each step calls the next and no stub remains",
-        "Trace 25-PATH-2 from (*Server).Destroy through registry.remove with reasonEmbedder to the backend Close with the caller's ctx and the client's sandbox_unavailable; trace 25-PATH-3 (shared principal, foreign principal, revocation) and 25-PATH-4 (static hex SHA-256 principal and 8-character owner log)",
-        "Confirm for each contract criterion that the producer is consumed in production code: PrincipalFromContext reads the key the tap and interceptors write; Authenticate is called from the tap in New's grpc.InTapHandle option; Destroy's ErrNotHeld is returned from production code",
-        "Search the touched files (sandbox/gatewayd/*.go, internal/gwtest, docs) for panic(\"not implemented\"), TODO, and bare `return nil` on non-trivial paths, and remove any that remain",
-        "Run `make check` in every module and confirm spec 19 tests pass unchanged; do not run make check-release"
-      ],
-      "touches": [
-        "sandbox/gatewayd/smoke25_test.go"
-      ],
-      "depends_on": [
-        7
-      ],
-      "done_when": [
-        "`make check` passes in every module and all four smoke tests pass"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

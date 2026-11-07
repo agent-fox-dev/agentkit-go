@@ -4,9 +4,8 @@ spec_name: "ollama_provider"
 title: "Ollama provider on the native /api/chat API"
 status: "active"
 created_at: "2026-10-21T10:51:32.122926Z"
-updated_at: "2026-10-21T10:51:32.122926Z"
 intent_hash: "332871ef540aa3dfdf98e538628ed1fe065fc43fb6a6a0ab2c47051d5dbe0ab5"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/14-run-the-agent-on-anthropic-openrouter-or-ollama.md"
 ---
 ## Intent
@@ -353,3 +352,12 @@ The module cache is outside the repository, so none of these signatures could be
 | `api.ChatResponse` / `api.Metrics` | `ChatResponse{Model string; Message Message; Done bool; DoneReason string; Metrics}`; `Metrics{PromptEvalCount, PromptEvalCachedCount, EvalCount int; …}` (`PromptEvalCachedCount` per the probe) | unverified |
 | `api.StatusError` | `struct{ StatusCode int; Status string; ErrorMessage string }` with `Error() string` | unverified |
 | `api.ClientFromEnvironment`, `envconfig.Host` | Exist and read `OLLAMA_HOST` from the process environment | unverified; deliberately not used |
+
+## Glossary
+
+- **OLLAMA_HOST**: The only environment variable the provider reads (ollama.HostVar); the base URL of the Ollama server, defaulting to http://127.0.0.1:11434 (ollama.DefaultHost).
+- **done chunk**: The streamed /api/chat line with done:true; it carries done_reason, the response model and the token counts. A stream without it is truncated.
+- **num_ctx**: Ollama's context-length option; it takes effect only when a model loads, so a model already loaded at another length keeps that length until it unloads.
+- **presence bit**: The core.Usage flag recording that a field was reported, so a reported zero cost is not re-priced by Agent.priced.
+- **tool-pairing repair**: provider.RepairToolPairing, added by spec 27: drops failed or aborted assistant turns and their orphaned results and inserts a synthetic "No result provided" result for each unanswered call.
+- **tool-schema subset**: The part of a tool's JSON Schema that the SDK's tool-parameter type models, obtained by JSON-encoding the full schema and decoding it into that type; additionalProperties, format and bounds are dropped.

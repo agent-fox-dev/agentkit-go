@@ -4,9 +4,8 @@ spec_name: "outline_and_walk"
 title: "Outline package and a single exported workspace walk"
 status: "active"
 created_at: "2026-10-01T15:19:08.067618Z"
-updated_at: "2026-10-01T15:19:08.067618Z"
 intent_hash: "8d30a452d2675cd988c7eaef214d0c37d2991379f131959490a66cee9e2b9e08"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/04-add-symbol-navigation-tools.md"
 ---
 ## Intent
@@ -161,3 +160,15 @@ All symbols are standard library; the Go toolchain source is outside the reposit
 | `tools.RunArgv`, `ReducedEnv`, `setProcessGroup`, `killGroup`, `NewAccumulator`, `(*Accumulator).Truncated` | as declared in `tools/exec.go`, `tools/proc_unix.go`, `tools/proc_windows.go` and `tools/accumulator.go` | verified (read) |
 | universal-ctags JSON output | one JSON object per line with `_type` (`"tag"`), `name`, `path`, `line`, `kind`, and, with `--fields=+neKS`, `end`, `signature`, plus `scope` and `scopeKind` when the tag is nested | unverified (ctags cannot be run or read here; the parser must tolerate missing fields, which is why a line without name, path or line is skipped and counted) |
 | ctags options `--options=NONE`, `--output-format=json`, `--fields=+neKS`, `--sort=no`, `-f -` | as specified in the input, except `--sort=no` which is added | unverified |
+
+## Glossary
+
+- **ErrPathNotAllowed**: The existing tools sentinel error for paths outside the workspace.
+- **Runner**: The function type func(ctx, args []string) ([]byte, error) in outline.Options that runs ctags and returns its stdout; nil disables the ctags backend.
+- **backend**: The mechanism that produced a File's declarations: go/ast, ctags, heuristic or none. Named on every File.
+- **batch**: A group of at most 100 files and 32 KiB of path text passed to one ctags invocation.
+- **closed Kind set**: The values func, method, type, class, interface, enum, trait, const, var, module, macro.
+- **ctags**: Universal Ctags, an external program that lists tags in source files; optional at run time.
+- **heuristic backend**: Anchored line regular expressions that report column-0 declarations for ten named languages.
+- **hidden entry**: A file or directory whose name begins with a dot.
+- **walk**: The single unexported directory traversal in tools that applies the layered ignore engine and calls a callback for each entry.

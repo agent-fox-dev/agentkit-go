@@ -1,0 +1,53 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/progress.v3.json",
+  "spec_id": "22",
+  "spec_name": "embedder_helpers",
+  "schema_version": 3,
+  "updated_at": "2026-10-16T05:44:37.520489Z",
+  "tasks": [
+    {
+      "id": 1,
+      "state": "done"
+    },
+    {
+      "id": 2,
+      "state": "done"
+    },
+    {
+      "id": 3,
+      "state": "done"
+    },
+    {
+      "id": 4,
+      "state": "done"
+    },
+    {
+      "id": 5,
+      "state": "done"
+    },
+    {
+      "id": 6,
+      "state": "done"
+    },
+    {
+      "id": 7,
+      "state": "done"
+    },
+    {
+      "id": 8,
+      "state": "done"
+    },
+    {
+      "id": 9,
+      "state": "done"
+    },
+    {
+      "id": 10,
+      "state": "done"
+    },
+    {
+      "id": 11,
+      "state": "done"
+    }
+  ]
+}

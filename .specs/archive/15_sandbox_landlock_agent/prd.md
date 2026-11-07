@@ -4,9 +4,8 @@ spec_name: "sandbox_landlock_agent"
 title: "Sandbox agent self-confinement with Landlock"
 status: "active"
 created_at: "2026-10-12T14:27:15.108012Z"
-updated_at: "2026-10-12T14:27:15.108012Z"
 intent_hash: "23392eb18106e15ff181bfa06f0e47254841a744619d17b1a6af04d57f6813ae"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/11-run-tools-in-an-isolated-sandbox.md"
 ---
 ## Intent
@@ -378,3 +377,20 @@ Per steering, run `make doc`, then update:
 **`kernel.org/pub/linux/libs/security/libcap/psx`**: indirect, not called. **Unverified**: its cgo variant links with `-Wl,-wrap,pthread_create`, and its non-cgo variant uses `syscall.AllThreadsSyscall`. Whether that link flag passes Go's cgo flag allowlist under the host-cgo gate without `CGO_LDFLAGS_ALLOW` is unknown.
 
 **Standard library** (Go 1.27). **Unverified**: `syscall.Syscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err syscall.Errno)` on Linux, `filepath.EvalSymlinks`, `net.Listen`, `net.Dial`, `go/parser`, `go/ast`.
+
+## Glossary
+
+- **ABI**: The Landlock ABI version a kernel offers (1 = Linux 5.13 filesystem, 2 = 5.19 refer, 3 = 6.2 truncate, 4 = 6.7 TCP bind and connect). Kernel ABI is what the probe returned; applied ABI is the version of the ruleset actually applied, capped at 4.
+- **BestEffort**: go-landlock's Config method that silently downgrades to whatever the kernel supports, including to nothing; this module never calls it.
+- **Landlock**: The Linux security module that lets an unprivileged process restrict its own filesystem and network access irreversibly. Child processes inherit the restriction across fork and exec.
+- **LandlockInfo**: The host-side value in package sandbox that mirrors the agent's LandlockReport: ABI, KernelABI, TCP, Note, Writable and ReadOnly.
+- **Plan**: The pure function Plan(kernelABI, probeErr, mode) in sandbox/internal/confine that chooses the applied ABI, the TCP flag and the note.
+- **confine package**: sandbox/internal/confine, the only package that imports go-landlock and the only place a ruleset is built and applied; imported only by sandbox/cmd/agentkit-sandboxd.
+- **effective spec**: The Spec after CheckSpec has applied its defaults, as attach.New and sandbox.AgentArgs see it.
+- **fakeagent**: 13's in-repository test agent whose Hello response is configurable.
+- **probe**: The single call that asks the kernel for its Landlock ABI (landlock_create_ruleset with LANDLOCK_CREATE_RULESET_VERSION). Tests replace it through an unexported seam.
+- **re-executed child**: A test that runs its own test binary as a child process, so that a regression that confines a process confines only the child.
+- **ruleset**: The set of Landlock rules the agent applies to itself: writable roots, read-and-execute system directories, read-only /proc, read-write device files and, under NetworkNone at ABI 4, TCP handling with no port granted.
+- **system directories**: /usr, /bin, /sbin, /lib, /lib32, /lib64, /libx32, /etc and /opt, which the ruleset makes readable and executable.
+- **temporary directory**: TMPDIR of the agent's explicit environment, else TEMP, else TMP, else /tmp: the parent of 13's default spill directory <temporary directory>/agentkit-spill.
+- **writable root**: A directory under which the ruleset grants every filesystem right of the applied ABI: the workspace, HOME, the temporary directory and each --landlock-rw path.

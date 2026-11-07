@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "05",
   "spec_name": "find_references",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -29,23 +29,14 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Define exported Workspace.References types, boundaries, and validation seam",
       "criteria": [
-        "05-REQ-9.1",
-        "05-REQ-9.3",
-        "05-REQ-9.4",
-        "05-REQ-9.5",
-        "05-REQ-9.6",
-        "05-REQ-6.5"
-      ],
-      "tests": [
-        "TS-05-34",
-        "TS-05-45",
-        "TS-05-47",
-        "TS-05-48",
-        "TS-05-49",
-        "TS-05-50"
+        "REQ-9.1",
+        "REQ-9.3",
+        "REQ-9.4",
+        "REQ-9.5",
+        "REQ-9.6",
+        "REQ-6.5"
       ],
       "steps": [
         "Write unit and property tests TS-05-45, TS-05-47, TS-05-48, TS-05-49, TS-05-50, and TS-05-34 in tools/references_test.go asserting types, signatures, path validation, context cancellation, and MaxResults clamping, confirming they fail.",
@@ -61,27 +52,17 @@
       ],
       "done_when": [
         "go test ./tools/... -run 'TestWorkspaceReferences' -count=1 passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Implement symbol table declaration resolution and disambiguation",
       "criteria": [
-        "05-REQ-2.1",
-        "05-REQ-2.2",
-        "05-REQ-2.3",
-        "05-REQ-2.4",
-        "05-REQ-2.5"
-      ],
-      "tests": [
-        "TS-05-8",
-        "TS-05-9",
-        "TS-05-10",
-        "TS-05-11",
-        "TS-05-12"
+        "REQ-2.1",
+        "REQ-2.2",
+        "REQ-2.3",
+        "REQ-2.4",
+        "REQ-2.5"
       ],
       "steps": [
         "Write tests TS-05-8, TS-05-9, TS-05-10, TS-05-11, and TS-05-12 in tools/ref_resolve_test.go covering unqualified and qualified target lookups, filtering by kind and path, find_symbol disambiguation ranking, and fallback on unknown symbols.",
@@ -99,29 +80,18 @@
       ],
       "done_when": [
         "go test ./tools/... -run 'TestSymbolResolution' -count=1 passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Implement Go type resolution engine with synthetic stubs",
       "criteria": [
-        "05-REQ-3.1",
-        "05-REQ-3.2",
-        "05-REQ-3.3",
-        "05-REQ-3.4",
-        "05-REQ-3.5",
-        "05-REQ-3.6"
-      ],
-      "tests": [
-        "TS-05-13",
-        "TS-05-14",
-        "TS-05-15",
-        "TS-05-16",
-        "TS-05-17",
-        "TS-05-18"
+        "REQ-3.1",
+        "REQ-3.2",
+        "REQ-3.3",
+        "REQ-3.4",
+        "REQ-3.5",
+        "REQ-3.6"
       ],
       "steps": [
         "Write unit and property tests TS-05-13, TS-05-14, TS-05-15, TS-05-16, TS-05-17, and TS-05-18 in tools/ref_gotypes_test.go testing local workspace imports, synthetic external packages, resolved confidence, unrelated method exclusion, demotion of incompletely typed identifiers, and AST comment/position preservation.",
@@ -140,29 +110,18 @@
       ],
       "done_when": [
         "go test ./tools/... -run 'TestGoTypeResolver' -count=1 passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Implement multi-language lexical and text candidate reference scanner",
       "criteria": [
-        "05-REQ-4.1",
-        "05-REQ-4.2",
-        "05-REQ-4.3",
-        "05-REQ-4.4",
-        "05-REQ-4.5",
-        "05-REQ-4.6"
-      ],
-      "tests": [
-        "TS-05-19",
-        "TS-05-20",
-        "TS-05-21",
-        "TS-05-22",
-        "TS-05-23",
-        "TS-05-24"
+        "REQ-4.1",
+        "REQ-4.2",
+        "REQ-4.3",
+        "REQ-4.4",
+        "REQ-4.5",
+        "REQ-4.6"
       ],
       "steps": [
         "Write unit and property tests TS-05-19, TS-05-20, TS-05-21, TS-05-22, TS-05-23, and TS-05-24 in tools/ref_scanner_test.go covering ignore/hidden traversal, word boundary matching, comment/string discrimination, fallback for undeclared names, and 1-based line/column calculation.",
@@ -181,27 +140,17 @@
       ],
       "done_when": [
         "go test ./tools/... -run 'TestRefScanner' -count=1 passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Implement enclosing declaration attribution and snippet sanitization",
       "criteria": [
-        "05-REQ-5.1",
-        "05-REQ-5.2",
-        "05-REQ-5.3",
-        "05-REQ-5.4",
-        "05-REQ-5.5"
-      ],
-      "tests": [
-        "TS-05-25",
-        "TS-05-26",
-        "TS-05-27",
-        "TS-05-28",
-        "TS-05-29"
+        "REQ-5.1",
+        "REQ-5.2",
+        "REQ-5.3",
+        "REQ-5.4",
+        "REQ-5.5"
       ],
       "steps": [
         "Write unit and property tests TS-05-25, TS-05-26, TS-05-27, TS-05-28, and TS-05-29 in tools/ref_attribution_test.go covering outline line span inspection, innermost nesting selection, top-level <file> attribution, label formatting, and source snippet sanitization.",
@@ -219,25 +168,16 @@
       ],
       "done_when": [
         "go test ./tools/... -run 'TestAttribution' -count=1 passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Implement deterministic reference ranking, bounds, and truncation",
       "criteria": [
-        "05-REQ-6.1",
-        "05-REQ-6.2",
-        "05-REQ-6.3",
-        "05-REQ-6.4"
-      ],
-      "tests": [
-        "TS-05-30",
-        "TS-05-31",
-        "TS-05-32",
-        "TS-05-33"
+        "REQ-6.1",
+        "REQ-6.2",
+        "REQ-6.3",
+        "REQ-6.4"
       ],
       "steps": [
         "Write tests TS-05-30, TS-05-31, TS-05-32, and TS-05-33 in tools/ref_rank_test.go covering deterministic multi-tier sorting, test file exclusion via isTestFile, max_results truncation with CapMarker, and MaxFiles/MaxDuration partial bounds with SymbolPartialMarker.",
@@ -257,27 +197,17 @@
       ],
       "done_when": [
         "go test ./tools/... -run 'TestRefRanker' -count=1 passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Implement reference result text rendering and structured payload formatting",
       "criteria": [
-        "05-REQ-7.1",
-        "05-REQ-7.2",
-        "05-REQ-7.3",
-        "05-REQ-7.4",
-        "05-REQ-7.5"
-      ],
-      "tests": [
-        "TS-05-35",
-        "TS-05-36",
-        "TS-05-37",
-        "TS-05-38",
-        "TS-05-39"
+        "REQ-7.1",
+        "REQ-7.2",
+        "REQ-7.3",
+        "REQ-7.4",
+        "REQ-7.5"
       ],
       "steps": [
         "Write tests TS-05-35, TS-05-36, TS-05-37, TS-05-38, and TS-05-39 in tools/ref_render_test.go asserting text header format, file grouping and alignment, marker placement, ReferenceResult structured data payload, and zero-match responses.",
@@ -296,27 +226,17 @@
       ],
       "done_when": [
         "go test ./tools/... -run 'TestRefRender' -count=1 passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Wire reference cache lifecycle, invalidation hooks, and freshness refresh",
       "criteria": [
-        "05-REQ-8.1",
-        "05-REQ-8.2",
-        "05-REQ-8.3",
-        "05-REQ-8.4",
-        "05-REQ-8.5"
-      ],
-      "tests": [
-        "TS-05-40",
-        "TS-05-41",
-        "TS-05-42",
-        "TS-05-43",
-        "TS-05-44"
+        "REQ-8.1",
+        "REQ-8.2",
+        "REQ-8.3",
+        "REQ-8.4",
+        "REQ-8.5"
       ],
       "steps": [
         "Write tests TS-05-40, TS-05-41, TS-05-42, TS-05-43, and TS-05-44 in tools/ref_cache_test.go testing lazy cache initialization, write_file/edit_file dirty marking, shell tool whole-table revalidation, dirty package/file re-checking, and .gitignore revalidation.",
@@ -337,33 +257,20 @@
       ],
       "done_when": [
         "go test ./tools/... -run 'TestRefCache' -count=1 passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 9,
-      "kind": "implement",
       "title": "Implement find_references tool registration, input validation, and execution",
       "criteria": [
-        "05-REQ-1.1",
-        "05-REQ-1.2",
-        "05-REQ-1.3",
-        "05-REQ-1.4",
-        "05-REQ-1.5",
-        "05-REQ-1.6",
-        "05-REQ-1.7",
-        "05-REQ-9.2"
-      ],
-      "tests": [
-        "TS-05-1",
-        "TS-05-2",
-        "TS-05-3",
-        "TS-05-4",
-        "TS-05-5",
-        "TS-05-6",
-        "TS-05-7",
-        "TS-05-46"
+        "REQ-1.1",
+        "REQ-1.2",
+        "REQ-1.3",
+        "REQ-1.4",
+        "REQ-1.5",
+        "REQ-1.6",
+        "REQ-1.7",
+        "REQ-9.2"
       ],
       "steps": [
         "Write tests TS-05-1, TS-05-2, TS-05-3, TS-05-4, TS-05-5, TS-05-6, TS-05-7, and TS-05-46 in tools/find_references_test.go validating tool registration, argument schema, input error cases, context cancellation, and parity between Workspace.References and find_references.",
@@ -384,25 +291,16 @@
       ],
       "done_when": [
         "go test ./tools/... -run 'TestFindReferencesTool' -count=1 passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 10,
-      "kind": "implement",
       "title": "Register tool in wiring, update system prompt goldens, verify policies, and update documentation",
       "criteria": [
-        "05-REQ-10.1",
-        "05-REQ-10.2",
-        "05-REQ-10.3",
-        "05-REQ-10.4"
-      ],
-      "tests": [
-        "TS-05-51",
-        "TS-05-52",
-        "TS-05-53",
-        "TS-05-54"
+        "REQ-10.1",
+        "REQ-10.2",
+        "REQ-10.3",
+        "REQ-10.4"
       ],
       "steps": [
         "Write and run tests TS-05-51, TS-05-52, TS-05-53, and TS-05-54 checking policy compliance, prompt golden matching, 6 navigation tools in FileNavigationTools(), and documentation updates.",
@@ -426,43 +324,7 @@
       ],
       "done_when": [
         "make check passes and doc updates are verified"
-      ],
-      "state": "done",
-      "optional": false
-    },
-    {
-      "id": 11,
-      "kind": "integration",
-      "title": "Verify end-to-end reference discovery, embedder seam, and cache invalidation",
-      "tests": [
-        "TS-05-55",
-        "TS-05-56",
-        "TS-05-57",
-        "TS-05-58",
-        "TS-05-59"
-      ],
-      "steps": [
-        "Write and execute TS-05-55, TS-05-56, TS-05-57, TS-05-58, and TS-05-59 in tools/references_smoke_test.go against real workspace fixtures.",
-        "Trace 05-PATH-1 through production code: verify Go method caller lookup resolves exact types with 'resolved' confidence and attributes callers to enclosing declarations.",
-        "Trace 05-PATH-2 through production code: verify multi-language lexical caller lookup outside comments/strings attributes to enclosing functions with 'lexical' confidence.",
-        "Trace 05-PATH-3 through production code: verify fallback text search for an undeclared identifier returns 0 matched declarations with 'text' confidence.",
-        "Trace 05-PATH-4 through production code: verify programmatic Workspace.References produces identical structured reference results without model turns.",
-        "Trace 05-PATH-5 through production code: verify write_file dirty marking causes reference cache re-parsing and exposes new callers on subsequent reference queries.",
-        "For every criterion with a contract (REQ-1.3, REQ-1.4, REQ-1.5, REQ-1.6, REQ-1.7, REQ-2.1, REQ-2.2, REQ-2.3, REQ-2.4, REQ-3.1, REQ-3.2, REQ-3.3, REQ-3.4, REQ-3.5, REQ-4.1, REQ-4.2, REQ-4.3, REQ-4.4, REQ-4.5, REQ-5.1, REQ-5.2, REQ-5.3, REQ-6.2, REQ-6.3, REQ-6.4, REQ-7.3, REQ-7.5, REQ-8.1, REQ-8.2, REQ-8.3, REQ-8.4, REQ-8.5, REQ-9.2, REQ-9.3, REQ-9.4, REQ-9.5), confirm the producer's result is consumed by a caller in production code.",
-        "Scan all touched files for TODO, NotImplementedError, panic(\\\"not implemented\\\"), and bare nil returns on non-trivial paths and verify none remain.",
-        "Run `make check` to ensure all tests pass, formatting is clean, and linters pass cleanly."
-      ],
-      "touches": [
-        "tools/references_smoke_test.go"
-      ],
-      "depends_on": [
-        10
-      ],
-      "done_when": [
-        "make check passes and all 5 smoke tests pass"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     }
   ]
 }

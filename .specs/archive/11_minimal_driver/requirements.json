@@ -1,472 +1,763 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
   "spec_id": "11",
   "spec_name": "minimal_driver",
-  "schema_version": 2,
-  "introduction": "Specification 11 implements the streamlined agentkit.Config and New driver loop with prompt prefix caching breakpoints, transcript tool result pruning, batch tool execution, nested tool calling, and termination handling, providing a focused, robust driver for unattended coding pipelines.",
-  "glossary": {
-    "anchored_token_estimation": "Context token estimation strategy anchoring to the latest assistant usage report and adding 4 characters per token for subsequent messages.",
-    "cache_breakpoint": "Prompt caching annotation (cache_control: {type: ephemeral}) placed on the last block of system, tools, prefix, and rolling user messages.",
-    "context_pruning": "Replacing old tool result content in outbound model requests with single-line elision notices without modifying durable transcript messages.",
-    "nested_caller": "Context-attached helper that permits tools declaring ReachableTools to execute child tools within their resolved reachable set.",
-    "synthetic_truncation_result": "A deterministic notice appended as a ToolResultMessage when an assistant message with tool calls hits the output token cap (StopReasonLength)."
-  },
+  "schema_version": 3,
   "requirements": [
     {
-      "id": "11-REQ-1",
+      "id": "REQ-1",
       "title": "Driver Configuration and Constructor Validation",
       "rationale": "A streamlined configuration structure with strict validation ensures deterministic driver instantiation while avoiding legacy configuration sprawl.",
       "criteria": [
         {
-          "id": "11-REQ-1.1",
+          "id": "REQ-1.1",
           "pattern": "ubiquitous",
           "system": "driver package",
-          "action": "define Config with Client, Provider, Model, Effort, System, Prefix, Tools, Policy, Guard, After, MaxTurns, MaxCostUSD, Timeout, Prune, and MaxTokens fields"
+          "action": "define Config with Client, Provider, Model, Effort, System, Prefix, Tools, Policy, Guard, After, MaxTurns, MaxCostUSD, Timeout, Prune, and MaxTokens fields",
+          "contract": "agentkit.Config defines all 15 fields with the expected types",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the agentkit Go package"
+            ],
+            "pseudocode": "cfg := agentkit.Config{\n    Client:     &anthropic.Client{},\n    Provider:   faux.New(),\n    Model:      \"claude-3-5-sonnet\",\n    Effort:     agentkit.EffortHigh,\n    System:     \"system instruction\",\n    Prefix:     []core.Message{core.UserMessage(\"preamble\")},\n    Tools:      []core.Tool{toolA},\n    Policy:     core.NewAllowAllPolicy(),\n    Guard:      guardFunc,\n    After:      afterFunc,\n    MaxTurns:   10,\n    MaxCostUSD: 1.5,\n    Timeout:    30 * time.Second,\n    Prune:      agentkit.PruneOptions{Threshold: 0.35, KeepTurns: 2},\n    MaxTokens:  4096,\n}\nassert cfg.Model == \"claude-3-5-sonnet\""
+          }
         },
         {
-          "id": "11-REQ-1.2",
+          "id": "REQ-1.2",
           "pattern": "unwanted",
           "condition": "both cfg.Client and cfg.Provider are nil",
           "system": "driver constructor",
           "action": "reject construction with an error indicating that an Anthropic client or core provider must be provided",
-          "contract": "returns nil *Agent and non-nil error"
+          "contract": "returns nil *Agent and non-nil error",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Config with Client=nil and Provider=nil"
+            ],
+            "pseudocode": "cfg := agentkit.Config{Model: \"claude-3-5-sonnet\"}\na, err := agentkit.New(cfg)\nassert a == nil\nassert err != nil\nassert strings.Contains(err.Error(), \"client or provider\")"
+          }
         },
         {
-          "id": "11-REQ-1.3",
+          "id": "REQ-1.3",
           "pattern": "unwanted",
           "condition": "cfg.Model is empty",
           "system": "driver constructor",
           "action": "reject construction with an error indicating that a model identifier is required",
-          "contract": "returns nil *Agent and non-nil error"
+          "contract": "returns nil *Agent and non-nil error",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Config with valid Provider and Model=''"
+            ],
+            "pseudocode": "cfg := agentkit.Config{Provider: faux.New(), Model: \"\"}\na, err := agentkit.New(cfg)\nassert a == nil\nassert err != nil\nassert strings.Contains(err.Error(), \"model\")"
+          }
         },
         {
-          "id": "11-REQ-1.4",
+          "id": "REQ-1.4",
           "pattern": "unwanted",
           "condition": "any tool in cfg.Tools specifies both Handler and Execute, specifies neither, contains reachability cycles, or declares a wrapper reaching a terminating tool",
           "system": "driver constructor",
           "action": "reject construction with an error describing the invalid tool configuration",
-          "contract": "returns nil *Agent and non-nil error"
+          "contract": "returns nil *Agent and non-nil error",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "configurations specifying invalid tool definitions (both Handler and Execute, neither, cycles, or wrappers to terminating tools)"
+            ],
+            "pseudocode": "// Both Handler and Execute\nt1 := core.Tool{Name: \"both\", Handler: h, Execute: e}\n_, err1 := agentkit.New(agentkit.Config{Provider: fp, Model: \"m\", Tools: []core.Tool{t1}})\nassert err1 != nil\n\n// Neither Handler nor Execute\nt2 := core.Tool{Name: \"neither\"}\n_, err2 := agentkit.New(agentkit.Config{Provider: fp, Model: \"m\", Tools: []core.Tool{t2}})\nassert err2 != nil\n\n// Cycle in reachability\nt3 := core.Tool{Name: \"cycleA\", Handler: h, ReachableTools: []string{\"cycleB\"}}\nt4 := core.Tool{Name: \"cycleB\", Handler: h, ReachableTools: []string{\"cycleA\"}}\n_, err3 := agentkit.New(agentkit.Config{Provider: fp, Model: \"m\", Tools: []core.Tool{t3, t4}})\nassert err3 != nil\n\n// Wrapper reaching terminating tool\ntTerm := core.Tool{Name: \"done\", Handler: h, Terminating: true}\ntWrap := core.Tool{Name: \"wrap\", Handler: h, ReachableTools: []string{\"done\"}}\n_, err4 := agentkit.New(agentkit.Config{Provider: fp, Model: \"m\", Tools: []core.Tool{tTerm, tWrap}})\nassert err4 != nil"
+          }
         },
         {
-          "id": "11-REQ-1.5",
+          "id": "REQ-1.5",
           "pattern": "event_driven",
           "condition": "cfg contains a valid configuration and tool hierarchy",
           "system": "driver constructor",
           "action": "resolve active tools using cfg.Policy.Resolve(cfg.Tools) and return an initialized Agent instance",
-          "contract": "returns non-nil *Agent and nil error"
+          "contract": "returns non-nil *Agent and nil error",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Config with both Client and Provider supplied, along with Tools and a ToolPolicy filtering tools"
+            ],
+            "pseudocode": "policy := core.NewAllowListPolicy(\"toolA\")\ncfg := agentkit.Config{\n    Client:   &anthropic.Client{},\n    Provider: fauxProvider,\n    Model:    \"claude-3-5-sonnet\",\n    Tools:    []core.Tool{toolA, toolB},\n    Policy:   policy,\n}\na, err := agentkit.New(cfg)\nassert err == nil\nassert a != nil\nassert len(a.ReachableTools()) == 1\nassert a.ReachableTools()[0].Name == \"toolA\"\n// Verify that provider takes precedence over client\nres, err := a.Run(ctx, \"hello\")\nassert fauxProvider.RequestsCount() > 0"
+          }
         },
         {
-          "id": "11-REQ-1.6",
-          "pattern": "complex_event",
-          "condition": "cfg.Provider is provided",
-          "guard": "cfg.Client is also provided",
+          "id": "REQ-1.6",
+          "pattern": "event_driven",
+          "condition": "cfg.Provider is provided and cfg.Client is also provided",
           "system": "driver constructor",
-          "action": "prioritize cfg.Provider over cfg.Client for model dispatch"
+          "action": "prioritize cfg.Provider over cfg.Client for model dispatch",
+          "check": {
+            "same_as": "REQ-1.5"
+          }
         }
       ]
     },
     {
-      "id": "11-REQ-2",
+      "id": "REQ-2",
       "title": "Eager Shell Tool Guard Enforcement",
       "rationale": "Eagerly checking for shell tools across direct and nested tool hierarchies prevents accidental unguarded command execution before runs start.",
+      "system": "driver constructor",
       "criteria": [
         {
-          "id": "11-REQ-2.1",
+          "id": "REQ-2.1",
           "pattern": "unwanted",
           "condition": "any tool resolved from cfg.Tools is a shell tool recognized by guard.IsShellTool and cfg.Guard is nil",
-          "system": "driver constructor",
           "action": "reject construction with an error wrapping core.ErrUnguardedExecute naming the tool",
-          "contract": "returns nil *Agent and error wrapping core.ErrUnguardedExecute"
+          "contract": "returns nil *Agent and error wrapping core.ErrUnguardedExecute",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Config with an active shell tool and Guard=nil"
+            ],
+            "pseudocode": "shellTool := core.Tool{Name: \"execute\", Handler: dummyHandler}\ncfg := agentkit.Config{\n    Provider: faux.New(),\n    Model:    \"claude-3-5-sonnet\",\n    Tools:    []core.Tool{shellTool},\n    Guard:    nil,\n}\na, err := agentkit.New(cfg)\nassert a == nil\nassert errors.Is(err, core.ErrUnguardedExecute)\nassert strings.Contains(err.Error(), \"execute\")"
+          }
         },
         {
-          "id": "11-REQ-2.2",
+          "id": "REQ-2.2",
           "pattern": "unwanted",
           "condition": "any tool transitively reachable through tool wrappers in the resolved tool set is a shell tool recognized by guard.IsShellTool and cfg.Guard is nil",
-          "system": "driver constructor",
           "action": "reject construction with an error wrapping core.ErrUnguardedExecute naming the wrapper and reached shell tool",
-          "contract": "returns nil *Agent and error wrapping core.ErrUnguardedExecute"
+          "contract": "returns nil *Agent and error wrapping core.ErrUnguardedExecute",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Config with a wrapper tool reaching a shell tool and Guard=nil"
+            ],
+            "pseudocode": "shellTool := core.Tool{Name: \"bash\", Handler: dummyHandler}\nwrapperTool := core.Tool{Name: \"codemode\", Handler: dummyHandler, ReachableTools: []string{\"bash\"}}\ncfg := agentkit.Config{\n    Provider: faux.New(),\n    Model:    \"claude-3-5-sonnet\",\n    Tools:    []core.Tool{wrapperTool, shellTool},\n    Guard:    nil,\n}\na, err := agentkit.New(cfg)\nassert a == nil\nassert errors.Is(err, core.ErrUnguardedExecute)\nassert strings.Contains(err.Error(), \"codemode\")\nassert strings.Contains(err.Error(), \"bash\")"
+          }
         },
         {
-          "id": "11-REQ-2.3",
+          "id": "REQ-2.3",
           "pattern": "event_driven",
           "condition": "any reachable tool is a shell tool and cfg.Guard is non-nil",
-          "system": "driver constructor",
           "action": "accept the configuration and initialize the Agent without returning core.ErrUnguardedExecute",
-          "contract": "returns non-nil *Agent and nil error"
+          "contract": "returns non-nil *Agent and nil error",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Config containing direct or transitively reachable shell tools and a non-nil Guard"
+            ],
+            "pseudocode": "shellTool := core.Tool{Name: \"execute\", Handler: dummyHandler}\nguardFunc := func(ctx context.Context, call core.ToolCall) (core.BeforeToolCallResult, error) {\n    return core.BeforeToolCallResult{Action: core.ToolCallActionAllow}, nil\n}\ncfg := agentkit.Config{\n    Provider: faux.New(),\n    Model:    \"claude-3-5-sonnet\",\n    Tools:    []core.Tool{shellTool},\n    Guard:    guardFunc,\n}\na, err := agentkit.New(cfg)\nassert err == nil\nassert a != nil"
+          }
         }
       ]
     },
     {
-      "id": "11-REQ-3",
+      "id": "REQ-3",
       "title": "Consumer Execution Surface and Concurrency Control",
       "rationale": "Restricting the public surface to essential execution and inspection methods provides a clean consumer API and eliminates legacy steering and session complexity.",
+      "system": "Agent",
       "criteria": [
         {
-          "id": "11-REQ-3.1",
+          "id": "REQ-3.1",
           "pattern": "ubiquitous",
-          "system": "Agent",
-          "action": "expose its public API consisting solely of Run, Stream, Messages, Usage, and ReachableTools methods"
+          "action": "expose its public API consisting solely of Run, Stream, Messages, Usage, and ReachableTools methods",
+          "contract": "the exported methods of *Agent consist solely of Run, Stream, Messages, Usage, and ReachableTools",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an initialized Agent instance"
+            ],
+            "pseudocode": "agentType := reflect.TypeOf(&agentkit.Agent{})\nmethods := make(map[string]bool)\nfor i := 0; i < agentType.NumMethod(); i++ {\n    m := agentType.Method(i)\n    if m.PkgPath == \"\" { // exported method\n        methods[m.Name] = true\n    }\n}\nexpected := map[string]bool{\n    \"Run\":            true,\n    \"Stream\":         true,\n    \"Messages\":       true,\n    \"Usage\":          true,\n    \"ReachableTools\": true,\n}\nassert reflect.DeepEqual(methods, expected)"
+          }
         },
         {
-          "id": "11-REQ-3.2",
+          "id": "REQ-3.2",
           "pattern": "event_driven",
           "condition": "a caller invokes Run(ctx, prompt)",
-          "system": "Agent",
           "action": "execute the minimal driver loop to a stop condition, record turns to its transcript, and return a RunResult containing transcript messages, usage, turn count, and stop reason",
-          "contract": "returns (core.RunResult, error)"
+          "contract": "returns (core.RunResult, error)",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an Agent configured with a scripted faux provider"
+            ],
+            "pseudocode": "fp := faux.New(\n    faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall(\"c1\", \"toolA\", \"{}\")),\n    faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"all done\")),\n)\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{toolA}})\nres, err := agent.Run(context.Background(), \"do work\")\nassert err == nil\nassert res.StopReason == core.RunStopEndTurn\nassert len(res.Messages) > 0\nassert agent.Messages().Equals(res.Messages)\nassert res.Usage.TotalTokens() > 0"
+          }
         },
         {
-          "id": "11-REQ-3.3",
+          "id": "REQ-3.3",
           "pattern": "event_driven",
           "condition": "a caller invokes Stream(ctx, prompt)",
-          "system": "Agent",
           "action": "launch the driver loop asynchronously and return an active *core.EventStream that receives execution events without blocking the producer loop",
-          "contract": "returns (*core.EventStream, error)"
+          "contract": "returns (*core.EventStream, error)",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an Agent configured with a scripted multi-turn faux provider"
+            ],
+            "pseudocode": "fp := faux.New(faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"streamed response\")))\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\"})\nst, err := agent.Stream(context.Background(), \"stream prompt\")\nassert err == nil\nassert st != nil\n\nvar received []core.Event\nfor ev := range st.Events() {\n    received = append(received, ev)\n}\nassert len(received) > 0"
+          }
         },
         {
-          "id": "11-REQ-3.4",
+          "id": "REQ-3.4",
           "pattern": "unwanted",
           "condition": "Run or Stream is invoked while another Run or Stream execution is actively in flight on the same Agent instance",
-          "system": "Agent",
           "action": "reject the call immediately with core.ErrBusy",
-          "contract": "returns core.ErrBusy"
+          "contract": "returns core.ErrBusy",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an Agent with an active in-flight execution"
+            ],
+            "pseudocode": "gate := make(chan struct{})\nfp := faux.New(faux.Turn{\n    Blocks: []core.ContentBlock{core.TextBlock{Text: \"waiting\"}},\n    Delay:  500 * time.Millisecond,\n})\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\"})\n\ngo func() {\n    _, _ = agent.Run(context.Background(), \"run 1\")\n    close(gate)\n}()\ntime.Sleep(50 * time.Millisecond)\n\n_, err := agent.Run(context.Background(), \"run 2\")\nassert errors.Is(err, core.ErrBusy)\n<-gate"
+          }
         },
         {
-          "id": "11-REQ-3.5",
+          "id": "REQ-3.5",
           "pattern": "ubiquitous",
-          "system": "Agent",
-          "action": "for any concurrent invocation of Messages(), Usage(), or ReachableTools() while a run is executing, safely return a consistent view of the respective state without deadlocking or data races"
+          "action": "for any concurrent invocation of Messages(), Usage(), or ReachableTools() while a run is executing, safely return a consistent view of the respective state without deadlocking or data races",
+          "contract": "each concurrent invocation returns a consistent view of the respective state without deadlocking or data races",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "an Agent executing a multi-turn run in a background goroutine"
+            ],
+            "pseudocode": "agent, _ := agentkit.New(agentkit.Config{Provider: fpMultiTurn, Model: \"claude-3-5-sonnet\", Tools: tools})\nctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)\ndefer cancel()\n\nvar wg sync.WaitGroup\nwg.Add(1)\ngo func() {\n    defer wg.Done()\n    _, _ = agent.Run(ctx, \"start multi-turn\")\n}()\n\n// For any concurrent read of Messages(), Usage(), ReachableTools()\nfor i := 0; i < 50; i++ {\n    wg.Add(1)\n    go func() {\n        defer wg.Done()\n        _ = agent.Messages()\n        _ = agent.Usage()\n        _ = agent.ReachableTools()\n    }()\n}\nwg.Wait()"
+          }
         }
       ]
     },
     {
-      "id": "11-REQ-4",
+      "id": "REQ-4",
       "title": "Prompt Assembly and Cache Breakpoints",
       "rationale": "System prompt guidelines and four-point cache breakpoints maximize model prompt cache reuse across turns while keeping system instructions aligned with available tools.",
+      "system": "driver",
       "criteria": [
         {
-          "id": "11-REQ-4.1",
+          "id": "REQ-4.1",
           "pattern": "event_driven",
           "condition": "assembling the system prompt for a model request",
-          "system": "driver",
-          "action": "combine cfg.System with active tool PromptGuidelines deduplicated in first-seen order using prompt.Build"
+          "action": "combine cfg.System with active tool PromptGuidelines deduplicated in first-seen order using prompt.Build",
+          "contract": "the assembled system prompt combines cfg.System with active tool PromptGuidelines deduplicated in first-seen order",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Config with cfg.System and tools declaring prompt guidelines with duplicates"
+            ],
+            "pseudocode": "t1 := core.Tool{Name: \"t1\", Handler: h, PromptGuidelines: []string{\"Rule A\", \"Rule B\"}}\nt2 := core.Tool{Name: \"t2\", Handler: h, PromptGuidelines: []string{\"Rule B\", \"Rule C\"}}\ncfg := agentkit.Config{\n    Provider: faux.New(),\n    Model:    \"claude-3-5-sonnet\",\n    System:   \"Base instruction\",\n    Tools:    []core.Tool{t1, t2},\n}\nsys := prompt.Build(cfg.System, cfg.Tools)\n// Deduplicated in first-seen order\nassert strings.Contains(sys, \"Base instruction\")\nassert strings.Index(sys, \"Rule A\") < strings.Index(sys, \"Rule B\")\nassert strings.Index(sys, \"Rule B\") < strings.Index(sys, \"Rule C\")\nassert strings.Count(sys, \"Rule B\") == 1"
+          }
         },
         {
-          "id": "11-REQ-4.2",
+          "id": "REQ-4.2",
           "pattern": "event_driven",
           "condition": "constructing outbound messages for a model request",
-          "system": "driver",
-          "action": "prepend cfg.Prefix messages before the initial user prompt and conversation history"
+          "action": "prepend cfg.Prefix messages before the initial user prompt and conversation history",
+          "contract": "outbound messages sent to the provider prepend cfg.Prefix messages before the initial user prompt and conversation turns",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Config with non-empty cfg.Prefix messages and a user prompt"
+            ],
+            "pseudocode": "prefix := []core.Message{\n    core.UserMessage(\"Preamble 1\"),\n    core.AssistantMessage{Content: core.Content{core.TextBlock{Text: \"Acknowledged\"}}},\n}\nfp := faux.New(faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"done\")))\nagent, _ := agentkit.New(agentkit.Config{\n    Provider: fp,\n    Model:    \"claude-3-5-sonnet\",\n    Prefix:   prefix,\n})\n_, _ = agent.Run(context.Background(), \"user question\")\n\nreqs := fp.Requests()\nassert len(reqs) > 0\nsent := reqs[0].Messages\nassert sent[0].Equals(prefix[0])\nassert sent[1].Equals(prefix[1])\nassert sent[2].Role == core.RoleUser\nassert strings.Contains(sent[2].Text(), \"user question\")"
+          }
         },
         {
-          "id": "11-REQ-4.3",
+          "id": "REQ-4.3",
           "pattern": "ubiquitous",
-          "system": "driver",
-          "action": "stamp an ephemeral cache control breakpoint on the final content block of the assembled system prompt"
+          "action": "stamp an ephemeral cache control breakpoint on the final content block of the assembled system prompt",
+          "contract": "the final content block of the system prompt carries an ephemeral cache control breakpoint; the final tool definition in the tool list carries an ephemeral cache control breakpoint; the final content block of cfg.Prefix carries an ephemeral cache control breakpoint; the final content block of the most recent user message carries an ephemeral cache control breakpoint",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an Agent with System, Tools, Prefix, and User messages"
+            ],
+            "pseudocode": "agent, _ := agentkit.New(agentkit.Config{\n    Provider: fp,\n    Model:    \"claude-3-5-sonnet\",\n    System:   \"System instructions\",\n    Tools:    []core.Tool{toolA, toolB},\n    Prefix:   []core.Message{core.UserMessage(\"prefix text\")},\n})\n_, _ = agent.Run(context.Background(), \"user prompt\")\n\nreq := fp.Requests()[0]\n// 1. System final block\nassert req.System[len(req.System)-1].CacheControl.Type == \"ephemeral\"\n// 2. Final tool\nassert req.Tools[len(req.Tools)-1].CacheControl.Type == \"ephemeral\"\n// 3. Prefix final block\nprefixBlock := req.Messages[0].Content[len(req.Messages[0].Content)-1]\nassert prefixBlock.CacheControl.Type == \"ephemeral\"\n// 4. Final user block\nuserMsg := req.Messages[len(req.Messages)-1]\nassert userMsg.Content[len(userMsg.Content)-1].CacheControl.Type == \"ephemeral\""
+          }
         },
         {
-          "id": "11-REQ-4.4",
-          "pattern": "complex_event",
-          "condition": "the resolved tool list contains at least one tool",
-          "guard": "model requests are dispatched",
-          "system": "driver",
-          "action": "stamp an ephemeral cache control breakpoint on the final tool definition in the tool list"
+          "id": "REQ-4.4",
+          "pattern": "event_driven",
+          "condition": "the resolved tool list contains at least one tool and model requests are dispatched",
+          "action": "stamp an ephemeral cache control breakpoint on the final tool definition in the tool list",
+          "check": {
+            "same_as": "REQ-4.3"
+          }
         },
         {
-          "id": "11-REQ-4.5",
-          "pattern": "complex_event",
-          "condition": "cfg.Prefix contains one or more messages with content blocks",
-          "guard": "model requests are dispatched",
-          "system": "driver",
-          "action": "stamp an ephemeral cache control breakpoint on the final content block of the prefix messages"
+          "id": "REQ-4.5",
+          "pattern": "event_driven",
+          "condition": "cfg.Prefix contains one or more messages with content blocks and model requests are dispatched",
+          "action": "stamp an ephemeral cache control breakpoint on the final content block of the prefix messages",
+          "check": {
+            "same_as": "REQ-4.3"
+          }
         },
         {
-          "id": "11-REQ-4.6",
+          "id": "REQ-4.6",
           "pattern": "event_driven",
           "condition": "outbound user messages are prepared for a request",
-          "system": "driver",
-          "action": "stamp an ephemeral cache control breakpoint on the final content block of the most recent user message"
+          "action": "stamp an ephemeral cache control breakpoint on the final content block of the most recent user message",
+          "check": {
+            "same_as": "REQ-4.3"
+          }
         }
       ]
     },
     {
-      "id": "11-REQ-5",
+      "id": "REQ-5",
       "title": "Outbound Context Pruning and Context Window Bounds",
       "rationale": "Outbound context pruning prevents model context overflows by aging out verbose tool results while preserving complete conversation history on durable transcripts.",
+      "system": "driver",
       "criteria": [
         {
-          "id": "11-REQ-5.1",
+          "id": "REQ-5.1",
           "pattern": "ubiquitous",
-          "system": "driver",
-          "action": "define PruneOptions with Threshold float64 and KeepTurns int fields"
+          "action": "define PruneOptions with Threshold float64 and KeepTurns int fields",
+          "contract": "agentkit.PruneOptions defines Threshold as float64 and KeepTurns as int",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the agentkit package"
+            ],
+            "pseudocode": "opts := agentkit.PruneOptions{\n    Threshold: 0.35,\n    KeepTurns: 2,\n}\nassert opts.Threshold == 0.35\nassert opts.KeepTurns == 2"
+          }
         },
         {
-          "id": "11-REQ-5.2",
-          "pattern": "complex_event",
-          "condition": "cfg.Prune.Threshold is greater than zero before issuing an outbound request",
-          "guard": "the ratio of estimated outbound tokens to the model context window retrieved via catalog.Lookup meets or exceeds cfg.Prune.Threshold",
-          "system": "driver",
-          "action": "replace the body of tool results older than KeepTurns in the outbound view with a single elision notice stating the tool name and original byte length"
+          "id": "REQ-5.2",
+          "pattern": "event_driven",
+          "condition": "cfg.Prune.Threshold is greater than zero before issuing an outbound request and the ratio of estimated outbound tokens to the model context window retrieved via catalog.Lookup meets or exceeds cfg.Prune.Threshold",
+          "action": "replace the body of tool results older than KeepTurns in the outbound view with a single elision notice stating the tool name and original byte length",
+          "contract": "tool results from turns older than KeepTurns have content replaced by the elision notice stating tool name and byte count; tool results within the KeepTurns window remain unpruned",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an agent configured with KeepTurns=1 and Threshold=0.35, where estimated tokens reach 40% of context window"
+            ],
+            "pseudocode": "agent, _ := agentkit.New(agentkit.Config{\n    Provider: fp,\n    Model:    \"claude-3-5-sonnet\",\n    Prune:    agentkit.PruneOptions{Threshold: 0.35, KeepTurns: 1},\n    Tools:    []core.Tool{toolA},\n})\n// Execute turns so that turn 1 tool result is older than KeepTurns\n_, _ = agent.Run(context.Background(), \"run query\")\n\nreq := fp.Requests()[len(fp.Requests())-1]\n// Turn 1 result in outbound request must be elided\noutboundResult := findToolResultInMessages(req.Messages, \"call_1\")\nassert strings.Contains(outboundResult.Text, \"[result of toolA (1500 bytes) elided; call again if needed]\")\n\n// Turn 2 result (within KeepTurns) remains unpruned\nrecentResult := findToolResultInMessages(req.Messages, \"call_2\")\nassert !strings.Contains(recentResult.Text, \"elided\")"
+          }
         },
         {
-          "id": "11-REQ-5.3",
+          "id": "REQ-5.3",
           "pattern": "ubiquitous",
-          "system": "driver",
-          "action": "for any tool result pruned in the outbound view, preserve its ToolUseID pairing with the corresponding assistant ToolUseBlock"
+          "action": "for any tool result pruned in the outbound view, preserve its ToolUseID pairing with the corresponding assistant ToolUseBlock",
+          "contract": "its ToolUseID strictly matches the ID of the corresponding assistant ToolUseBlock in the preceding message",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a multi-turn conversation with varying numbers of tool calls and pruned turns"
+            ],
+            "pseudocode": "for trial := 0; trial < 10; trial++ {\n    runPrunedConversation(trial)\n    req := fp.LastRequest()\n    for _, msg := range req.Messages {\n        for _, b := range msg.Content {\n            if tr, ok := b.(core.ToolResultBlock); ok {\n                // For any tool result pruned in the outbound view\n                paired := findPrecedingToolUse(req.Messages, tr.ToolUseID)\n                assert paired != nil\n                assert paired.ID == tr.ToolUseID\n            }\n        }\n    }\n}"
+          }
         },
         {
-          "id": "11-REQ-5.4",
+          "id": "REQ-5.4",
           "pattern": "ubiquitous",
-          "system": "driver",
-          "action": "for any outbound pruning operation, leave the durable transcript returned by Messages() and RunResult.Messages intact and unmodified"
+          "action": "for any outbound pruning operation, leave the durable transcript returned by Messages() and RunResult.Messages intact and unmodified",
+          "contract": "the durable transcript returned by Messages() and RunResult.Messages contains the original unelided tool result content intact",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a run undergoing context pruning in outbound requests"
+            ],
+            "pseudocode": "res, _ := agent.Run(context.Background(), \"long workflow\")\n// For any outbound pruning operation\nfor _, msg := range agent.Messages() {\n    for _, b := range msg.Content {\n        if tr, ok := b.(core.ToolResultBlock); ok {\n            assert !strings.Contains(tr.Text, \"[result of \")\n            assert !strings.Contains(tr.Text, \"elided; call again if needed]\")\n        }\n    }\n}\nassert agent.Messages().Equals(res.Messages)"
+          }
         },
         {
-          "id": "11-REQ-5.5",
+          "id": "REQ-5.5",
           "pattern": "unwanted",
           "condition": "estimated transcript tokens exceed the model context window capacity retrieved from catalog.Lookup after pruning",
-          "system": "driver",
           "action": "terminate the run immediately with RunStopError and return an error identifying the model and context window limit",
-          "contract": "RunResult.StopReason is RunStopError and RunResult.Error names the model and context window limit"
+          "contract": "RunResult.StopReason is RunStopError and RunResult.Error names the model and context window limit",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a conversation whose estimated tokens exceed the catalog model context window capacity after pruning"
+            ],
+            "pseudocode": "fp := faux.New(hugeTurnGeneratingMassiveContent)\nagent, _ := agentkit.New(agentkit.Config{\n    Provider: fp,\n    Model:    \"claude-3-5-sonnet\",\n    Prune:    agentkit.PruneOptions{Threshold: 0.35, KeepTurns: 1},\n})\nres, err := agent.Run(context.Background(), \"prompt\")\nassert res.StopReason == core.RunStopError\nassert res.Error != nil\nassert strings.Contains(res.Error.Error(), \"claude-3-5-sonnet\")\nassert strings.Contains(res.Error.Error(), \"context window\")"
+          }
         }
       ]
     },
     {
-      "id": "11-REQ-6",
+      "id": "REQ-6",
       "title": "Turn Continuation and Truncation Notice",
       "rationale": "Decoupling continuation from provider stop reasons and synthesizing fixed truncation notices prevents partial tool execution bugs while allowing models to recover.",
+      "system": "driver",
       "criteria": [
         {
-          "id": "11-REQ-6.1",
+          "id": "REQ-6.1",
           "pattern": "ubiquitous",
-          "system": "driver",
-          "action": "determine turn continuation exclusively by evaluating whether the assistant message contains one or more ToolUseBlock elements, independent of StopReason"
+          "action": "determine turn continuation exclusively by evaluating whether the assistant message contains one or more ToolUseBlock elements, independent of StopReason",
+          "contract": "the loop continues if and only if ToolUseBlock elements are present, regardless of StopReason",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "assistant messages with various StopReason values (e.g. StopReasonStop with tool calls, or StopReasonLength with no tool calls)"
+            ],
+            "pseudocode": "// Turn with StopReasonStop but containing ToolUseBlock -> continues\nturnWithTools := faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxToolCall(\"c1\", \"toolA\", \"{}\"))\n// Turn with StopReasonLength but containing no ToolUseBlock -> does not continue\nturnWithoutTools := faux.FauxAssistantMessage(core.StopReasonLength, faux.FauxText(\"truncated text\"))\n\nfp := faux.New(turnWithTools, turnWithoutTools)\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{toolA}})\nres, _ := agent.Run(context.Background(), \"test continuation\")\nassert res.Turns == 2"
+          }
         },
         {
-          "id": "11-REQ-6.2",
-          "pattern": "complex_event",
-          "condition": "an assistant message contains one or more ToolUseBlock elements",
-          "guard": "its StopReason is StopReasonLength",
-          "system": "driver",
-          "action": "skip handler execution for all tool calls in the batch and append a synthetic ToolResultMessage to each call stating that the call was not executed due to output token limits"
+          "id": "REQ-6.2",
+          "pattern": "event_driven",
+          "condition": "an assistant message contains one or more ToolUseBlock elements and its StopReason is StopReasonLength",
+          "action": "skip handler execution for all tool calls in the batch and append a synthetic ToolResultMessage to each call stating that the call was not executed due to output token limits",
+          "contract": "no tool handler functions in the batch are executed; each tool call receives the exact synthetic ToolResultMessage notice citing output token limit truncation; the synthetic results are appended to the transcript and the driver continues to the next turn without terminating",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an assistant message with ToolUseBlock and StopReasonLength"
+            ],
+            "pseudocode": "var handlerCalled bool\ntool := core.Tool{\n    Name: \"my_tool\",\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        handlerCalled = true\n        return core.ToolResult{Content: \"done\"}, nil\n    },\n}\nfp := faux.New(\n    faux.FauxAssistantMessage(core.StopReasonLength, faux.FauxToolCall(\"call_1\", \"my_tool\", `{\"partial\":`)),\n    faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"finished\")),\n)\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{tool}})\nres, err := agent.Run(context.Background(), \"trigger\")\nassert err == nil\nassert !handlerCalled\n\nexpectedNotice := \"Tool call \\\"my_tool\\\" was not executed: the response hit the output token limit,\\nso its arguments may be truncated. Re-issue the tool call with complete arguments.\"\ntr := findToolResultInMessages(res.Messages, \"call_1\")\nassert tr.Text == expectedNotice\nassert res.Turns == 2"
+          }
         },
         {
-          "id": "11-REQ-6.3",
+          "id": "REQ-6.3",
           "pattern": "event_driven",
           "condition": "synthetic truncation tool results are appended following a StopReasonLength response",
-          "system": "driver",
-          "action": "continue to the next turn without terminating the run"
+          "action": "continue to the next turn without terminating the run",
+          "check": {
+            "same_as": "REQ-6.2"
+          }
         },
         {
-          "id": "11-REQ-6.4",
+          "id": "REQ-6.4",
           "pattern": "unwanted",
           "condition": "an assistant message contains no ToolUseBlock elements and StopReason is StopReasonRefusal",
-          "system": "driver",
           "action": "terminate the run with RunStopRefusal and return an error wrapping core.ErrRefusal",
-          "contract": "RunResult.StopReason is RunStopRefusal and RunResult.Error wraps core.ErrRefusal"
+          "contract": "RunResult.StopReason is RunStopRefusal and RunResult.Error wraps core.ErrRefusal",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an assistant message with no ToolUseBlock and StopReasonRefusal"
+            ],
+            "pseudocode": "fp := faux.New(faux.FauxAssistantMessage(core.StopReasonRefusal, faux.FauxText(\"I cannot fulfill this request\")))\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\"})\nres, err := agent.Run(context.Background(), \"unsafe prompt\")\nassert res.StopReason == core.RunStopRefusal\nassert errors.Is(res.Error, core.ErrRefusal)"
+          }
         },
         {
-          "id": "11-REQ-6.5",
-          "pattern": "complex_event",
-          "condition": "an assistant message contains no ToolUseBlock elements",
-          "guard": "its StopReason is neither an error nor a refusal",
-          "system": "driver",
+          "id": "REQ-6.5",
+          "pattern": "event_driven",
+          "condition": "an assistant message contains no ToolUseBlock elements and its StopReason is neither an error nor a refusal",
           "action": "complete the run successfully with RunStopEndTurn",
-          "contract": "RunResult.StopReason is RunStopEndTurn and RunResult.Error is nil"
+          "contract": "RunResult.StopReason is RunStopEndTurn and RunResult.Error is nil",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an assistant message with text content, no ToolUseBlock, and StopReasonStop"
+            ],
+            "pseudocode": "fp := faux.New(faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"Answer completed.\")))\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\"})\nres, err := agent.Run(context.Background(), \"regular query\")\nassert err == nil\nassert res.StopReason == core.RunStopEndTurn\nassert res.Error == nil"
+          }
         }
       ]
     },
     {
-      "id": "11-REQ-7",
+      "id": "REQ-7",
       "title": "Batch Tool Execution Pipeline",
       "rationale": "Four-phase batch execution guarantees deterministic guard evaluation, atomic abort decisions, concurrent tool execution without premature sibling cancellation, and ordered results.",
+      "system": "driver",
       "criteria": [
         {
-          "id": "11-REQ-7.1",
+          "id": "REQ-7.1",
           "pattern": "event_driven",
           "condition": "preparing a batch of tool calls in Phase 1",
-          "system": "driver",
-          "action": "sequentially validate arguments using core.PrepareArguments and evaluate Config.Guard for each call on the loop goroutine, finalizing any blocked call or validation error immediately as an error result without invoking its handler"
+          "action": "sequentially validate arguments using core.PrepareArguments and evaluate Config.Guard for each call on the loop goroutine, finalizing any blocked call or validation error immediately as an error result without invoking its handler",
+          "contract": "core.PrepareArguments and Config.Guard run sequentially on the loop goroutine; invalid and blocked calls are finalized immediately as error results; their handlers are never invoked",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a batch of tool calls including an invalid argument call and a Guard-rejected call"
+            ],
+            "pseudocode": "var handlerInvoked bool\nt1 := core.Tool{\n    Name: \"schemaTool\",\n    Parameters: schema.Object(map[string]schema.Type{\"count\": schema.Integer()}),\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        handlerInvoked = true\n        return core.ToolResult{}, nil\n    },\n}\nguard := func(ctx context.Context, call core.ToolCall) (core.BeforeToolCallResult, error) {\n    if call.Name == \"blockedTool\" {\n        return core.BeforeToolCallResult{Action: core.ToolCallActionReject, Reason: \"disallowed\"}, nil\n    }\n    return core.BeforeToolCallResult{Action: core.ToolCallActionAllow}, nil\n}\n// Phase 1 executes sequentially on loop goroutine\nresults := executePhase1Prepare(calls, tools, guard)\nassert results[0].IsError // schema invalid\nassert results[1].IsError // guard rejected\nassert !handlerInvoked"
+          }
         },
         {
-          "id": "11-REQ-7.2",
-          "pattern": "complex_event",
-          "condition": "evaluating the Phase 2 abort decision before any handler starts",
-          "guard": "the run context is cancelled (ctx.Err() != nil)",
-          "system": "driver",
-          "action": "mark all remaining unfinalized calls as aborted without executing any handlers"
+          "id": "REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "evaluating the Phase 2 abort decision before any handler starts and the run context is cancelled (ctx.Err() != nil)",
+          "action": "mark all remaining unfinalized calls as aborted without executing any handlers",
+          "contract": "all remaining unfinalized calls are marked as aborted without executing any handlers",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a batch of valid prepared tool calls where ctx.Err() != nil before Phase 3 handlers spawn"
+            ],
+            "pseudocode": "ctx, cancel := context.WithCancel(context.Background())\ncancel() // cancel before Phase 2\n\nvar handlerExecuted bool\ntool := core.Tool{\n    Name: \"testTool\",\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        handlerExecuted = true\n        return core.ToolResult{}, nil\n    },\n}\nresults := executeBatch(ctx, calls, []core.Tool{tool}, nil, nil)\nassert !handlerExecuted\nfor _, r := range results {\n    assert r.IsAborted\n}"
+          }
         },
         {
-          "id": "11-REQ-7.3",
-          "pattern": "complex_event",
-          "condition": "evaluating the Phase 2 abort decision before handlers start",
-          "guard": "the run context is active (ctx.Err() == nil)",
-          "system": "driver",
-          "action": "dispatch all remaining unfinalized calls to Phase 3 execution"
+          "id": "REQ-7.3",
+          "pattern": "event_driven",
+          "condition": "evaluating the Phase 2 abort decision before handlers start and the run context is active (ctx.Err() == nil)",
+          "action": "dispatch all remaining unfinalized calls to Phase 3 execution",
+          "contract": "Phase 2 dispatches all unfinalized calls to Phase 3; handlers execute concurrently in separate goroutines joined by sync.WaitGroup without errgroup",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a batch of valid tool calls with an active context"
+            ],
+            "pseudocode": "var concurrentCount int32\nvar maxConcurrent int32\ntool := core.Tool{\n    Name: \"parallelTool\",\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        c := atomic.AddInt32(&concurrentCount, 1)\n        updateMax(&maxConcurrent, c)\n        time.Sleep(20 * time.Millisecond)\n        atomic.AddInt32(&concurrentCount, -1)\n        return core.ToolResult{Content: \"ok\"}, nil\n    },\n}\ncalls := []core.ToolCall{call1, call2, call3}\nresults := executeBatch(context.Background(), calls, []core.Tool{tool}, nil, nil)\nassert maxConcurrent > 1\nassert len(results) == 3"
+          }
         },
         {
-          "id": "11-REQ-7.4",
+          "id": "REQ-7.4",
           "pattern": "event_driven",
           "condition": "executing tool handlers in Phase 3 without Sequential tools",
-          "system": "driver",
-          "action": "execute handler functions concurrently with one goroutine per call joined by a sync.WaitGroup without using errgroup"
+          "action": "execute handler functions concurrently with one goroutine per call joined by a sync.WaitGroup without using errgroup",
+          "check": {
+            "same_as": "REQ-7.3"
+          }
         },
         {
-          "id": "11-REQ-7.5",
-          "pattern": "complex_event",
-          "condition": "executing tool handlers in Phase 3",
-          "guard": "at least one tool in the batch is marked Sequential",
-          "system": "driver",
-          "action": "execute handlers sequentially in call order"
+          "id": "REQ-7.5",
+          "pattern": "event_driven",
+          "condition": "executing tool handlers in Phase 3 and at least one tool in the batch is marked Sequential",
+          "action": "execute handlers sequentially in call order",
+          "contract": "handlers execute sequentially in assistant call order",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a batch of tool calls containing at least one tool marked Sequential"
+            ],
+            "pseudocode": "var concurrentCount int32\nvar maxConcurrent int32\nseqTool := core.Tool{\n    Name: \"seqTool\",\n    Sequential: true,\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        c := atomic.AddInt32(&concurrentCount, 1)\n        updateMax(&maxConcurrent, c)\n        time.Sleep(10 * time.Millisecond)\n        atomic.AddInt32(&concurrentCount, -1)\n        return core.ToolResult{Content: \"ok\"}, nil\n    },\n}\ncalls := []core.ToolCall{call1, call2}\nresults := executeBatch(context.Background(), calls, []core.Tool{seqTool}, nil, nil)\nassert maxConcurrent == 1"
+          }
         },
         {
-          "id": "11-REQ-7.6",
+          "id": "REQ-7.6",
           "pattern": "event_driven",
           "condition": "finalizing tool execution in Phase 4",
-          "system": "driver",
-          "action": "evaluate Config.After and emit completion events serialized under a batch-scoped mutex while assigning results by original slot index to preserve assistant call order"
+          "action": "evaluate Config.After and emit completion events serialized under a batch-scoped mutex while assigning results by original slot index to preserve assistant call order",
+          "contract": "Config.After and event emission are serialized under a batch-scoped mutex; results are placed by original slot index to preserve assistant call order",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "concurrent handlers finishing in arbitrary order"
+            ],
+            "pseudocode": "// Call 0 takes 50ms, Call 1 takes 5ms\ncalls := []core.ToolCall{\n    {ID: \"slot0\", Name: \"slowTool\"},\n    {ID: \"slot1\", Name: \"fastTool\"},\n}\nvar afterOrder []string\nafter := func(ctx context.Context, call core.ToolCall, res core.ToolResult) {\n    afterOrder = append(afterOrder, call.ID)\n}\nresults := executeBatch(context.Background(), calls, tools, nil, after)\n// Final results array must match slot index 0, then 1\nassert results[0].ToolUseID == \"slot0\"\nassert results[1].ToolUseID == \"slot1\""
+          }
         }
       ]
     },
     {
-      "id": "11-REQ-8",
+      "id": "REQ-8",
       "title": "Batch Tool Termination Voting",
       "rationale": "Tool-initiated termination allows tools to signal mission completion while ensuring batches always finish executing cleanly and blocked calls do not trigger termination.",
+      "system": "driver",
       "criteria": [
         {
-          "id": "11-REQ-8.1",
-          "pattern": "complex_event",
-          "condition": "any executed tool handler in a batch returns a result with Terminate set to true",
-          "guard": "the entire batch completes execution",
-          "system": "driver",
+          "id": "REQ-8.1",
+          "pattern": "event_driven",
+          "condition": "any executed tool handler in a batch returns a result with Terminate set to true and the entire batch completes execution",
           "action": "terminate the run with RunStopToolTerminate",
-          "contract": "RunResult.StopReason is RunStopToolTerminate"
+          "contract": "RunResult.StopReason is RunStopToolTerminate",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a batch of parallel tool calls where tool A returns Terminate: true and tool B is still running"
+            ],
+            "pseudocode": "var siblingFinished bool\ntoolTerm := core.Tool{\n    Name: \"termTool\",\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        return core.ToolResult{Terminate: true, Content: \"stopping\"}, nil\n    },\n}\ntoolSlow := core.Tool{\n    Name: \"slowTool\",\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        time.Sleep(20 * time.Millisecond)\n        siblingFinished = true\n        return core.ToolResult{Content: \"sibling ok\"}, nil\n    },\n}\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{toolTerm, toolSlow}})\nres, err := agent.Run(context.Background(), \"run both\")\nassert siblingFinished\nassert res.StopReason == core.RunStopToolTerminate"
+          }
         },
         {
-          "id": "11-REQ-8.2",
-          "pattern": "complex_event",
-          "condition": "an executed tool votes Terminate true in a parallel batch",
-          "guard": "sibling tool calls are concurrently executing in the same batch",
-          "system": "driver",
-          "action": "await completion of all sibling handlers before terminating the run"
+          "id": "REQ-8.2",
+          "pattern": "event_driven",
+          "condition": "an executed tool votes Terminate true in a parallel batch and sibling tool calls are concurrently executing in the same batch",
+          "action": "await completion of all sibling handlers before terminating the run",
+          "check": {
+            "same_as": "REQ-8.1"
+          }
         },
         {
-          "id": "11-REQ-8.3",
+          "id": "REQ-8.3",
           "pattern": "unwanted",
           "condition": "a tool call is blocked by Config.Guard or fails argument validation during Phase 1",
-          "system": "driver",
           "action": "record an error result without setting a termination vote",
-          "contract": "the blocked call does not trigger RunStopToolTerminate"
+          "contract": "the blocked call does not trigger RunStopToolTerminate",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a tool with Terminate capability whose call is blocked by Guard in Phase 1"
+            ],
+            "pseudocode": "termTool := core.Tool{\n    Name: \"termTool\",\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        return core.ToolResult{Terminate: true}, nil\n    },\n}\nguard := func(ctx context.Context, call core.ToolCall) (core.BeforeToolCallResult, error) {\n    return core.BeforeToolCallResult{Action: core.ToolCallActionReject, Reason: \"denied\"}, nil\n}\nfp := faux.New(\n    faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall(\"c1\", \"termTool\", \"{}\")),\n    faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"continue\")),\n)\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{termTool}, Guard: guard})\nres, _ := agent.Run(context.Background(), \"test guard\")\nassert res.StopReason != core.RunStopToolTerminate\nassert res.StopReason == core.RunStopEndTurn"
+          }
         }
       ]
     },
     {
-      "id": "11-REQ-9",
+      "id": "REQ-9",
       "title": "Nested Tool Execution Pipeline",
       "rationale": "The nested caller pipeline enables tools like Starlark code mode to execute child tools safely with bound reachability, parent attribution, and error introspection.",
       "criteria": [
         {
-          "id": "11-REQ-9.1",
+          "id": "REQ-9.1",
           "pattern": "event_driven",
           "condition": "executing a tool that declares ReachableTools",
           "system": "driver",
-          "action": "attach a core.NestedCaller configured with the tool's resolved reachable set to the handler's execution context"
+          "action": "attach a core.NestedCaller configured with the tool's resolved reachable set to the handler's execution context",
+          "contract": "a core.NestedCaller configured with the tool's resolved reachable set is attached to the handler's execution context",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a wrapper tool declaring ReachableTools=['childA', 'childB']"
+            ],
+            "pseudocode": "var nestedCaller core.NestedCaller\nwrapper := core.Tool{\n    Name: \"wrapper\",\n    ReachableTools: []string{\"childA\", \"childB\"},\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        nestedCaller = core.NestedCallerFromContext(ctx)\n        return core.ToolResult{Content: \"wrapped\"}, nil\n    },\n}\nexecuteWrapper(wrapper)\nassert nestedCaller != nil\nassert nestedCaller.Allows(\"childA\")\nassert nestedCaller.Allows(\"childB\")"
+          }
         },
         {
-          "id": "11-REQ-9.2",
+          "id": "REQ-9.2",
           "pattern": "unwanted",
           "condition": "a nested call attempts to invoke a tool outside the wrapper's resolved reachable set",
           "system": "nested caller",
           "action": "return an error result indicating that the tool is unreachable",
-          "contract": "returns ToolResult with IsError true"
+          "contract": "returns ToolResult with IsError true",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a wrapper executing with ReachableTools=['childA']"
+            ],
+            "pseudocode": "wrapper := core.Tool{\n    Name: \"wrapper\",\n    ReachableTools: []string{\"childA\"},\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        caller := core.NestedCallerFromContext(ctx)\n        results, err := caller.Call(ctx, []core.ToolCall{{ID: \"nc1\", Name: \"forbiddenTool\"}})\n        assert err == nil\n        assert len(results) == 1\n        assert results[0].IsError\n        assert strings.Contains(results[0].Content, \"unreachable\")\n        return core.ToolResult{Content: \"done\"}, nil\n    },\n}\nexecuteWrapper(wrapper)"
+          }
         },
         {
-          "id": "11-REQ-9.3",
+          "id": "REQ-9.3",
           "pattern": "event_driven",
           "condition": "a nested call is executed through NestedCaller.Call",
           "system": "nested caller",
-          "action": "emit execution events populated with ParentToolUseID matching the parent tool call identifier"
+          "action": "emit execution events populated with ParentToolUseID matching the parent tool call identifier",
+          "contract": "emitted execution events carry ParentToolUseID matching the parent tool call identifier",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a wrapper tool execution with ID 'parent_call_1' invoking child tool 'childA'"
+            ],
+            "pseudocode": "var emittedEvents []core.Event\neventSink := func(ev core.Event) { emittedEvents = append(emittedEvents, ev) }\nexecuteNested(parentID, childCall, eventSink)\n\nfor _, ev := range emittedEvents {\n    if se, ok := ev.(core.ToolStartEvent); ok && se.ToolName == \"childA\" {\n        assert se.ParentToolUseID == \"parent_call_1\"\n    }\n}"
+          }
         },
         {
-          "id": "11-REQ-9.4",
-          "pattern": "complex_event",
-          "condition": "a nested call is blocked by a BeforeToolCall interceptor",
-          "guard": "the wrapper evaluates the outcome",
+          "id": "REQ-9.4",
+          "pattern": "event_driven",
+          "condition": "a nested call is blocked by a BeforeToolCall interceptor and the wrapper evaluates the outcome",
           "system": "nested caller",
           "action": "return an error ToolResult value with a nil Go error to allow wrapper scripts to process the rejection",
-          "contract": "returns ([]core.ToolResult, nil) where the result element has IsError true"
+          "contract": "returns ([]core.ToolResult, nil) where the result element has IsError true",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a wrapper making a nested call intercepted by BeforeToolCall that rejects the call"
+            ],
+            "pseudocode": "guard := func(ctx context.Context, call core.ToolCall) (core.BeforeToolCallResult, error) {\n    return core.BeforeToolCallResult{Action: core.ToolCallActionReject, Reason: \"permission denied\"}, nil\n}\nwrapper := core.Tool{\n    Name: \"wrapper\",\n    ReachableTools: []string{\"childA\"},\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        caller := core.NestedCallerFromContext(ctx)\n        results, err := caller.Call(ctx, []core.ToolCall{{ID: \"nc1\", Name: \"childA\"}})\n        // Go error must be nil, result carries IsError true\n        assert err == nil\n        assert results[0].IsError\n        assert strings.Contains(results[0].Content, \"permission denied\")\n        return core.ToolResult{Content: \"handled rejection\"}, nil\n    },\n}\nexecuteWrapperWithGuard(wrapper, guard)"
+          }
         },
         {
-          "id": "11-REQ-9.5",
-          "pattern": "complex_event",
-          "condition": "an interceptor votes to terminate during a nested call",
-          "guard": "subsequent calls are attempted through the nested caller",
+          "id": "REQ-9.5",
+          "pattern": "event_driven",
+          "condition": "an interceptor votes to terminate during a nested call and subsequent calls are attempted through the nested caller",
           "system": "nested caller",
           "action": "reject subsequent calls with core.ErrTerminated and propagate the termination vote to the parent wrapper result",
-          "contract": "returns (nil, core.ErrTerminated)"
+          "contract": "returns (nil, core.ErrTerminated)",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an interceptor voting to terminate during a nested call"
+            ],
+            "pseudocode": "guard := func(ctx context.Context, call core.ToolCall) (core.BeforeToolCallResult, error) {\n    return core.BeforeToolCallResult{Action: core.ToolCallActionAllow, Terminate: true}, nil\n}\nwrapper := core.Tool{\n    Name: \"wrapper\",\n    ReachableTools: []string{\"childA\"},\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        caller := core.NestedCallerFromContext(ctx)\n        _, _ = caller.Call(ctx, []core.ToolCall{{ID: \"nc1\", Name: \"childA\"}})\n        // Subsequent call must fail with ErrTerminated\n        _, err2 := caller.Call(ctx, []core.ToolCall{{ID: \"nc2\", Name: \"childA\"}})\n        assert errors.Is(err2, core.ErrTerminated)\n        return core.ToolResult{Content: \"wrapper done\"}, nil\n    },\n}\nres := executeWrapperWithGuard(wrapper, guard)\nassert res.Terminate == true"
+          }
         }
       ]
     },
     {
-      "id": "11-REQ-10",
+      "id": "REQ-10",
       "title": "Run Limits, Bounds, and Stream Resilience",
       "rationale": "Strict turn limits, cost bounds, timeouts, panic recovery, and non-blocking streaming ensure unattended agent runs execute within predictable operational boundaries.",
       "criteria": [
         {
-          "id": "11-REQ-10.1",
-          "pattern": "complex_event",
-          "condition": "cfg.Timeout is greater than zero",
-          "guard": "the run context deadline expires during loop execution",
+          "id": "REQ-10.1",
+          "pattern": "event_driven",
+          "condition": "cfg.Timeout is greater than zero and the run context deadline expires during loop execution",
           "system": "driver",
           "action": "terminate the run with RunStopTimeout",
-          "contract": "RunResult.StopReason is RunStopTimeout"
+          "contract": "RunResult.StopReason is RunStopTimeout",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an Agent configured with Timeout=10ms and a faux provider turn delayed by 100ms"
+            ],
+            "pseudocode": "fp := faux.New(faux.Turn{\n    Blocks: []core.ContentBlock{core.TextBlock{Text: \"slow turn\"}},\n    Delay:  100 * time.Millisecond,\n})\nagent, _ := agentkit.New(agentkit.Config{\n    Provider: fp,\n    Model:    \"claude-3-5-sonnet\",\n    Timeout:  10 * time.Millisecond,\n})\nres, err := agent.Run(context.Background(), \"test timeout\")\nassert res.StopReason == core.RunStopTimeout"
+          }
         },
         {
-          "id": "11-REQ-10.2",
-          "pattern": "complex_event",
-          "condition": "cfg.MaxTurns is greater than zero",
-          "guard": "the completed turn count reaches cfg.MaxTurns",
+          "id": "REQ-10.2",
+          "pattern": "event_driven",
+          "condition": "cfg.MaxTurns is greater than zero and the completed turn count reaches cfg.MaxTurns",
           "system": "driver",
           "action": "terminate the run with RunStopMaxTurns and core.ErrMaxTurns",
-          "contract": "RunResult.StopReason is RunStopMaxTurns and RunResult.Error wraps core.ErrMaxTurns"
+          "contract": "RunResult.StopReason is RunStopMaxTurns and RunResult.Error wraps core.ErrMaxTurns",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an Agent configured with MaxTurns=2 and a faux provider generating 3 turns of tool calls"
+            ],
+            "pseudocode": "fp := faux.New(\n    faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall(\"c1\", \"toolA\", \"{}\")),\n    faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall(\"c2\", \"toolA\", \"{}\")),\n    faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall(\"c3\", \"toolA\", \"{}\")),\n)\nagent, _ := agentkit.New(agentkit.Config{\n    Provider: fp,\n    Model:    \"claude-3-5-sonnet\",\n    MaxTurns: 2,\n    Tools:    []core.Tool{toolA},\n})\nres, err := agent.Run(context.Background(), \"test max turns\")\nassert res.StopReason == core.RunStopMaxTurns\nassert errors.Is(res.Error, core.ErrMaxTurns)"
+          }
         },
         {
-          "id": "11-REQ-10.3",
-          "pattern": "complex_event",
-          "condition": "cfg.MaxCostUSD is greater than zero",
-          "guard": "accumulated model usage cost meets or exceeds cfg.MaxCostUSD before issuing a request",
+          "id": "REQ-10.3",
+          "pattern": "event_driven",
+          "condition": "cfg.MaxCostUSD is greater than zero and accumulated model usage cost meets or exceeds cfg.MaxCostUSD before issuing a request",
           "system": "driver",
           "action": "terminate before the request with RunStopBudgetExceeded and core.ErrBudgetExceeded",
-          "contract": "RunResult.StopReason is RunStopBudgetExceeded and RunResult.Error wraps core.ErrBudgetExceeded"
+          "contract": "RunResult.StopReason is RunStopBudgetExceeded and RunResult.Error wraps core.ErrBudgetExceeded",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an Agent configured with MaxCostUSD=0.05 and previous turns totaling $0.06"
+            ],
+            "pseudocode": "turn1 := faux.Turn{\n    Blocks: []core.ContentBlock{core.TextBlock{Text: \"t1\"}},\n    Usage:  core.Usage{InputTokens: 100000, OutputTokens: 100000}, // cost > $0.05\n}\nturn2 := faux.Turn{Blocks: []core.ContentBlock{core.TextBlock{Text: \"t2\"}}}\nfp := faux.New(turn1, turn2)\nagent, _ := agentkit.New(agentkit.Config{\n    Provider:   fp,\n    Model:      \"claude-3-5-sonnet\",\n    MaxCostUSD: 0.05,\n})\nres, err := agent.Run(context.Background(), \"test budget\")\nassert res.StopReason == core.RunStopBudgetExceeded\nassert errors.Is(res.Error, core.ErrBudgetExceeded)"
+          }
         },
         {
-          "id": "11-REQ-10.4",
-          "pattern": "complex_event",
-          "condition": "the run context is cancelled externally without a timeout expiration",
-          "guard": "the loop detects cancellation between turns",
+          "id": "REQ-10.4",
+          "pattern": "event_driven",
+          "condition": "the run context is cancelled externally without a timeout expiration and the loop detects cancellation between turns",
           "system": "driver",
           "action": "terminate the run with RunStopAborted and core.ErrAborted",
-          "contract": "RunResult.StopReason is RunStopAborted and RunResult.Error wraps core.ErrAborted"
+          "contract": "RunResult.StopReason is RunStopAborted and RunResult.Error wraps core.ErrAborted",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a running agent whose context is cancelled externally between turns"
+            ],
+            "pseudocode": "ctx, cancel := context.WithCancel(context.Background())\ntool := core.Tool{\n    Name: \"cancelTool\",\n    Handler: func(c context.Context, args json.RawMessage) (core.ToolResult, error) {\n        cancel() // external cancellation between turns\n        return core.ToolResult{Content: \"cancelling now\"}, nil\n    },\n}\nfp := faux.New(\n    faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall(\"c1\", \"cancelTool\", \"{}\")),\n    faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"should not reach\")),\n)\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{tool}})\nres, err := agent.Run(ctx, \"test abort\")\nassert res.StopReason == core.RunStopAborted\nassert errors.Is(res.Error, core.ErrAborted)"
+          }
         },
         {
-          "id": "11-REQ-10.5",
+          "id": "REQ-10.5",
           "pattern": "unwanted",
           "condition": "a tool handler, interceptor, or callback panics during execution",
           "system": "driver",
           "action": "recover the panic, record an error ToolResultMessage describing the panic, and emit an error event without terminating the host process",
-          "contract": "tool execution finishes with IsError true and the process remains alive"
+          "contract": "tool execution finishes with IsError true and the process remains alive",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a tool handler that panics during execution"
+            ],
+            "pseudocode": "tool := core.Tool{\n    Name: \"panickyTool\",\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        panic(\"unexpected explosion\")\n    },\n}\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{tool}})\nres, err := agent.Run(context.Background(), \"trigger panic\")\n// Panic must be recovered\ntr := findToolResultInMessages(res.Messages, \"panickyTool\")\nassert tr.IsError\nassert strings.Contains(tr.Text, \"panic: unexpected explosion\")"
+          }
         },
         {
-          "id": "11-REQ-10.6",
+          "id": "REQ-10.6",
           "pattern": "ubiquitous",
           "system": "driver event stream",
-          "action": "buffer and drop unread events according to StreamOptions without blocking loop goroutine execution on slow or detached consumers"
+          "action": "buffer and drop unread events according to StreamOptions without blocking loop goroutine execution on slow or detached consumers",
+          "contract": "the driver loop buffers and drops unread events according to StreamOptions without blocking loop goroutine execution on slow or detached consumers",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an Agent executing via Stream with a detached or slow consumer"
+            ],
+            "pseudocode": "fp := faux.New(multiTurnResponses...)\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\"})\nst, _ := agent.Stream(context.Background(), \"test non-blocking\")\n\n// Consumer does not read from st.Events() channel\ndone := make(chan struct{})\ngo func() {\n    _ = waitForStreamCompletion(st)\n    close(done)\n}()\nselect {\ncase <-done:\n    // Success, loop did not deadlock or block\ncase <-time.After(2 * time.Second):\n    t.Fatal(\"producer loop blocked on slow consumer\")\n}"
+          }
         }
       ]
     }
   ],
   "execution_paths": [
     {
-      "id": "11-PATH-1",
+      "id": "PATH-1",
       "title": "Multi-turn prompt execution with concurrent tool batch",
       "steps": [
         {
@@ -493,10 +784,25 @@
           "actor": "driver",
           "action": "returns a RunResult containing transcript messages, usage, and RunStopEndTurn"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "Agent",
+          "runLoop",
+          "executeBatch",
+          "faux.Provider"
+        ],
+        "setup": [
+          "an Agent initialized with real loop, executeBatch, and a faux provider scripting parallel tool calls and final text"
+        ],
+        "end_state": [
+          "the driver executes turns, prepares calls, runs handlers concurrently via sync.WaitGroup, orders results by slot index, and terminates with RunStopEndTurn"
+        ],
+        "pseudocode": "toolA := core.Tool{Name: \"toolA\", Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) { return core.ToolResult{Content: \"resA\"}, nil }}\ntoolB := core.Tool{Name: \"toolB\", Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) { return core.ToolResult{Content: \"resB\"}, nil }}\nfp := faux.New(\n    faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall(\"c1\", \"toolA\", \"{}\"), faux.FauxToolCall(\"c2\", \"toolB\", \"{}\")),\n    faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"finished\")),\n)\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{toolA, toolB}})\nres, err := agent.Run(context.Background(), \"run multi-turn batch\")\nassert err == nil\nassert res.StopReason == core.RunStopEndTurn\nassert res.Turns == 2\nassert len(res.Messages) > 0"
+      }
     },
     {
-      "id": "11-PATH-2",
+      "id": "PATH-2",
       "title": "Outbound context pruning under token threshold pressure",
       "steps": [
         {
@@ -515,10 +821,25 @@
           "actor": "provider",
           "action": "receives the pruned request and returns the next assistant turn successfully"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "Agent",
+          "runLoop",
+          "pruneOutboundView",
+          "faux.Provider"
+        ],
+        "setup": [
+          "an Agent initialized with PruneOptions(Threshold=0.35, KeepTurns=1) and a multi-turn scripted faux provider"
+        ],
+        "end_state": [
+          "outbound view elides old tool results with elision notice, provider receives pruned request, and durable Messages() transcript remains intact"
+        ],
+        "pseudocode": "agent, _ := agentkit.New(agentkit.Config{\n    Provider: fpMultiTurnLargeResults,\n    Model:    \"claude-3-5-sonnet\",\n    Prune:    agentkit.PruneOptions{Threshold: 0.35, KeepTurns: 1},\n    Tools:    []core.Tool{toolA},\n})\nres, err := agent.Run(context.Background(), \"start multi-turn pruning\")\nassert err == nil\noutboundReq := fpMultiTurnLargeResults.LastRequest()\noutboundResult := findToolResultInMessages(outboundReq.Messages, \"c1\")\nassert strings.Contains(outboundResult.Text, \"[result of toolA\")\nassert strings.Contains(outboundResult.Text, \"elided; call again if needed]\")\n// Durable transcript intact\nassert !strings.Contains(agent.Messages().Text(), \"elided; call again if needed]\")"
+      }
     },
     {
-      "id": "11-PATH-3",
+      "id": "PATH-3",
       "title": "Synthetic truncation recovery on max_tokens response",
       "steps": [
         {
@@ -541,10 +862,25 @@
           "actor": "driver",
           "action": "completes the run with RunStopEndTurn"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "Agent",
+          "runLoop",
+          "syntheticTruncation",
+          "faux.Provider"
+        ],
+        "setup": [
+          "an Agent configured with real loop and faux provider returning ToolUseBlock with StopReasonLength followed by complete response"
+        ],
+        "end_state": [
+          "tool handlers are bypassed, synthetic truncation notices are recorded, and the run continues to the next turn completing with RunStopEndTurn"
+        ],
+        "pseudocode": "var executed bool\ntool := core.Tool{Name: \"my_tool\", Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) { executed = true; return core.ToolResult{}, nil }}\nfp := faux.New(\n    faux.FauxAssistantMessage(core.StopReasonLength, faux.FauxToolCall(\"c1\", \"my_tool\", `{\"partial\":`)),\n    faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"reissued and finished\")),\n)\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{tool}})\nres, err := agent.Run(context.Background(), \"run recovery\")\nassert err == nil\nassert !executed\nassert res.StopReason == core.RunStopEndTurn\nassert strings.Contains(res.Messages[1].Content[0].(core.ToolResultBlock).Text, \"was not executed: the response hit the output token limit\")"
+      }
     },
     {
-      "id": "11-PATH-4",
+      "id": "PATH-4",
       "title": "Nested tool execution through wrapper tool",
       "steps": [
         {
@@ -571,10 +907,25 @@
           "actor": "driver",
           "action": "records the parent result in the batch and finishes the run"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "Agent",
+          "runLoop",
+          "executeBatch",
+          "nestedCaller"
+        ],
+        "setup": [
+          "an Agent configured with a wrapper tool declaring ReachableTools and a faux provider triggering the wrapper"
+        ],
+        "end_state": [
+          "nested caller is attached to context, child tool executes with parent attribution event, and parent tool result completes cleanly"
+        ],
+        "pseudocode": "child := core.Tool{Name: \"childTool\", Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) { return core.ToolResult{Content: \"child done\"}, nil }}\nwrapper := core.Tool{\n    Name: \"wrapperTool\",\n    ReachableTools: []string{\"childTool\"},\n    Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n        caller := core.NestedCallerFromContext(ctx)\n        res, _ := caller.Call(ctx, []core.ToolCall{{ID: \"nc1\", Name: \"childTool\"}})\n        return core.ToolResult{Content: \"wrapper: \" + res[0].Content}, nil\n    },\n}\nfp := faux.New(\n    faux.FauxAssistantMessage(core.StopReasonToolUse, faux.FauxToolCall(\"c1\", \"wrapperTool\", \"{}\")),\n    faux.FauxAssistantMessage(core.StopReasonStop, faux.FauxText(\"done\")),\n)\nagent, _ := agentkit.New(agentkit.Config{Provider: fp, Model: \"claude-3-5-sonnet\", Tools: []core.Tool{wrapper, child}})\nres, err := agent.Run(context.Background(), \"run wrapper\")\nassert err == nil\nassert res.StopReason == core.RunStopEndTurn\nassert strings.Contains(res.Messages[1].Content[0].(core.ToolResultBlock).Text, \"wrapper: child done\")"
+      }
     },
     {
-      "id": "11-PATH-5",
+      "id": "PATH-5",
       "title": "Eager shell tool guard enforcement rejection at construction",
       "steps": [
         {
@@ -589,10 +940,24 @@
           "actor": "driver constructor",
           "action": "rejects configuration immediately returning an error wrapping core.ErrUnguardedExecute naming the shell tool"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "agentkit.New",
+          "guard.IsShellTool",
+          "checkExecuteGuard"
+        ],
+        "setup": [
+          "a Config with a shell tool and nil Guard"
+        ],
+        "end_state": [
+          "construction is rejected immediately with an error wrapping core.ErrUnguardedExecute naming the shell tool"
+        ],
+        "pseudocode": "shellTool := core.Tool{Name: \"execute\", Handler: dummyHandler}\ncfg := agentkit.Config{\n    Provider: faux.New(),\n    Model:    \"claude-3-5-sonnet\",\n    Tools:    []core.Tool{shellTool},\n    Guard:    nil,\n}\nagent, err := agentkit.New(cfg)\nassert agent == nil\nassert errors.Is(err, core.ErrUnguardedExecute)\nassert strings.Contains(err.Error(), \"execute\")"
+      }
     },
     {
-      "id": "11-PATH-6",
+      "id": "PATH-6",
       "title": "Run termination on budget limit exceeded before request dispatch",
       "steps": [
         {
@@ -611,7 +976,22 @@
           "actor": "driver",
           "action": "returns RunResult with StopReason RunStopBudgetExceeded and core.ErrBudgetExceeded"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "Agent",
+          "runLoop",
+          "faux.Provider",
+          "core.Usage"
+        ],
+        "setup": [
+          "an Agent configured with MaxCostUSD and a faux provider whose first turn reports usage reaching MaxCostUSD"
+        ],
+        "end_state": [
+          "the driver halts before issuing the second request, returning RunStopBudgetExceeded and core.ErrBudgetExceeded"
+        ],
+        "pseudocode": "turn1 := faux.Turn{\n    Blocks: []core.ContentBlock{faux.FauxToolCall(\"c1\", \"toolA\", \"{}\")},\n    Usage:  core.Usage{InputTokens: 100000, OutputTokens: 100000}, // cost exceeds $0.05\n}\nturn2 := faux.Turn{Blocks: []core.ContentBlock{core.TextBlock{Text: \"t2\"}}}\nfp := faux.New(turn1, turn2)\nagent, _ := agentkit.New(agentkit.Config{\n    Provider:   fp,\n    Model:      \"claude-3-5-sonnet\",\n    MaxCostUSD: 0.05,\n    Tools:      []core.Tool{toolA},\n})\nres, err := agent.Run(context.Background(), \"test budget smoke\")\nassert res.StopReason == core.RunStopBudgetExceeded\nassert errors.Is(res.Error, core.ErrBudgetExceeded)"
+      }
     }
   ],
   "external_apis": [

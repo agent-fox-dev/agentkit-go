@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "14",
   "spec_name": "sandbox_rsync_sync",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -25,15 +25,10 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Add the bidirectional Rsync RPC and RsyncFrame to agentkit.sandbox.v1 and bump ProtocolMinor to 1",
       "criteria": [
-        "14-REQ-2.1",
-        "14-REQ-2.2"
-      ],
-      "tests": [
-        "TS-14-4",
-        "TS-14-5"
+        "REQ-2.1",
+        "REQ-2.2"
       ],
       "steps": [
         "Write TS-14-4 and TS-14-5 and confirm they fail",
@@ -61,23 +56,16 @@
       ],
       "done_when": [
         "`go build ./...` succeeds with no protoc on PATH"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Add github.com/gokrazy/rsync v0.3.8 behind sandbox/internal/rsyncx: the single DontRestrict server constructor, client wrapper, argument checks, Windows stubs, ruling and gates",
       "criteria": [
-        "14-REQ-9.1",
-        "14-REQ-9.2",
-        "14-REQ-9.3",
-        "14-REQ-7.2"
-      ],
-      "tests": [
-        "TS-14-42",
-        "TS-14-36",
-        "TS-14-43"
+        "REQ-9.1",
+        "REQ-9.2",
+        "REQ-9.3",
+        "REQ-7.2"
       ],
       "steps": [
         "Before touching go.mod, copy internal/policy/testdata/go-list-m-all.txt to internal/policy/testdata/go-list-m-all.13.txt as the baseline TS-14-42 compares against; then write TS-14-42, TS-14-36 and TS-14-43 and confirm they fail",
@@ -111,21 +99,15 @@
       "done_when": [
         "every line of internal/policy/testdata/go-list-m-all.13.txt appears unchanged in `go list -m all`",
         "TS-09-15 and TS-09-16 pass"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Add sandbox.LocalDir and the Deleted and Sent fields of SyncResult, and report Sent for Tar syncs",
       "criteria": [
-        "14-REQ-1.1",
-        "14-REQ-1.3",
-        "14-REQ-1.4"
-      ],
-      "tests": [
-        "TS-14-1",
-        "TS-14-3"
+        "REQ-1.1",
+        "REQ-1.3",
+        "REQ-1.4"
       ],
       "steps": [
         "Write TS-14-1 and TS-14-3 and confirm they fail",
@@ -144,26 +126,21 @@
         "sandbox/transfer_test.go",
         "sandbox/localdir_api_test.go",
         "sandbox/tar_sent_test.go"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Implement the rsyncx stream adapter and the per-side exclude-rule computation, combination and size cap",
       "criteria": [
-        "14-REQ-2.5",
-        "14-REQ-2.6",
-        "14-REQ-3.1",
-        "14-REQ-3.2",
-        "14-REQ-3.3",
-        "14-REQ-3.4",
-        "14-REQ-3.5",
-        "14-REQ-3.6",
-        "14-REQ-3.7"
-      ],
-      "tests": [
-        "TS-14-8"
+        "REQ-2.5",
+        "REQ-2.6",
+        "REQ-3.1",
+        "REQ-3.2",
+        "REQ-3.3",
+        "REQ-3.4",
+        "REQ-3.5",
+        "REQ-3.6",
+        "REQ-3.7"
       ],
       "steps": [
         "Write TS-14-8 and confirm it fails",
@@ -191,25 +168,17 @@
       ],
       "done_when": [
         "`go test -race ./sandbox/internal/rsyncx/... -count=1` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Implement the agent's Rsync service: one stream at a time, start validation, plan, argument checks, the DontRestrict server, done statistics and tool-set rebuild",
       "criteria": [
-        "14-REQ-6",
-        "14-REQ-2.3",
-        "14-REQ-2.4",
-        "14-REQ-2.7",
-        "14-REQ-4.4"
-      ],
-      "tests": [
-        "TS-14-7",
-        "TS-14-11",
-        "TS-14-31",
-        "TS-14-32"
+        "REQ-6",
+        "REQ-2.3",
+        "REQ-2.4",
+        "REQ-2.7",
+        "REQ-4.4"
       ],
       "steps": [
         "Write TS-14-7, TS-14-11, TS-14-31 and TS-14-32 and confirm they fail",
@@ -236,31 +205,20 @@
       "depends_on": [
         2,
         4
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Implement Sync of a LocalDir on the host: path resolution and checks, host rules, the start-plan-args handshake, the sending client and the SyncResult",
       "criteria": [
-        "14-REQ-4.1",
-        "14-REQ-4.2",
-        "14-REQ-4.4",
-        "14-REQ-4.5",
-        "14-REQ-4.6",
-        "14-REQ-4.7",
-        "14-REQ-3.6",
-        "14-REQ-1.2"
-      ],
-      "tests": [
-        "TS-14-14",
-        "TS-14-17",
-        "TS-14-18",
-        "TS-14-20",
-        "TS-14-21",
-        "TS-14-22",
-        "TS-14-23"
+        "REQ-4.1",
+        "REQ-4.2",
+        "REQ-4.4",
+        "REQ-4.5",
+        "REQ-4.6",
+        "REQ-4.7",
+        "REQ-3.6",
+        "REQ-1.2"
       ],
       "steps": [
         "Write TS-14-14, TS-14-17, TS-14-18, TS-14-20, TS-14-21, TS-14-22 and TS-14-23 and confirm they fail",
@@ -288,29 +246,16 @@
       ],
       "done_when": [
         "`go test -race ./sandbox/... -count=1` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Implement Export to a LocalDir: path and destination checks, destination rules, the receiving client against a read-only server, and the relayable stream",
       "criteria": [
-        "14-REQ-5",
-        "14-REQ-1.2",
-        "14-REQ-2.7",
-        "14-REQ-6.6"
-      ],
-      "tests": [
-        "TS-14-2",
-        "TS-14-6",
-        "TS-14-25",
-        "TS-14-26",
-        "TS-14-27",
-        "TS-14-28",
-        "TS-14-29",
-        "TS-14-30",
-        "TS-14-33"
+        "REQ-5",
+        "REQ-1.2",
+        "REQ-2.7",
+        "REQ-6.6"
       ],
       "steps": [
         "Write TS-14-2, TS-14-6, TS-14-25, TS-14-26, TS-14-27, TS-14-28, TS-14-29, TS-14-30 and TS-14-33 and confirm they fail",
@@ -337,28 +282,16 @@
       ],
       "depends_on": [
         6
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Complete LocalDir failure handling: pre-checks, refusals, transport failures, host library errors, cancellation, agent failures, TTL and Windows refusal",
       "criteria": [
-        "14-REQ-8",
-        "14-REQ-4.8",
-        "14-REQ-6.7",
-        "14-REQ-6.8"
-      ],
-      "tests": [
-        "TS-14-24",
-        "TS-14-34",
-        "TS-14-35",
-        "TS-14-37",
-        "TS-14-38",
-        "TS-14-39",
-        "TS-14-40",
-        "TS-14-41"
+        "REQ-8",
+        "REQ-4.8",
+        "REQ-6.7",
+        "REQ-6.8"
       ],
       "steps": [
         "Write TS-14-24, TS-14-34, TS-14-35, TS-14-37, TS-14-38, TS-14-39, TS-14-40 and TS-14-41 and confirm they fail",
@@ -387,31 +320,20 @@
       ],
       "done_when": [
         "`go test -race ./sandbox/... -count=1` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 9,
-      "kind": "implement",
       "title": "Prove the transfer set end to end: Walk agreement over generated trees, side-specific rules, .git, unreadable entries, the size cap and the either-side exclusion property",
       "criteria": [
-        "14-REQ-3.1",
-        "14-REQ-3.2",
-        "14-REQ-3.3",
-        "14-REQ-3.4",
-        "14-REQ-3.5",
-        "14-REQ-3.7",
-        "14-REQ-3.8",
-        "14-REQ-4.3"
-      ],
-      "tests": [
-        "TS-14-9",
-        "TS-14-10",
-        "TS-14-12",
-        "TS-14-13",
-        "TS-14-15",
-        "TS-14-16",
-        "TS-14-19"
+        "REQ-3.1",
+        "REQ-3.2",
+        "REQ-3.3",
+        "REQ-3.4",
+        "REQ-3.5",
+        "REQ-3.7",
+        "REQ-3.8",
+        "REQ-4.3"
       ],
       "steps": [
         "Create test-helper package sandbox/internal/treegen: Gen(t, seed) writes a tree with nested .gitignore files, `!` re-includes, .git/info/exclude, a nested repository, hidden files, internal and escaping symlinks, and names containing `*`, `?`, `[` and spaces; Pair(t, seed) writes (source, receiving) trees with overlapping names, different .gitignore patterns, escaping symlinks named like directories on the other side, and optional .git directories; both t.Logf the seed",
@@ -434,24 +356,16 @@
       ],
       "depends_on": [
         7
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 10,
-      "kind": "implement",
       "title": "Prove the embedding process stays unconfined, switch examples/sandbox to LocalDir, hold the API and size gates, and update the documentation",
       "criteria": [
-        "14-REQ-7.1",
-        "14-REQ-9.4",
-        "14-REQ-9.5",
-        "14-REQ-9.6"
-      ],
-      "tests": [
-        "TS-14-49",
-        "TS-14-43",
-        "TS-14-44",
-        "TS-14-45"
+        "REQ-7.1",
+        "REQ-9.4",
+        "REQ-9.5",
+        "REQ-9.6"
       ],
       "steps": [
         "Write TS-14-49, TS-14-44 and TS-14-45 and confirm the new parts fail",
@@ -483,40 +397,7 @@
       ],
       "done_when": [
         "`make check` exits 0"
-      ],
-      "state": "done"
-    },
-    {
-      "id": 11,
-      "kind": "integration",
-      "title": "Verify every LocalDir execution path end to end through the real code",
-      "tests": [
-        "TS-14-46",
-        "TS-14-47",
-        "TS-14-48",
-        "TS-14-49"
-      ],
-      "steps": [
-        "Write TS-14-46, TS-14-47 and TS-14-48 in sandbox/rsync_smoke_test.go (package sandbox_test, TMPDIR isolated; TS-14-46 with HOME and XDG_CONFIG_HOME pointed at empty directories and GIT_CONFIG_GLOBAL at an empty file) and re-run TS-14-49; none may use fakeagent or relaytest",
-        "Trace 14-PATH-1 through the code: Sync calls attach syncLocalDir, which checks state and protocol minor, resolves Path, calls rsyncx.Compute with LocalDir.Ignore and runRsync; the agent's Rsync validates start, calls rsyncx.Compute with NoGlobalExcludes and takes the before-snapshot, sends plan; attach calls rsyncx.Combine, CheckRuleSize, ClientArgs and ServerArgs and sends args; the agent calls CheckServerArgs, rsyncx.NewServer and Serve over AgentConn while attach calls RunClient over HostConn; the agent diffs snapshots, rebuilds the tool set and sends done; attach builds SyncResult with Sent from HostConn; a proxy read_file sees the change. Confirm each step calls the next",
-        "Trace 14-PATH-2: Export calls exportLocalDir, CleanRel, destination resolution and rsyncx.Compute over dst, sends the EXPORT start, merges plan rules with `.git`, runs RunClient as receiver against the read-only server, and leaves dst/.git and dst/.env untouched",
-        "Trace 14-PATH-3: localtest.RawClient reaches the agent's Rsync, whose start validation and rsyncx.CheckServerArgs refuse with InvalidArgument before rsyncx.NewServer, and a following proxy list_files and LocalDir Sync succeed; trace 14-PATH-4 from the parent test through the re-executed child's Sync and Export to its checks",
-        "Confirm every contract is consumed in production code: the done frame becomes SyncResult.Files, Bytes and Deleted and HostConn.Sent becomes Sent; the Tar counting reader fills Sent; agent InvalidArgument, NotFound and FailedPrecondition reach the caller as errors with the sandbox live; malformed Rsync responses and transport failures mark the sandbox unavailable; the rule-size error is returned before args; the ErrUnsupported pre-checks run before any walk; ctx cancellation is wrapped",
-        "Confirm entry points owned by spec 13 call this spec's code from production paths: local.Unisolated().Create builds the agent whose registered gRPC service exposes Rsync, attach's Sync and Export type switches route LocalDir to syncLocalDir and exportLocalDir, the tool-set rebuild helper shared with SyncTar runs after an rsync SYNC, and examples/sandbox/main.go uses LocalDir",
-        "Search every file in the tasks' touches lists for panic(\"not implemented\"), TODO, FIXME, `not implemented` errors, the temporary `%w: LocalDir` ErrUnsupported placeholder from task 3, any Rsync method still returning Unimplemented from task 1, and bare `return nil` on non-trivial paths, and replace each with the real behaviour",
-        "Run `make check` and `go test -race ./sandbox/... -count=1`"
-      ],
-      "touches": [
-        "sandbox/rsync_smoke_test.go"
-      ],
-      "depends_on": [
-        10
-      ],
-      "done_when": [
-        "`make check` exits 0",
-        "`go test -race ./sandbox/... -count=1` passes with the four smoke tests running against real components"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

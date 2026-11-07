@@ -1,604 +1,1123 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
   "spec_id": "03",
   "spec_name": "indexed_code_search",
-  "schema_version": 2,
-  "introduction": "A nested Go module, codesearch/, adds a zoekt-backed `code_search` tool that gives a model ranked, file-grouped answers about one working tree. A small standard-library-only seam in the root `tools` package (`tools.Index`, `Options.Index`) lets the index add tools, learn about writes, and serve `find_symbol`, without the root module or any embedder that skips the index paying for zoekt. The work is conditional on a go decision and on a set of risk checks that end the spec if they fail.",
-  "glossary": {
-    "REQ-TOOL-09b": "The rule that every truncation marker names a call that works.",
-    "TruncatedByLines / TruncatedByBytes": "The Metadata.Truncated values of package tools that record a count cap and a byte cap respectively.",
-    "dirty file": "A file that AgentKit's own tools may have changed since it was indexed, recorded through Index.Invalidate or found by revalidation.",
-    "go/no-go gate": "The measured decision rule in Requirement 1 that must hold before any code of this spec is merged.",
-    "outline backend": "The mechanism outline used for one file's symbols: go/ast, ctags, heuristic or none.",
-    "overlay shard": "A small extra shard holding only the dirty but still visible files, rebuilt only when the dirty set changes.",
-    "partial index": "An index whose build was stopped by the file, byte or time bound; it answers queries with partial: true and is not retried.",
-    "revalidation": "A workspace walk comparing (size, mtime) with the indexed values to find changed, new and removed files.",
-    "run directory": "The per-index-instance shard directory <TempDir>/agentkit-codesearch-<hash of root>/<run id>/.",
-    "seam": "The standard-library-only interface in package tools (Index, SymbolQuery, SymbolAnswer, Options.Index) through which codesearch plugs into the root module.",
-    "shard": "A zoekt index file written to disk for a set of documents.",
-    "zoekt": "A trigram-based code search engine with a boolean query language (substring, regexp, sym:, file:, lang: atoms) and its own scoring. Used in-process through the nested module only."
-  },
+  "schema_version": 3,
   "requirements": [
     {
-      "id": "03-REQ-1",
+      "id": "REQ-1",
       "title": "The gate and the nested module",
       "rationale": "A zoekt dependency is only worth carrying if measured search_files use justifies it, and it must stay confined to a module that embedders opt into.",
       "criteria": [
         {
-          "id": "03-REQ-1.1",
+          "id": "REQ-1.1",
           "pattern": "unwanted",
           "condition": "the measured figures on the navigation baseline plus at least two target repositories of 5 000 files or more show search_files below 25% of read-phase tool calls and fewer than one third of search_files results truncated or retried within two turns in the same directory, or any check in Requirement 9 fails",
           "system": "codesearch spec",
           "action": "merge no code of this spec and close the PRD with the measured numbers recorded in it, without changing the thresholds",
-          "contract": "No codesearch/ file, tools seam change or documentation change from this spec is merged; the PRD records the figures, the repositories and the date"
+          "contract": "No codesearch/ file, tools seam change or documentation change from this spec is merged; the PRD records the figures, the repositories and the date",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the recorded measurement figures: search_files share of read-phase calls, truncated-or-retried share, repository count and sizes"
+            ],
+            "pseudocode": "assert gate(share=0.30,trunc=0.1,repos=[5000,6000],r9=true)=='go'; assert gate(0.2,0.3,[5000,6000],true)=='nogo'; assert gate(0.3,0.1,[5000,6000],false)=='nogo'"
+          }
         },
         {
-          "id": "03-REQ-1.2",
+          "id": "REQ-1.2",
           "pattern": "ubiquitous",
           "system": "codesearch/README.md",
-          "action": "begin with the measured go/no-go figures, the repositories measured and the measurement date"
+          "action": "begin with the measured go/no-go figures, the repositories measured and the measurement date",
+          "contract": "the first content is the measured figures, the repositories and a date; it records module path and packages for builder, parser and searcher, memory vs file search, byte-offset symbol fields, search options, go list -m all and four-target build/vet results; it describes the opt-in with Options.Index and the allowlist entry, known differences from search_files, and that goldens are tied to the zoekt version",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "codesearch/README.md"
+            ],
+            "pseudocode": "t=read('codesearch/README.md'); assert firstSection(t) contains figures,repos,date; for k in required_topics: assert k in t"
+          }
         },
         {
-          "id": "03-REQ-1.3",
+          "id": "REQ-1.3",
           "pattern": "ubiquitous",
           "system": "codesearch module",
-          "action": "be the nested module github.com/agentfox/agentkit-go/codesearch with `replace github.com/agentfox/agentkit-go => ..`, a pinned zoekt release, a go.mod header comment stating the boundary rule as difftest/go.mod does, and the files index.go, search.go, tool.go and policy_test.go"
+          "action": "be the nested module github.com/agentfox/agentkit-go/codesearch with `replace github.com/agentfox/agentkit-go => ..`, a pinned zoekt release, a go.mod header comment stating the boundary rule as difftest/go.mod does, and the files index.go, search.go, tool.go and policy_test.go",
+          "contract": "the module path is github.com/agentfox/agentkit-go/codesearch; a replace maps github.com/agentfox/agentkit-go to ..; zoekt is required at an exact release version; the header comment states the boundary rule like difftest/go.mod; index.go, search.go, tool.go and policy_test.go exist",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the repository working tree"
+            ],
+            "pseudocode": "f=modfile.Parse('codesearch/go.mod'); assert f.Module.Path=='github.com/agentfox/agentkit-go/codesearch'; assert replace('github.com/agentfox/agentkit-go')=='..'; assert requires zoekt with semver tag; for n in files: assert exists"
+          }
         },
         {
-          "id": "03-REQ-1.4",
+          "id": "REQ-1.4",
           "pattern": "ubiquitous",
           "system": "root module",
-          "action": "keep go.mod, go.sum and internal/policy unedited, keep allowedModules unchanged, and keep `go list -deps ./...` in the root free of any module not present before this spec"
+          "action": "keep go.mod, go.sum and internal/policy unedited, keep allowedModules unchanged, and keep `go list -deps ./...` in the root free of any module not present before this spec",
+          "contract": "go.mod, go.sum and internal/policy have no diff; go list -deps ./... names no zoekt module or any module absent before the spec; allowedModules is unchanged; the policy tests pass",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the root go.mod, go.sum and internal/policy from before the spec"
+            ],
+            "pseudocode": "assert gitdiff(['go.mod','go.sum','internal/policy'])==''; deps=run('go list -deps ./...'); assert no 'sourcegraph/zoekt' in deps; assert run('go test ./internal/policy').ok"
+          }
         },
         {
-          "id": "03-REQ-1.5",
+          "id": "REQ-1.5",
           "pattern": "event_driven",
           "condition": "codesearch.New is called with a non-nil *tools.Workspace",
           "system": "codesearch.New",
           "action": "return a tools.Index without starting a goroutine, running a process, walking the workspace or touching the disk",
-          "contract": "Returns (tools.Index, nil); no goroutine count change, no child process and no file created"
+          "contract": "Returns (tools.Index, nil); no goroutine count change, no child process and no file created",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a temp workspace with files",
+              "a TempDir pointing at an empty temp directory",
+              "a fake Runner that records invocations",
+              "a counting wrapper around the walk"
+            ],
+            "pseudocode": "g=NumGoroutine(); idx,err=New(ws,opts); assert err==nil && idx!=nil; assert NumGoroutine()<=g; assert calls==0; assert len(ReadDir(tmp))==0; assert builds(idx)==0"
+          }
         },
         {
-          "id": "03-REQ-1.6",
+          "id": "REQ-1.6",
           "pattern": "unwanted",
           "condition": "codesearch.New is called with a nil workspace",
           "system": "codesearch.New",
           "action": "return an error and no index",
-          "contract": "Returns (nil, non-nil error)"
+          "contract": "Returns (nil, non-nil error)",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "idx,err=New(nil,Options{}); assert idx==nil; assert err!=nil"
+          }
         },
         {
-          "id": "03-REQ-1.7",
+          "id": "REQ-1.7",
           "pattern": "ubiquitous",
           "system": "codesearch.Options",
-          "action": "treat a zero or negative MaxFiles, MaxBytes, MaxBuildTime or TempDir-equivalent limit as its default (100 000 files, 1 GiB, 60 s, os.TempDir()) and treat a nil Env as tools.ReducedEnv(nil)"
+          "action": "treat a zero or negative MaxFiles, MaxBytes, MaxBuildTime or TempDir-equivalent limit as its default (100 000 files, 1 GiB, 60 s, os.TempDir()) and treat a nil Env as tools.ReducedEnv(nil)",
+          "contract": "zero and negative limits become 100000 files, 1 GiB and 60 s; TempDir becomes os.TempDir(); positive values are kept; nil Env resolves to tools.ReducedEnv(nil)",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "Options values with zero, negative and positive MaxFiles, MaxBytes, MaxBuildTime and an empty TempDir"
+            ],
+            "pseudocode": "o=normalise(Options{MaxFiles:-1,MaxBytes:0,MaxBuildTime:-5}); assert o.MaxFiles==100000; assert o.MaxBytes==1<<30; assert o.MaxBuildTime==60*time.Second; assert o.TempDir==os.TempDir(); assert equal(o.Env,tools.ReducedEnv(nil))"
+          }
         }
       ]
     },
     {
-      "id": "03-REQ-2",
+      "id": "REQ-2",
       "title": "The seam in the tools package",
       "rationale": "A standard-library interface in tools lets codesearch import tools and keeps the index a one-line opt-in.",
       "criteria": [
         {
-          "id": "03-REQ-2.1",
+          "id": "REQ-2.1",
           "pattern": "ubiquitous",
           "system": "tools package",
-          "action": "export SymbolQuery{Name, Kind, Path string; Exact bool}, SymbolAnswer{Matches []SymbolMatch; FilesIndexed int}, the Index interface (Symbols, Tools, Invalidate, Close) and Options.Index, importing only the standard library and existing root packages"
+          "action": "export SymbolQuery{Name, Kind, Path string; Exact bool}, SymbolAnswer{Matches []SymbolMatch; FilesIndexed int}, the Index interface (Symbols, Tools, Invalidate, Close) and Options.Index, importing only the standard library and existing root packages",
+          "contract": "the code compiles; the zero value of Options.Index is nil; no import outside the standard library and this module's packages appears",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a fake type implementing tools.Index with Symbols, Tools, Invalidate and Close",
+              "tools.SymbolQuery{Name,Kind,Path,Exact}, tools.SymbolAnswer{Matches,FilesIndexed}, tools.Options.Index"
+            ],
+            "pseudocode": "var _ tools.Index = (*fake)(nil); o:=tools.Options{Index:f}; assert tools.Options{}.Index==nil; assert onlyStdlibAndRoot(imports('./tools'))"
+          }
         },
         {
-          "id": "03-REQ-2.2",
+          "id": "REQ-2.2",
           "pattern": "ubiquitous",
           "system": "tools package",
-          "action": "export CapMarker(noun, param string, limit, max int, alternative string) string and ClampLimit(n, def, cap int) int returning exactly what the existing unexported capMarker and clampLimit return for the same arguments"
+          "action": "export CapMarker(noun, param string, limit, max int, alternative string) string and ClampLimit(n, def, cap int) int returning exactly what the existing unexported capMarker and clampLimit return for the same arguments",
+          "contract": "the strings and ints are identical for every row; at limit==max the at-the-cap form is produced",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a table of (noun,param,limit,max,alternative) including limit below, equal to and above max",
+              "a table of (n,def,cap) including zero, negative and above cap"
+            ],
+            "pseudocode": "for r in rows: assert CapMarker(r...)==capMarker(r...); for c in clamps: assert ClampLimit(c...)==clampLimit(c...)"
+          }
         },
         {
-          "id": "03-REQ-2.3",
+          "id": "REQ-2.3",
           "pattern": "optional",
           "condition": "Options.Index is set",
           "system": "tools.All",
           "action": "append Index.Tools() after the built-in tools and leave FileNavigationTools() unchanged",
-          "contract": "The built-in tools keep their pinned order; code_search is absent from FileNavigationTools()"
+          "contract": "The built-in tools keep their pinned order; code_search is absent from FileNavigationTools()",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a fake Index whose Tools returns a tool named code_search"
+            ],
+            "pseudocode": "with=All(opts+fake); base=All(opts); assert names(with)[:len(base)]==names(base); assert last(with).Name=='code_search'; assert 'code_search' not in FileNavigationTools()"
+          }
         },
         {
-          "id": "03-REQ-2.4",
+          "id": "REQ-2.4",
           "pattern": "state_driven",
           "condition": "Options.Index is nil",
           "system": "tools.All",
-          "action": "return a tool list byte-for-byte identical to the one 02_symbol_navigation_tools pins"
+          "action": "return a tool list byte-for-byte identical to the one 02_symbol_navigation_tools pins",
+          "contract": "the serialisation equals the golden exactly",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the pinned tool-list golden from 02_symbol_navigation_tools"
+            ],
+            "pseudocode": "assert json(All(Options{Workspace:ws}))==golden"
+          }
         },
         {
-          "id": "03-REQ-2.5",
+          "id": "REQ-2.5",
           "pattern": "unwanted",
           "condition": "an index tool has the same name as a built-in tool",
           "system": "tools.All",
           "action": "return an error naming the duplicate tool",
-          "contract": "All returns (nil, error) whose message contains the duplicate tool name"
+          "contract": "All returns (nil, error) whose message contains the duplicate tool name",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a fake Index whose Tools returns a tool named search_files"
+            ],
+            "pseudocode": "ts,err=All(opts); assert ts==nil; assert contains(err.Error(),'search_files')"
+          }
         },
         {
-          "id": "03-REQ-2.6",
+          "id": "REQ-2.6",
           "pattern": "event_driven",
           "condition": "write_file or edit_file finishes its write attempt, whether it succeeded or failed",
           "system": "write_file and edit_file",
           "action": "call Index.Invalidate with the slash-separated workspace-relative path before releasing the per-path lock",
-          "contract": "Exactly one Invalidate(rel) call per attempt, on success and failure paths"
+          "contract": "Exactly one Invalidate(rel) call per attempt, on success and failure paths",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a fake Index recording Invalidate arguments and whether the per-path lock was held",
+              "a workspace with a nested file sub/dir/a.txt"
+            ],
+            "pseudocode": "run write_file(sub/dir/a.txt); assert calls==['sub/dir/a.txt']; run edit_file missing text; assert len(calls)==2 && calls[1]=='sub/dir/a.txt'; assert lockHeld all"
+          }
         },
         {
-          "id": "03-REQ-2.7",
+          "id": "REQ-2.7",
           "pattern": "event_driven",
           "condition": "execute, run_command or powershell returns, whatever its outcome",
           "system": "shell tools",
           "action": "call Index.Invalidate with the empty string",
-          "contract": "Exactly one Invalidate(\"\") call per invocation"
+          "contract": "Exactly one Invalidate(\"\") call per invocation",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a fake Index recording calls",
+              "the shell tools available on the platform"
+            ],
+            "pseudocode": "for tool in shells: for cmd in [ok,fail,timeout]: n=len(calls); tool.run(cmd); assert calls[n:]==['']"
+          }
         },
         {
-          "id": "03-REQ-2.8",
+          "id": "REQ-2.8",
           "pattern": "ubiquitous",
           "system": "Index.Invalidate",
-          "action": "block for no longer than it takes to set a flag even while a build or query is running, return no error, and not panic on a closed index"
+          "action": "block for no longer than it takes to set a flag even while a build or query is running, return no error, and not panic on a closed index",
+          "contract": "each call returns within 100 ms while the build is still blocked; no panic occurs on the closed index; no error is surfaced (the method has no return value)",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a codesearch index whose build is blocked by a blocking fake Runner",
+              "a second index that has been closed"
+            ],
+            "pseudocode": "go search(); waitBlocked(); d=timeit(Invalidate('a.go')); assert d<100ms; assert buildStillBlocked(); closed.Invalidate('x') // no panic"
+          }
         }
       ]
     },
     {
-      "id": "03-REQ-3",
+      "id": "REQ-3",
       "title": "code_search arguments and errors",
       "rationale": "Validation before any index work keeps a malformed call cheap and makes every failure shape predictable to the model.",
+      "system": "code_search tool",
       "criteria": [
         {
-          "id": "03-REQ-3.1",
+          "id": "REQ-3.1",
           "pattern": "ubiquitous",
-          "system": "code_search tool",
-          "action": "be Builtin, parallel and read-only, take query (required string) and path, max_files, context_lines (optional), describe itself as \"zoekt query syntax\" and never as \"RE2\" with the four examples `sym:Runner`, `retry file:\\.go$ -file:_test`, `lang:python \"def load\"` and `(compaction or summarize) case:no`, and carry the PromptGuideline \"Use code_search for ranked questions about the codebase; search_files for an exhaustive regex scan.\""
+          "action": "be Builtin, parallel and read-only, take query (required string) and path, max_files, context_lines (optional), describe itself as \"zoekt query syntax\" and never as \"RE2\" with the four examples `sym:Runner`, `retry file:\\.go$ -file:_test`, `lang:python \"def load\"` and `(compaction or summarize) case:no`, and carry the PromptGuideline \"Use code_search for ranked questions about the codebase; search_files for an exhaustive regex scan.\"",
+          "contract": "Name is code_search and it is Builtin, parallel and read-only; query is required; path, max_files and context_lines are optional; the description contains \"zoekt query syntax\", does not contain \"RE2\" and contains the four example queries; PromptGuidelines contains the exact pinned sentence",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the tool returned by Index.Tools()"
+            ],
+            "pseudocode": "t=idx.Tools()[0]; assert t.Builtin && t.Parallel && t.ReadOnly; assert required==['query']; assert contains(desc,'zoekt query syntax') && !contains(desc,'RE2'); for ex in four: assert ex in desc; assert guideline in t.PromptGuidelines"
+          }
         },
         {
-          "id": "03-REQ-3.2",
+          "id": "REQ-3.2",
           "pattern": "unwanted",
           "condition": "query is empty after trimming, longer than 1 024 bytes, rejected by zoekt's parser, or context_lines is negative",
-          "system": "code_search tool",
           "action": "reject the call before any index work",
-          "contract": "ErrResult with code invalid_arguments; for a parser rejection the message includes the parser's message; no build is started"
+          "contract": "ErrResult with code invalid_arguments; for a parser rejection the message includes the parser's message; no build is started",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a fresh index with a counting build hook"
+            ],
+            "pseudocode": "for args in cases: r=call(args); assert r.IsError && r.Code=='invalid_arguments'; assert contains(call('(').Message, parseErr('(').Error()); assert builds==0"
+          }
         },
         {
-          "id": "03-REQ-3.3",
+          "id": "REQ-3.3",
           "pattern": "ubiquitous",
-          "system": "code_search tool",
-          "action": "default context_lines to 2 and clamp it to tools.MaxSearchContextLines, and default max_files to 10 and clamp it to 25 with tools.ClampLimit"
+          "action": "default context_lines to 2 and clamp it to tools.MaxSearchContextLines, and default max_files to 10 and clamp it to 25 with tools.ClampLimit",
+          "contract": "the default shows 2 context lines either side and 10 files; max_files 100 behaves as 25 and the marker reflects limit 25; context_lines 500 behaves as tools.MaxSearchContextLines",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a fixture repository with 40 matching files and wide match contexts"
+            ],
+            "pseudocode": "r=call({query}); assert len(files)==10; assert contextBefore(r)<=2; r=call({max_files:100}); assert len(files)==25; r=call({context_lines:500}); assert maxContext(r)==MaxSearchContextLines"
+          }
         },
         {
-          "id": "03-REQ-3.4",
+          "id": "REQ-3.4",
           "pattern": "unwanted",
           "condition": "path resolves outside the workspace or does not exist",
-          "system": "code_search tool",
           "action": "refuse the call before any index build",
-          "contract": "ErrResult code path_not_allowed for a path outside the workspace (via Workspace.Resolve) and code read_failed for a path that does not exist; no build is started"
+          "contract": "ErrResult code path_not_allowed for a path outside the workspace (via Workspace.Resolve) and code read_failed for a path that does not exist; no build is started",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a fresh index with a counting build hook",
+              "a workspace and a sibling directory outside it"
+            ],
+            "pseudocode": "assert call({query:'x',path:'../outside'}).Code=='path_not_allowed'; assert call({query:'x',path:'nope/missing'}).Code=='read_failed'; assert builds==0"
+          }
         },
         {
-          "id": "03-REQ-3.5",
+          "id": "REQ-3.5",
           "pattern": "ubiquitous",
-          "system": "code_search tool",
-          "action": "apply path as a conjunction with the parsed query built as query nodes, never by string concatenation: a directory becomes an anchored file: prefix on its slash-separated workspace-relative name with regexp metacharacters escaped, a file becomes the same pattern anchored to its end, and the workspace root adds no constraint, so an `or` in the query cannot return a file outside path"
+          "action": "apply path as a conjunction with the parsed query built as query nodes, never by string concatenation: a directory becomes an anchored file: prefix on its slash-separated workspace-relative name with regexp metacharacters escaped, a file becomes the same pattern anchored to its end, and the workspace root adds no constraint, so an `or` in the query cannot return a file outside path",
+          "contract": "path pkg/a returns only files under pkg/a/ and not pkg/ab/; the file path returns only that file; the root adds no constraint and returns all matching files; the metacharacter directory returns only its own files; the constraint is built as query nodes (query.NewAnd), not string concatenation",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a fixture with pkg/a/x.go, pkg/ab/y.go, other/z.go, and a directory named c++[1] with a file, all containing the word retry or fetch"
+            ],
+            "pseudocode": "r=call({query:'retry or fetch',path:'pkg/a'}); assert paths(r)==['pkg/a/x.go']; r=call(path:'c++[1]'); assert all(startswith(p,'c++[1]/'))"
+          }
         },
         {
-          "id": "03-REQ-3.6",
+          "id": "REQ-3.6",
           "pattern": "unwanted",
           "condition": "the call context is cancelled",
-          "system": "code_search tool",
           "action": "stop and return an aborted result",
-          "contract": "ErrResult code aborted with the text \"Operation aborted\""
+          "contract": "ErrResult code aborted with the text \"Operation aborted\"",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a context cancelled before the call"
+            ],
+            "pseudocode": "ctx,cancel=WithCancel(); cancel(); r=tool.Run(ctx,args); assert r.Code=='aborted' && r.Text=='Operation aborted'"
+          }
         },
         {
-          "id": "03-REQ-3.7",
+          "id": "REQ-3.7",
           "pattern": "unwanted",
           "condition": "the index build fails for a reason other than a file, byte or time bound, for example the shard directory cannot be created",
-          "system": "code_search tool",
           "action": "return an index failure",
-          "contract": "ErrResult code index_failed whose message includes the cause"
+          "contract": "ErrResult code index_failed whose message includes the cause",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "Options.TempDir naming a regular file so the shard directory cannot be created"
+            ],
+            "pseudocode": "f=touch(tmp/file); idx=New(ws,{TempDir:f}); r=call(query); assert r.Code=='index_failed'; assert contains(r.Message, 'not a directory')"
+          }
         },
         {
-          "id": "03-REQ-3.8",
+          "id": "REQ-3.8",
           "pattern": "unwanted",
           "condition": "the search fails or a query runs longer than 10 s",
-          "system": "code_search tool",
           "action": "cancel the query and return a search failure",
-          "contract": "ErrResult code search_failed; for the 10 s case the message says the query timed out and should be narrowed"
+          "contract": "ErrResult code search_failed; for the 10 s case the message says the query timed out and should be narrowed",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a searcher test seam that returns an error",
+              "a searcher test seam that blocks until its context ends, with the 10 s query bound shortened through an injected clock or deadline"
+            ],
+            "pseudocode": "r=call(failing); assert r.Code=='search_failed'; r=call(blocking); assert r.Code=='search_failed' && contains(r.Message,'timed out') && contains(r.Message,'narrow'); assert searchCtx.Err()!=nil"
+          }
         }
       ]
     },
     {
-      "id": "03-REQ-4",
+      "id": "REQ-4",
       "title": "code_search result shape and truncation",
       "rationale": "Ranked, file-grouped output inside the 50 KB limit with working markers is the reason the tool exists.",
+      "system": "code_search tool",
       "criteria": [
         {
-          "id": "03-REQ-4.1",
+          "id": "REQ-4.1",
           "pattern": "ubiquitous",
-          "system": "code_search tool",
-          "action": "return files in zoekt's score order (a sym: hit on a declaration outranks a hit in a comment), at most max_files files, each with at most 3 chunks in zoekt's order with each chunk's lines in line order, context_lines lines either side, overlapping chunks merged and every line cut to tools.SearchLineChars"
+          "action": "return files in zoekt's score order (a sym: hit on a declaration outranks a hit in a comment), at most max_files files, each with at most 3 chunks in zoekt's order with each chunk's lines in line order, context_lines lines either side, overlapping chunks merged and every line cut to tools.SearchLineChars",
+          "contract": "the declaring file is first; at most max_files files are returned, grouped by file; a file shows at most 3 chunks, each with lines in ascending order; overlapping chunks are merged and each line is cut to SearchLineChars",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a fixture where one file declares func Runner and another mentions Runner only in a comment",
+              "a file with 6 separated matches",
+              "a file whose long lines exceed SearchLineChars",
+              "a fake Runner supplying symbols"
+            ],
+            "pseudocode": "r=call({query:'sym:Runner'}); assert files(r)[0]=='decl.go'; assert all(len(f.chunks)<=3); for c in chunks: assert sorted(lines); assert all(len(line)<=SearchLineChars)"
+          }
         },
         {
-          "id": "03-REQ-4.2",
+          "id": "REQ-4.2",
           "pattern": "ubiquitous",
-          "system": "code_search tool",
-          "action": "render each file as a header followed by lines in the RenderSearchText shape (`N: matched line`, `N- context line`), the header giving the workspace-relative slash path with control characters replaced by `?`, the file's total match count, a note when matches were not shown, and, for a match on a declaration's start line, that declaration's name (Container.Name for a member) with at most 5 names"
+          "action": "render each file as a header followed by lines in the RenderSearchText shape (`N: matched line`, `N- context line`), the header giving the workspace-relative slash path with control characters replaced by `?`, the file's total match count, a note when matches were not shown, and, for a match on a declaration's start line, that declaration's name (Container.Name for a member) with at most 5 names",
+          "contract": "matched lines print as `N: text` and context as `N- text`; the header shows the slash path with control characters replaced by `?`, the total match count and a note about matches not shown; member declarations appear as Container.Name; no more than 5 declaration names appear",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a match on the start line of func (Server) Run and of three more declarations",
+              "a file with a control character in its name",
+              "a file with more than 3 chunks of matches",
+              "a line match on 7 declaration start lines"
+            ],
+            "pseudocode": "assert regex('^\\d+: ') for matches; assert '\\x01' not in header; assert 'Server.Run' in header; assert count(names)<=5; assert contains(header,'not shown')"
+          }
         },
         {
-          "id": "03-REQ-4.3",
+          "id": "REQ-4.3",
           "pattern": "ubiquitous",
-          "system": "code_search tool",
-          "action": "begin the text with a first line stating the number of files, the index size, the symbol sources as files per outline backend, whether ctags was unavailable, and, when they apply, the partial note and the dirty-overlay note"
+          "action": "begin the text with a first line stating the number of files, the index size, the symbol sources as files per outline backend, whether ctags was unavailable, and, when they apply, the partial note and the dirty-overlay note",
+          "contract": "line 1 states the number of files, the index size and files per outline backend; line 1 states whether ctags was unavailable when it was; partial and dirty-overlay notes appear only when they apply",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "indexes in four states: complete with ctags, ctags unavailable, partial, with dirty overlay"
+            ],
+            "pseudocode": "l=firstLine(text); assert matches(l,'\\d+ files'); assert contains(l,'go/ast'); assert contains(partialL,'partial'); assert !contains(cleanL,'partial')"
+          }
         },
         {
-          "id": "03-REQ-4.4",
+          "id": "REQ-4.4",
           "pattern": "event_driven",
           "condition": "a query matches no file",
-          "system": "code_search tool",
           "action": "return a successful result whose text says nothing matched and still shows the first line",
-          "contract": "OKResult, not an error; Data.files is empty"
+          "contract": "OKResult, not an error; Data.files is empty",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a built fixture index"
+            ],
+            "pseudocode": "r=call({query:'zzzznomatch'}); assert !r.IsError; assert contains(r.Text,'no match'); assert firstLine(r.Text)!=''; assert len(r.Data.files)==0"
+          }
         },
         {
-          "id": "03-REQ-4.5",
+          "id": "REQ-4.5",
           "pattern": "event_driven",
           "condition": "more files matched than max_files",
-          "system": "code_search tool",
           "action": "append tools.CapMarker(\"files\", \"max_files\", limit, 25, \"narrow the query or add a path\") to the text and record the truncation",
-          "contract": "Metadata.Truncated is TruncatedByLines; at max_files 25 the marker takes the at-the-cap form"
+          "contract": "Metadata.Truncated is TruncatedByLines; at max_files 25 the marker takes the at-the-cap form",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a fixture with 30 files matching the query",
+              "golden marker text tied to the pinned zoekt version"
+            ],
+            "pseudocode": "r=call({max_files:10}); assert endsWith(r.Text,CapMarker('files','max_files',10,25,alt)); assert r.Meta.Truncated==TruncatedByLines; r=call({max_files:25}); assert contains(r.Text,CapMarker('files','max_files',25,25,alt))"
+          }
         },
         {
-          "id": "03-REQ-4.6",
+          "id": "REQ-4.6",
           "pattern": "event_driven",
           "condition": "the rendered result exceeds tools.DefaultByteLimit",
-          "system": "code_search tool",
           "action": "drop whole files from the end while keeping at least one, drop that file's chunks from the end if it alone is too large, and append a bytes marker naming a narrower call using path, file: or fewer context_lines",
-          "contract": "Rendered text is at most tools.DefaultByteLimit bytes; Metadata.Truncated is TruncatedByBytes"
+          "contract": "Rendered text is at most tools.DefaultByteLimit bytes; Metadata.Truncated is TruncatedByBytes",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a fixture where each of 25 files yields about 4 KB of text",
+              "a fixture where one file alone yields over 50 KB of chunks"
+            ],
+            "pseudocode": "r=call(big); assert len(r.Text)<=DefaultByteLimit; assert len(files)>=1; assert r.Meta.Truncated==TruncatedByBytes; assert regex('path|file:|context_lines', marker)"
+          }
         },
         {
-          "id": "03-REQ-4.7",
+          "id": "REQ-4.7",
           "pattern": "ubiquitous",
-          "system": "code_search tool",
-          "action": "return Data carrying files (path, score, match count, chunks with line numbers and text, symbol names), truncated, note, partial, symbol_sources, ctags_available, files_indexed, dirty_files and the counts of skipped files"
+          "action": "return Data carrying files (path, score, match count, chunks with line numbers and text, symbol names), truncated, note, partial, symbol_sources, ctags_available, files_indexed, dirty_files and the counts of skipped files",
+          "contract": "Data has files (path, score, match count, chunks with line numbers and text, symbol names); Data has truncated, note, partial, symbol_sources, ctags_available, files_indexed, dirty_files; Data carries the skipped file counts",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a built index that skipped one binary and one oversized file and has one dirty file"
+            ],
+            "pseudocode": "d=r.Data; for k in ['files','truncated','note','partial','symbol_sources','ctags_available','files_indexed','dirty_files','skipped']: assert k in d; f=d.files[0]; assert keys(f)>= {path,score,matches,chunks,symbols}"
+          }
         },
         {
-          "id": "03-REQ-4.8",
+          "id": "REQ-4.8",
           "pattern": "ubiquitous",
-          "system": "code_search tool",
-          "action": "for any query and index, produce truncation markers that each name a call the tool accepts (REQ-TOOL-09b) and a text no longer than tools.DefaultByteLimit"
+          "action": "for any query and index, produce truncation markers that each name a call the tool accepts (REQ-TOOL-09b) and a text no longer than tools.DefaultByteLimit",
+          "contract": "the text is at most tools.DefaultByteLimit bytes; every marker's suggested parameters are accepted by the tool's schema and validation, so replaying the marker's call is not invalid_arguments; at the maximum limits the marker says the cap is already the maximum rather than suggesting a larger value",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a fixture repository large enough to trigger both caps",
+              "a fake Runner"
+            ],
+            "pseudocode": "for q,mf,cl,p in gen(): r=call(...); assert len(r.Text)<=DefaultByteLimit; for m in markers(r.Text): assert !call(parseCall(m)).Code=='invalid_arguments'"
+          }
         }
       ]
     },
     {
-      "id": "03-REQ-5",
+      "id": "REQ-5",
       "title": "Building the index",
       "rationale": "The index must hold exactly the files search_files can see, with symbol data from the project's own outline, and must stay bounded on huge trees.",
       "criteria": [
         {
-          "id": "03-REQ-5.1",
+          "id": "REQ-5.1",
           "pattern": "event_driven",
           "condition": "the first code_search call reaches an index that has not been built",
           "system": "codesearch index",
           "action": "build the index lazily during that call, and never build it from New or from find_symbol",
-          "contract": "The build counter is 0 after New and after any find_symbol call, and 1 after the first code_search"
+          "contract": "The build counter is 0 after New and after any find_symbol call, and 1 after the first code_search",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an index with a build counter and a fixture workspace",
+              "a find_symbol tool wired with Options.Index"
+            ],
+            "pseudocode": "assert builds==0; find_symbol(...); assert builds==0; cs(); assert builds==1; cs(); assert builds==1"
+          }
         },
         {
-          "id": "03-REQ-5.2",
+          "id": "REQ-5.2",
           "pattern": "ubiquitous",
           "system": "codesearch index",
-          "action": "hold exactly the files tools.Walk yields from the workspace root with IncludeHidden false and Options.Ignore, restricted to regular files of at most 1 MiB with no NUL byte in the first 8 KiB, each added under its slash-separated workspace-relative name with its content and symbol sections, count the skipped files, never use zoekt's git indexer and leave CTagsPath empty so zoekt starts no ctags process"
+          "action": "hold exactly the files tools.Walk yields from the workspace root with IncludeHidden false and Options.Ignore, restricted to regular files of at most 1 MiB with no NUL byte in the first 8 KiB, each added under its slash-separated workspace-relative name with its content and symbol sections, count the skipped files, never use zoekt's git indexer and leave CTagsPath empty so zoekt starts no ctags process",
+          "contract": "the two sets are equal; the hidden directory, symlink, binary and oversized files are absent; the 1 MiB file is present; document names are slash-separated workspace-relative paths",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a tree with nested .gitignore files, a nested repository, a hidden directory, a symlink, a binary file with a NUL byte and a 1 MiB + 1 file",
+              "a file exactly 1 MiB",
+              "a fixture with one binary and one oversized file",
+              "a process-spawn spy and a builder-options spy"
+            ],
+            "pseudocode": "want=filter(Walk(ws,root,{Ignore,IncludeHidden:false})); got=indexedNames(idx); assert set(got)==set(want)\nbuild(); assert skipped.binary==1 && skipped.oversized==1; assert builderOpts.CTagsPath==''; assert spawns_from_zoekt==0; assert 'gitindex' not in deps"
+          }
         },
         {
-          "id": "03-REQ-5.3",
+          "id": "REQ-5.3",
           "pattern": "ubiquitous",
           "system": "codesearch index",
-          "action": "obtain symbols from outline.OutlineMany in batches of at most 100 files with outline.Options{Root: workspace root, Runner}, where Runner is Options.Runner, else nil when DisableCtags is set, else tools.CtagsRunner(Options.Env) constructed on first use, and supply the sections from whichever outline backend produced each file"
+          "action": "obtain symbols from outline.OutlineMany in batches of at most 100 files with outline.Options{Root: workspace root, Runner}, where Runner is Options.Runner, else nil when DisableCtags is set, else tools.CtagsRunner(Options.Env) constructed on first use, and supply the sections from whichever outline backend produced each file",
+          "contract": "OutlineMany is called with batches of at most 100 files and Root equal to the workspace root; with Options.Runner set that runner is used; with DisableCtags and no Runner the outline Runner is nil; without either, tools.CtagsRunner(Options.Env) is constructed only on first use; sections come from whatever backend produced each file",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a workspace of 250 Go and text files",
+              "a recording fake Runner in Options.Runner",
+              "one index with DisableCtags and one with defaults"
+            ],
+            "pseudocode": "assert max(batchSizes)<=100; assert all(opts.Root==root); assert sum(batchSizes)==250; assert runnerFor(DisableCtags)==nil"
+          }
         },
         {
-          "id": "03-REQ-5.4",
+          "id": "REQ-5.4",
           "pattern": "state_driven",
           "condition": "universal-ctags is unavailable",
           "system": "code_search tool",
           "action": "keep working, say in the first line that ctags was unavailable and that non-Go symbols are the heuristic's column-0 declarations only, and keep symbol sections for Go files from go/ast",
-          "contract": "The result is successful, not an error; Data.ctags_available is false"
+          "contract": "The result is successful, not an error; Data.ctags_available is false",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a Runner returning tools.ErrCtagsUnavailable",
+              "a Go file declaring func Runner and a Python file with a column-0 def"
+            ],
+            "pseudocode": "r=call({query:'sym:Runner'}); assert !r.IsError; assert contains(firstLine,'ctags') && contains(firstLine,'column-0'); assert r.Data.ctags_available==false; assert 'decl.go' in paths(r)"
+          }
         },
         {
-          "id": "03-REQ-5.5",
+          "id": "REQ-5.5",
           "pattern": "ubiquitous",
           "system": "codesearch index",
-          "action": "write shards to <TempDir>/agentkit-codesearch-<hash of root>/<run id>/ with the directory created at mode 0700, the hash being at least 64 bits of a cryptographic hash of the absolute root and the run id unique per index instance"
+          "action": "write shards to <TempDir>/agentkit-codesearch-<hash of root>/<run id>/ with the directory created at mode 0700, the hash being at least 64 bits of a cryptographic hash of the absolute root and the run id unique per index instance",
+          "contract": "each run directory is under agentkit-codesearch-<hash of absolute root>; the hash part has at least 16 hex characters and equals a sha256 prefix of the absolute root; the two run ids differ; the directories have mode 0700 (on platforms that support it)",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a TempDir, two index instances over the same root"
+            ],
+            "pseudocode": "d1=runDir(i1); d2=runDir(i2); assert d1!=d2; assert parent(d1)==parent(d2); assert len(hashPart)>=16; assert mode(d1)==0700"
+          }
         },
         {
-          "id": "03-REQ-5.6",
+          "id": "REQ-5.6",
           "pattern": "event_driven",
           "condition": "a build starts",
           "system": "codesearch index",
           "action": "remove sibling run directories of the same hash not modified for 24 hours, leave younger ones in place, and touch its own directory at most once an hour while it is queried and never another run's directory",
-          "contract": "A 25-hour-old sibling is removed and a recent sibling remains"
+          "contract": "A 25-hour-old sibling is removed and a recent sibling remains",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "sibling run directories under the same hash dir with mtime 25 hours old and 1 hour old",
+              "a directory under a different hash 25 hours old"
+            ],
+            "pseudocode": "os.Chtimes(old,-25h); build(); assert !exists(old); assert exists(recent); assert exists(otherHash); touchCount(own)<=1 per hour; mtime(recent) unchanged"
+          }
         },
         {
-          "id": "03-REQ-5.7",
+          "id": "REQ-5.7",
           "pattern": "unwanted",
           "condition": "a build reaches 100 000 files, 1 GiB of indexed content or 60 s of wall time",
           "system": "codesearch index",
           "action": "stop the build, keep what it has indexed, answer from it, and never retry the partial index on later calls",
-          "contract": "Data.partial is true with partial_reason files, bytes or time, and a note tells the model to narrow path or use search_files; only the dirty-threshold rebuild replaces a partial index"
+          "contract": "Data.partial is true with partial_reason files, bytes or time, and a note tells the model to narrow path or use search_files; only the dirty-threshold rebuild replaces a partial index",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "scaled-down MaxFiles, MaxBytes and MaxBuildTime options on a fixture bigger than each",
+              "a blocking fake Runner for the time case",
+              "a build counter"
+            ],
+            "pseudocode": "for b in [files,bytes,time]: r=call(); assert r.Data.partial && r.Data.partial_reason==b; assert contains(r.Data.note,'search_files'); call(); assert builds==1; assert elapsed<deadline+slack"
+          }
         },
         {
-          "id": "03-REQ-5.8",
+          "id": "REQ-5.8",
           "pattern": "unwanted",
           "condition": "the call context is cancelled during a build",
           "system": "codesearch index",
           "action": "discard the partial build and leave the next call free to build again",
-          "contract": "The call returns code aborted; the next code_search starts a new build"
+          "contract": "The call returns code aborted; the next code_search starts a new build",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a blocking fake Runner that the test releases later",
+              "a build counter"
+            ],
+            "pseudocode": "go cancelAfterBlocked(); r=call(ctx); assert r.Code=='aborted'; release(); r2=call(); assert !r2.IsError && !r2.Data.partial; assert builds==2"
+          }
         }
       ]
     },
     {
-      "id": "03-REQ-6",
+      "id": "REQ-6",
       "title": "Freshness",
       "rationale": "A search result that shows content older than the model's own last write is worse than no index.",
+      "system": "codesearch index",
       "criteria": [
         {
-          "id": "03-REQ-6.1",
+          "id": "REQ-6.1",
           "pattern": "event_driven",
           "condition": "Invalidate(rel) is called with a non-empty rel",
-          "system": "codesearch index",
           "action": "record rel as dirty and, at query time, remove every dirty path from the indexed results, so a deleted file appears in no result",
-          "contract": "After edit_file of a line, code_search returns the new line and not the old one"
+          "contract": "After edit_file of a line, code_search returns the new line and not the old one",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a built index over a fixture",
+              "edit_file, write_file and tools.All wired to the index"
+            ],
+            "pseudocode": "edit_file(a.go,'oldToken','newToken'); assert 'newToken' in text(cs('newToken')) && 'oldToken' not in text(cs('oldToken')); write_file(new.go,'freshWord'); assert 'new.go' in paths(cs('freshWord'))"
+          }
         },
         {
-          "id": "03-REQ-6.2",
+          "id": "REQ-6.2",
           "pattern": "event_driven",
           "condition": "Invalidate(\"\") has been called and a query arrives",
-          "system": "codesearch index",
           "action": "walk the workspace as in Requirement 5, compare (size, mtime) with the indexed values, treat a file indexed within the previous 2 seconds as changed, and mark changed and new files dirty and files no longer yielded dirty and gone",
-          "contract": "A same-size edit made through execute within the 2 s window is returned"
+          "contract": "A same-size edit made through execute within the 2 s window is returned",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an index built moments ago over a fixture",
+              "a file edited with a same-size, same-second replacement through execute",
+              "a file deleted and a file created through execute"
+            ],
+            "pseudocode": "cs(); execute(\"sed -i s/aaaa/bbbb/ f.txt; rm gone.txt; echo x > n.txt\"); r=cs('bbbb'); assert 'f.txt' in paths(r); assert 'gone.txt' not in paths(cs('goneToken'))"
+          }
         },
         {
-          "id": "03-REQ-6.3",
+          "id": "REQ-6.3",
           "pattern": "event_driven",
           "condition": "a dirty path is not in the index, or the changed file has the base name .gitignore",
-          "system": "codesearch index",
-          "action": "run a revalidation walk before answering, because only the walk's ignore engine can say whether a new file is visible"
+          "action": "run a revalidation walk before answering, because only the walk's ignore engine can say whether a new file is visible",
+          "contract": "a revalidation walk runs for the unknown path before answering; a newly ignored file is no longer returned; a file newly visible after a .gitignore edit is returned; a known non-.gitignore path does not cause a walk",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a built index with a revalidation counter",
+              "a new file written to a directory ignored by a new .gitignore rule"
+            ],
+            "pseudocode": "write_file(unknown.go); cs(); assert revals==1; write_file(known.go); cs(); assert revals==1; write_file('.gitignore','a.go\\n'); cs(); assert revals==2; assert 'a.go' not in paths(r)"
+          }
         },
         {
-          "id": "03-REQ-6.4",
+          "id": "REQ-6.4",
           "pattern": "ubiquitous",
-          "system": "codesearch index",
           "action": "search the still-visible dirty files with the same zoekt engine and the same parsed query through an overlay shard indexed with symbols from outline and rebuilt only when the dirty set changes, merge overlay hits with indexed hits by score rather than appending them, and report dirty_files",
-          "contract": "A fresh edit that would score below the max_files cap among indexed hits still appears in the result"
+          "contract": "A fresh edit that would score below the max_files cap among indexed hits still appears in the result",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a built index with 30 files that all match a query with high scores",
+              "one file edited so it matches with a lower score than the others",
+              "max_files 10"
+            ],
+            "pseudocode": "edit(f); r=cs(query,max_files=10); assert f in paths(r); assert isSortedByScore(r.files); assert r.Data.dirty_files==1; cs(); assert overlayBuilds==1"
+          }
         },
         {
-          "id": "03-REQ-6.5",
+          "id": "REQ-6.5",
           "pattern": "event_driven",
           "condition": "more than 5% of the indexed files are dirty",
-          "system": "codesearch index",
           "action": "rebuild the whole index under the bounds of Requirement 5 instead of using an overlay, swap the new index in only when it is ready, close and delete the old shards after the swap, and make queries arriving meanwhile wait abandonably and use the new index",
-          "contract": "At 4% dirty the build counter is unchanged and at 6% it increases by 1"
+          "contract": "At 4% dirty the build counter is unchanged and at 6% it increases by 1",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a built index of 100 files with a build counter",
+              "old shards recorded before the swap",
+              "a rebuild blocked by a blocking fake Runner",
+              "two concurrent queries, one with a context that will end"
+            ],
+            "pseudocode": "invalidate 4; cs(); assert builds==1; invalidate 2 more; cs(); assert builds==2; assert !exists(oldShard)\nstartRebuildBlocked(); go q1(ctxCancel); cancel(); assert q1.Code=='aborted' && buildStillBlocked(); release(); assert q2 sees newContent"
+          }
         },
         {
-          "id": "03-REQ-6.6",
+          "id": "REQ-6.6",
           "pattern": "ubiquitous",
-          "system": "codesearch index",
-          "action": "give every dirty mark a generation number so that a build or revalidation pass clears only marks older than the pass, keeping a mark made while it runs"
+          "action": "give every dirty mark a generation number so that a build or revalidation pass clears only marks older than the pass, keeping a mark made while it runs",
+          "contract": "the mark made during the pass survives the pass because its generation is newer; the following query shows the new content of the concurrently written file; marks older than the pass are cleared",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a blocking fake Runner holding a build or revalidation open",
+              "a concurrent write_file to an indexed file made during the block"
+            ],
+            "pseudocode": "go cs(); waitBlocked(); write_file(a.go,'midBuildToken'); release(); r=cs('midBuildToken'); assert 'a.go' in paths(r)"
+          }
         },
         {
-          "id": "03-REQ-6.7",
+          "id": "REQ-6.7",
           "pattern": "state_driven",
           "condition": "no Invalidate call has been made (a read-only phase)",
-          "system": "codesearch index",
-          "action": "build once and never run a revalidation walk or rebuild"
+          "action": "build once and never run a revalidation walk or rebuild",
+          "contract": "the build counter stays 1; the revalidation walk counter stays 0",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a built index, a revalidation counter and a build counter"
+            ],
+            "pseudocode": "for i in 1..20: cs(); assert builds==1 && revals==0"
+          }
         },
         {
-          "id": "03-REQ-6.8",
+          "id": "REQ-6.8",
           "pattern": "ubiquitous",
-          "system": "codesearch index",
-          "action": "for any sequence of write_file, edit_file and shell calls made through AgentKit's tools followed by a code_search, never show file content older than the last such call"
+          "action": "for any sequence of write_file, edit_file and shell calls made through AgentKit's tools followed by a code_search, never show file content older than the last such call",
+          "contract": "the result contains the latest content of every file touched; no result line contains content that has been overwritten or deleted; a deleted file appears in no result",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a fixture workspace with a built index and tools.All wired to it",
+              "a model of file contents tracked in memory"
+            ],
+            "pseudocode": "for seq in gen_ops(): apply(seq,model); for f in touched: r=cs(token(f)); assert content(r,f) subset model[f]; assert deleted not in paths(r)"
+          }
         }
       ]
     },
     {
-      "id": "03-REQ-7",
+      "id": "REQ-7",
       "title": "find_symbol through the index",
       "rationale": "When the index is already built, find_symbol can answer from its data with an identical contract, and falls back otherwise.",
+      "system": "Index.Symbols",
       "criteria": [
         {
-          "id": "03-REQ-7.1",
+          "id": "REQ-7.1",
           "pattern": "ubiquitous",
-          "system": "Index.Symbols",
-          "action": "answer from the per-file outline.File data collected by the build rather than from a zoekt query, using the smart-case prefix, exact, qualified-name, kind and path matching of 02_symbol_navigation_tools Requirement 2, leaving ranking and truncation to find_symbol"
+          "action": "answer from the per-file outline.File data collected by the build rather than from a zoekt query, using the smart-case prefix, exact, qualified-name, kind and path matching of 02_symbol_navigation_tools Requirement 2, leaving ranking and truncation to find_symbol",
+          "contract": "lowercase queries match case-insensitively by prefix and mixed-case queries match case-sensitively; exact requires full-name equality; qualified names match Container.Name; kind and path filters restrict the matches; no zoekt query is issued; matches are unranked and untruncated beyond the 1000 limit",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an index built from fixture outline data with declarations Runner, runner, Server.Run, and directories a/ and b/"
+            ],
+            "pseudocode": "a,ok=Symbols(ctx,SymbolQuery{Name:'run'}); assert ok; assert names(a.Matches)==expected; assert zoektQueries==0"
+          }
         },
         {
-          "id": "03-REQ-7.2",
-          "pattern": "complex_event",
-          "condition": "an earlier code_search has built the index and it is neither partial nor closed",
-          "guard": "the matches number at most 1 000",
-          "system": "Index.Symbols",
+          "id": "REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "an earlier code_search has built the index and it is neither partial nor closed and the matches number at most 1 000",
           "action": "return ok=true with the matches and SymbolAnswer.FilesIndexed",
-          "contract": "Returns (SymbolAnswer, true, nil); find_symbol's header names the index as its backend"
+          "contract": "Returns (SymbolAnswer, true, nil); find_symbol's header names the index as its backend",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a code_search has built a complete, non-closed index"
+            ],
+            "pseudocode": "cs(); a,ok,err=idx.Symbols(ctx,q); assert ok && err==nil && a.FilesIndexed==N; assert contains(find_symbol(q).Text,'index')"
+          }
         },
         {
-          "id": "03-REQ-7.3",
+          "id": "REQ-7.3",
           "pattern": "unwanted",
           "condition": "the index is not yet built, is partial, is closed, or the matches number more than 1 000",
-          "system": "Index.Symbols",
           "action": "return no answer so that find_symbol uses its own table as if no index were set",
-          "contract": "Returns ok=false with a nil error; Symbols starts no build"
+          "contract": "Returns ok=false with a nil error; Symbols starts no build",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an unbuilt index, a partial index, a closed index, and an index with 1001 matching declarations"
+            ],
+            "pseudocode": "for idx in [unbuilt,partial,closed,big]: _,ok,err=idx.Symbols(ctx,q); assert !ok && err==nil; assert builds unchanged"
+          }
         },
         {
-          "id": "03-REQ-7.4",
+          "id": "REQ-7.4",
           "pattern": "event_driven",
           "condition": "Symbols is called while dirty files are in scope or a revalidation is pending",
-          "system": "Index.Symbols",
-          "action": "run the pending revalidation and re-outline the dirty files in scope under the dirty-path rules of Requirement 6 before answering"
+          "action": "run the pending revalidation and re-outline the dirty files in scope under the dirty-path rules of Requirement 6 before answering",
+          "contract": "Fresh is found; the renamed declaration appears under its new path and not the old; the revalidation walk ran once",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a built index",
+              "a file edited through write_file to add func Fresh",
+              "a pending Invalidate(\"\") after a shell rename"
+            ],
+            "pseudocode": "write_file(a.go,'func Fresh(){}'); a,ok,_=Symbols({Name:'Fresh'}); assert ok && len(a.Matches)==1; execute('mv x.go y.go'); a,_,_=Symbols(...); assert path(a.Matches[0])=='y.go'"
+          }
         },
         {
-          "id": "03-REQ-7.5",
+          "id": "REQ-7.5",
           "pattern": "unwanted",
           "condition": "the context passed to Symbols is cancelled",
-          "system": "Index.Symbols",
           "action": "stop and return the context error, this being the only use of the error return",
-          "contract": "Returns a non-nil error; no other condition returns an error"
+          "contract": "Returns a non-nil error; no other condition returns an error",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a built index",
+              "a context cancelled before the call, and a dirty file making work necessary"
+            ],
+            "pseudocode": "_,_,err=Symbols(cancelled,q); assert err!=nil; for s in states: _,_,err=Symbols(live,q); assert err==nil"
+          }
         },
         {
-          "id": "03-REQ-7.6",
+          "id": "REQ-7.6",
           "pattern": "ubiquitous",
-          "system": "Index.Symbols",
-          "action": "for any fixture tree and query, give find_symbol the same matches in the same order as its own in-memory table over the same tree"
+          "action": "for any fixture tree and query, give find_symbol the same matches in the same order as its own in-memory table over the same tree",
+          "contract": "the match lists are identical in content and order; only the header's backend line may differ",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a generated fixture tree of Go and heuristic-supported files built into an index by a prior code_search",
+              "a find_symbol tool with Options.Index set and one with Index nil over the same tree"
+            ],
+            "pseudocode": "for tree,q in gen(): idx=build(tree); a=findSymbol(withIdx,q); b=findSymbol(noIdx,q); assert a.Matches==b.Matches"
+          }
         }
       ]
     },
     {
-      "id": "03-REQ-8",
+      "id": "REQ-8",
       "title": "Concurrency, lifetime and platform support",
       "rationale": "The embedder owns the index lifetime, so locking, Close and the Windows fallback must be unambiguous.",
       "criteria": [
         {
-          "id": "03-REQ-8.1",
+          "id": "REQ-8.1",
           "pattern": "ubiquitous",
           "system": "codesearch index",
-          "action": "guard index state with one lock and run queries concurrently with each other under a read lock, with no data race under `go test -race`"
+          "action": "guard index state with one lock and run queries concurrently with each other under a read lock, with no data race under `go test -race`",
+          "contract": "all calls return successful results; the race detector reports nothing",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a built index, tests run with -race"
+            ],
+            "pseudocode": "wg; for i in 1..32: go cs(); go Symbols(); go Invalidate('a.go'); wg.Wait(); // go test -race"
+          }
         },
         {
-          "id": "03-REQ-8.2",
+          "id": "REQ-8.2",
           "pattern": "unwanted",
           "condition": "a call waiting behind a build or rebuild has its context end",
           "system": "code_search tool",
           "action": "abandon the wait",
-          "contract": "ErrResult code aborted returned without waiting for the build to finish"
+          "contract": "ErrResult code aborted returned without waiting for the build to finish",
+          "check": {
+            "same_as": "REQ-6.5"
+          }
         },
         {
-          "id": "03-REQ-8.3",
+          "id": "REQ-8.3",
           "pattern": "event_driven",
           "condition": "Close is called",
           "system": "codesearch index",
           "action": "wait for in-flight queries, release the zoekt searcher and delete the run directory, and do the same nothing on every later call",
-          "contract": "Close returns nil each time; the run directory no longer exists after the first call"
+          "contract": "Close returns nil each time; the run directory no longer exists after the first call",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a built index with a query blocked in flight through a test seam"
+            ],
+            "pseudocode": "go inflight(); done=go Close(); assert !done.finished; release(); assert done.err==nil; assert !exists(runDir); assert Close()==nil; assert Close()==nil"
+          }
         },
         {
-          "id": "03-REQ-8.4",
+          "id": "REQ-8.4",
           "pattern": "unwanted",
           "condition": "a tool is called or Symbols is called after Close",
           "system": "codesearch index",
           "action": "refuse without building or searching",
-          "contract": "Tools return ErrResult code index_closed; Symbols returns ok=false"
+          "contract": "Tools return ErrResult code index_closed; Symbols returns ok=false",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a closed index with a build counter and a search counter"
+            ],
+            "pseudocode": "idx.Close(); r=cs(); assert r.Code=='index_closed'; _,ok,_=Symbols(); assert !ok; assert builds==before && searches==before"
+          }
         },
         {
-          "id": "03-REQ-8.5",
+          "id": "REQ-8.5",
           "pattern": "ubiquitous",
           "system": "tools.All",
-          "action": "return no closer, leave Close to the embedder, and rely on a later run's 24-hour sweep to remove a run directory abandoned without Close"
+          "action": "return no closer, leave Close to the embedder, and rely on a later run's 24-hour sweep to remove a run directory abandoned without Close",
+          "contract": "All returns only ([]core.Tool, error) with no closer; the abandoned directory is removed by the later build's sweep",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "tools.All signature",
+              "an index never closed whose run directory is aged 25 hours"
+            ],
+            "pseudocode": "assert returns(All)==([]core.Tool,error); age(dir,25h); build(other); assert !exists(dir)"
+          }
         },
         {
-          "id": "03-REQ-8.6",
+          "id": "REQ-8.6",
           "pattern": "optional",
           "condition": "the pinned zoekt does not build or run on windows/amd64",
           "system": "codesearch module",
           "action": "provide, in a file constrained to that platform, codesearch.New returning the exported ErrUnsupported while the module still builds there, with ErrUnsupported the same error value on every platform",
-          "contract": "errors.Is(err, codesearch.ErrUnsupported) is true; an embedder falls back to Options.Index == nil"
+          "contract": "errors.Is(err, codesearch.ErrUnsupported) is true; an embedder falls back to Options.Index == nil",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a windows-constrained file providing New that returns ErrUnsupported (only if the pinned zoekt does not build on windows)"
+            ],
+            "pseudocode": "_,err=New(ws,Options{}); assert errors.Is(err,ErrUnsupported); assert run('go build ./...',GOOS=windows).ok"
+          }
         },
         {
-          "id": "03-REQ-8.7",
+          "id": "REQ-8.7",
           "pattern": "ubiquitous",
           "system": "codesearch module",
-          "action": "build and vet on linux/amd64, linux/arm64, darwin/arm64 and windows/amd64 with CGO_ENABLED=0 and contain no cgo file anywhere in its dependency graph"
+          "action": "build and vet on linux/amd64, linux/arm64, darwin/arm64 and windows/amd64 with CGO_ENABLED=0 and contain no cgo file anywhere in its dependency graph",
+          "contract": "all eight commands succeed; the test lives in codesearch/policy_test.go",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "codesearch/ with the pinned zoekt"
+            ],
+            "pseudocode": "for t in targets: assert run('go build ./...',CGO_ENABLED=0,t).ok; assert run('go vet ./...',CGO_ENABLED=0,t).ok"
+          }
         }
       ]
     },
     {
-      "id": "03-REQ-9",
+      "id": "REQ-9",
       "title": "Risks settled before any code",
       "rationale": "The unverified zoekt assumptions decide whether the spec can proceed, so they are checked first and a failure ends the spec instead of being worked around.",
       "criteria": [
         {
-          "id": "03-REQ-9.1",
+          "id": "REQ-9.1",
           "pattern": "ubiquitous",
           "system": "first piece of work",
-          "action": "pin a zoekt release and record in codesearch/README.md and in the spec's external API notes, against that release: the module path and the packages for the index builder, query parser and searcher; whether a shard can be searched from memory or only from a file; the builder's per-document symbol fields as byte offsets; the search options bounding result size and wall time; the `go list -m all` output; and the build and vet results for the four targets"
+          "action": "pin a zoekt release and record in codesearch/README.md and in the spec's external API notes, against that release: the module path and the packages for the index builder, query parser and searcher; whether a shard can be searched from memory or only from a file; the builder's per-document symbol fields as byte offsets; the search options bounding result size and wall time; the `go list -m all` output; and the build and vet results for the four targets",
+          "check": {
+            "same_as": "REQ-1.2"
+          }
         },
         {
-          "id": "03-REQ-9.2",
+          "id": "REQ-9.2",
           "pattern": "unwanted",
           "condition": "a cgo file exists anywhere in the dependency graph under CGO_ENABLED=1",
           "system": "codesearch spec",
           "action": "end the spec as a no-go instead of working around it",
-          "contract": "No code is merged; the evidence is recorded in the PRD"
+          "contract": "No code is merged; the evidence is recorded in the PRD",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "CGO_ENABLED=1",
+              "a probe package with a cgo file"
+            ],
+            "pseudocode": "env CGO_ENABLED=1; assert noCgo(list('./...')); assert detects(probe)"
+          }
         },
         {
-          "id": "03-REQ-9.3",
+          "id": "REQ-9.3",
           "pattern": "unwanted",
           "condition": "a package of the codesearch module directly imports a package that pulls in gRPC, Prometheus or an HTTP server beyond zoekt's indexing, query and search packages",
           "system": "codesearch spec",
           "action": "end the spec as a no-go instead of loosening the forbidden-import list; the packages zoekt's indexing, query and search packages themselves import (gRPC, Prometheus, sentry) are accepted, per docs/errata/03_forbidden_imports_direct_only.md",
-          "contract": "No code is merged; the evidence is recorded in the PRD"
+          "contract": "No code is merged; the evidence is recorded in the PRD",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the direct imports of every package of the codesearch module",
+              "a synthetic import list containing google.golang.org/grpc"
+            ],
+            "pseudocode": "assert forbidden(directImportsOf('./...'))==[]; assert 'grpc' in forbidden(synthetic)"
+          }
         },
         {
-          "id": "03-REQ-9.4",
+          "id": "REQ-9.4",
           "pattern": "unwanted",
           "condition": "the zoekt builder cannot accept symbol data from outside",
           "system": "codesearch spec",
           "action": "end the spec as a no-go, because accepting it would force zoekt's own ctags process",
-          "contract": "No code is merged; the evidence is recorded in the PRD"
+          "contract": "No code is merged; the evidence is recorded in the PRD",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a zoekt builder with CTagsPath empty",
+              "a document with a symbol section supplied as byte offsets"
+            ],
+            "pseudocode": "doc={Name,Content,Symbols:[{Start,End}],SymbolsMetaData}; build; r=search('sym:Foo'); assert r.Files[0].Name==docWithSymbol; assert spawns==0"
+          }
         },
         {
-          "id": "03-REQ-9.5",
+          "id": "REQ-9.5",
           "pattern": "unwanted",
           "condition": "zoekt fails to build or run on windows/amd64",
           "system": "codesearch spec",
           "action": "treat it as the ErrUnsupported stub of Requirement 8 and not as a no-go",
-          "contract": "The spec continues; the module still builds on windows/amd64"
+          "contract": "The spec continues; the module still builds on windows/amd64",
+          "check": {
+            "same_as": "REQ-8.6"
+          }
         }
       ]
     },
     {
-      "id": "03-REQ-10",
+      "id": "REQ-10",
       "title": "Tests, build wiring and documentation",
       "rationale": "The nested module is invisible to the root policy tests and the Makefile, so the same guarantees and docs must be added explicitly.",
       "criteria": [
         {
-          "id": "03-REQ-10.1",
+          "id": "REQ-10.1",
           "pattern": "ubiquitous",
           "system": "codesearch/policy_test.go",
-          "action": "contain its own TestNoCgoOutsideStdlib and TestCgoProbeIsArmed run with CGO_ENABLED=1, a forbidden-import check over codesearch's direct imports for gRPC, Prometheus and HTTP servers (the transitive graph of zoekt's packages is accepted, per docs/errata/03_forbidden_imports_direct_only.md), a build and vet of the four targets, and, where the stub is used, a test asserting ErrUnsupported"
+          "action": "contain its own TestNoCgoOutsideStdlib and TestCgoProbeIsArmed run with CGO_ENABLED=1, a forbidden-import check over codesearch's direct imports for gRPC, Prometheus and HTTP servers (the transitive graph of zoekt's packages is accepted, per docs/errata/03_forbidden_imports_direct_only.md), a build and vet of the four targets, and, where the stub is used, a test asserting ErrUnsupported",
+          "check": {
+            "same_as": "REQ-8.7"
+          }
         },
         {
-          "id": "03-REQ-10.2",
+          "id": "REQ-10.2",
           "pattern": "ubiquitous",
           "system": "root internal/policy tests",
-          "action": "pass unmodified after this spec lands"
+          "action": "pass unmodified after this spec lands",
+          "check": {
+            "same_as": "REQ-1.4"
+          }
         },
         {
-          "id": "03-REQ-10.3",
+          "id": "REQ-10.3",
           "pattern": "ubiquitous",
           "system": "Makefile",
-          "action": "run test, vet, lint and tidy over codesearch/ as well as the root and difftest, and make `make check` pass both with and without universal-ctags installed"
+          "action": "run test, vet, lint and tidy over codesearch/ as well as the root and difftest, and make `make check` pass both with and without universal-ctags installed",
+          "contract": "each target includes codesearch alongside the root and difftest; make check exits 0 in both environments",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the Makefile",
+              "an environment with universal-ctags and one with it removed from PATH"
+            ],
+            "pseudocode": "for t in [test,vet,lint,tidy]: assert 'codesearch' in dryrun(t); assert run('make check').code==0 with ctags; assert run('make check',PATH=noctags).code==0"
+          }
         },
         {
-          "id": "03-REQ-10.4",
+          "id": "REQ-10.4",
           "pattern": "ubiquitous",
           "system": "codesearch tests",
-          "action": "obtain symbols in every test through a fake Runner or DisableCtags, skip a test that uses real universal-ctags when it is absent, and run seam tests with Options.Index set to a fake tools.Index"
+          "action": "obtain symbols in every test through a fake Runner or DisableCtags, skip a test that uses real universal-ctags when it is absent, and run seam tests with Options.Index set to a fake tools.Index",
+          "contract": "no test constructs an index with the default runner without DisableCtags or a fake; tests using real ctags call a skip when exec.LookPath fails; go test passes without ctags; seam tests set Options.Index to a fake tools.Index",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the codesearch test sources",
+              "an environment without universal-ctags"
+            ],
+            "pseudocode": "for f in testfiles: assert usesFake(f) or usesDisable(f) or hasSkip(f,'LookPath'); assert run('go test ./...',PATH=noctags).ok"
+          }
         },
         {
-          "id": "03-REQ-10.5",
+          "id": "REQ-10.5",
           "pattern": "ubiquitous",
           "system": "codesearch/README.md",
-          "action": "describe what the module is, how to opt in with the one-line Options.Index and the allowlist entry, the Requirement 9 answers and the known differences from search_files, and say that its goldens are tied to the pinned zoekt version"
+          "action": "describe what the module is, how to opt in with the one-line Options.Index and the allowlist entry, the Requirement 9 answers and the known differences from search_files, and say that its goldens are tied to the pinned zoekt version",
+          "check": {
+            "same_as": "REQ-1.2"
+          }
         },
         {
-          "id": "03-REQ-10.6",
+          "id": "REQ-10.6",
           "pattern": "ubiquitous",
           "system": "documentation set",
-          "action": "update in the same change docs/architecture.md (module boundary beside difftest/ and examples/flatline, package table and graph rows), docs/DEPS.md (a new numbered ruling for zoekt confined to the nested module and the extended nested-modules sentence), docs/configuration.md (an Index row in the tools.Options table, the code_search limits and the codesearch.Options fields), docs/cli.md (the changed make target descriptions) and the root README.md module list"
+          "action": "update in the same change docs/architecture.md (module boundary beside difftest/ and examples/flatline, package table and graph rows), docs/DEPS.md (a new numbered ruling for zoekt confined to the nested module and the extended nested-modules sentence), docs/configuration.md (an Index row in the tools.Options table, the code_search limits and the codesearch.Options fields), docs/cli.md (the changed make target descriptions) and the root README.md module list",
+          "contract": "architecture.md shows the module boundary beside difftest/ and examples/flatline plus package table and graph rows for codesearch; DEPS.md has a new numbered ruling for zoekt confined to the nested module and an extended nested-modules sentence; configuration.md has an Index row in the tools.Options table, the code_search limits and the codesearch.Options fields; cli.md describes the changed make targets; README.md lists the codesearch module",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "docs/architecture.md, docs/DEPS.md, docs/configuration.md, docs/cli.md and README.md after the change"
+            ],
+            "pseudocode": "assert 'codesearch' in architecture and 'difftest' near it; assert 'zoekt' in DEPS ruling; assert row 'Index' in configuration; assert 'codesearch' in cli and README"
+          }
         },
         {
-          "id": "03-REQ-10.7",
+          "id": "REQ-10.7",
           "pattern": "ubiquitous",
           "system": "documentation set",
-          "action": "leave docs/api.md untouched"
+          "action": "leave docs/api.md untouched",
+          "contract": "docs/api.md is not among the changed files",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the repository diff of the change"
+            ],
+            "pseudocode": "assert 'docs/api.md' not in gitDiffNames()"
+          }
         }
       ]
     }
   ],
   "execution_paths": [
     {
-      "id": "03-PATH-1",
+      "id": "PATH-1",
       "title": "An embedder opts in and the model runs its first ranked search",
       "steps": [
         {
@@ -625,10 +1144,32 @@
           "actor": "code_search tool",
           "action": "searches with zoekt and returns file-grouped ranked text with a first line and Data fields"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "codesearch.New and index",
+          "tools.All",
+          "tools.Walk",
+          "outline.OutlineMany",
+          "zoekt builder and searcher",
+          "code_search tool",
+          "file system"
+        ],
+        "setup": [
+          "a fixture workspace on disk with Go files and a nested .gitignore",
+          "a real codesearch index created with codesearch.New and a fake Runner",
+          "tools.All wired with Options.Index"
+        ],
+        "end_state": [
+          "code_search is the last tool in the list",
+          "arguments are validated and the path resolved before any build",
+          "the index is built from tools.Walk and outline.OutlineMany into a shard run directory",
+          "the result is file-grouped ranked text with the first line and populated Data fields"
+        ]
+      }
     },
     {
-      "id": "03-PATH-2",
+      "id": "PATH-2",
       "title": "The model edits a file and immediately searches for the new line",
       "steps": [
         {
@@ -651,10 +1192,29 @@
           "actor": "code_search tool",
           "action": "returns the new line, not the old one, with dirty_files reporting 1"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "edit_file tool",
+          "codesearch index",
+          "overlay shard",
+          "zoekt builder and searcher",
+          "code_search tool",
+          "file system"
+        ],
+        "setup": [
+          "a built real index over a fixture workspace",
+          "real edit_file wired to the index"
+        ],
+        "end_state": [
+          "edit_file called Invalidate with the relative slash path",
+          "the result contains the new line and not the old",
+          "Data.dirty_files is 1"
+        ]
+      }
     },
     {
-      "id": "03-PATH-3",
+      "id": "PATH-3",
       "title": "A shell command deletes a file and the next search omits it",
       "steps": [
         {
@@ -677,10 +1237,29 @@
           "actor": "code_search tool",
           "action": "returns a successful no-match result that lists no deleted file"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "execute tool",
+          "codesearch index",
+          "tools.Walk",
+          "zoekt searcher",
+          "code_search tool",
+          "file system"
+        ],
+        "setup": [
+          "a built real index over a fixture workspace",
+          "the real execute tool wired to the index"
+        ],
+        "end_state": [
+          "execute called Invalidate with the empty string",
+          "the revalidation walk marked the file gone",
+          "the result is successful with no match and lists no deleted file"
+        ]
+      }
     },
     {
-      "id": "03-PATH-4",
+      "id": "PATH-4",
       "title": "find_symbol is served by the index after a code_search built it",
       "steps": [
         {
@@ -707,10 +1286,29 @@
           "actor": "find_symbol",
           "action": "ranks and truncates the matches itself and returns the same matches in the same order as its table, with a header naming the index"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "find_symbol tool",
+          "codesearch index",
+          "outline.OutlineMany",
+          "symbol table",
+          "code_search tool",
+          "file system"
+        ],
+        "setup": [
+          "a real fixture workspace",
+          "real find_symbol with Options.Index set to a real codesearch index and Options.Symbols table"
+        ],
+        "end_state": [
+          "the first find_symbol is answered from its own table",
+          "the second is answered from the index with the header naming the index",
+          "both calls return the same matches in the same order"
+        ]
+      }
     },
     {
-      "id": "03-PATH-5",
+      "id": "PATH-5",
       "title": "A build on a very large tree stops at a bound and answers partially",
       "steps": [
         {
@@ -733,10 +1331,28 @@
           "actor": "codesearch index",
           "action": "answers from the same partial index without starting a new build"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "codesearch index",
+          "tools.Walk",
+          "zoekt builder and searcher",
+          "code_search tool",
+          "file system"
+        ],
+        "setup": [
+          "a real fixture workspace larger than a scaled-down MaxFiles bound",
+          "a real codesearch index with a build counter"
+        ],
+        "end_state": [
+          "the first result has partial true, a partial_reason and a note to narrow path or use search_files",
+          "the second call answers from the same index",
+          "the build counter stays 1"
+        ]
+      }
     },
     {
-      "id": "03-PATH-6",
+      "id": "PATH-6",
       "title": "The embedder closes the index and its shards are removed",
       "steps": [
         {
@@ -755,10 +1371,26 @@
           "actor": "code_search tool",
           "action": "returns an index_closed error without building or searching"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "codesearch index",
+          "zoekt searcher",
+          "code_search tool",
+          "file system"
+        ],
+        "setup": [
+          "a real built index whose run directory exists on disk"
+        ],
+        "end_state": [
+          "the run directory is deleted",
+          "code_search returns ErrResult code index_closed",
+          "no build or search happened after Close"
+        ]
+      }
     },
     {
-      "id": "03-PATH-7",
+      "id": "PATH-7",
       "title": "A failed risk check ends the spec",
       "steps": [
         {
@@ -773,7 +1405,24 @@
           "actor": "engineer",
           "action": "records the evidence in the PRD and merges no code of the spec"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "go toolchain",
+          "go list",
+          "policy cgo scan",
+          "scratch module on disk"
+        ],
+        "setup": [
+          "the pinned zoekt release in a scratch nested module",
+          "a scratch module variant that includes a package with a cgo file"
+        ],
+        "end_state": [
+          "for the clean module all checks pass and their outputs are recorded in the README",
+          "for the cgo variant the scan reports a cgo file and the result is no-go",
+          "the no-go outcome yields no merged codesearch code and the evidence is recorded"
+        ]
+      }
     }
   ],
   "external_apis": [

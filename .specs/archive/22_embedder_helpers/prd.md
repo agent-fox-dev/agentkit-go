@@ -4,9 +4,8 @@ spec_name: "embedder_helpers"
 title: "Embedder helpers: core.Named, guard.Allow, faux.ToolCall and faux.Text, and sandbox.Open"
 status: "active"
 created_at: "2026-10-16T05:44:37.520489Z"
-updated_at: "2026-10-16T05:44:37.520489Z"
 intent_hash: "cfb324777f92f57720476bfde0b4c65bda1a23f9cde2a57570c5bf0673658417"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/12-simplify-the-embedder-contract.md"
 ---
 ## Intent
@@ -217,3 +216,11 @@ Each of the three rewritten examples gains one structural test, which parses its
 | `14_sandbox_rsync_sync` | modifies | TS-14-45's check of the sandbox example's AST moves from `Sync` to `sandbox.Open`. |
 | `17_sandbox_podman` | modifies | TS-17-61's guard API pin gains `Allow`, and `docs/errata/17_sandbox_podman.md` records why. |
 | `19_sandbox_gateway` | modifies | `examples/gateway` is rewritten on `sandbox.Open`. TS-19-64 requires the regenerated golden to be committed. |
+
+## Glossary
+
+- **allowlist guard**: A core.BeforeToolCall that blocks shell tool calls (execute, run_command) whose programs are not in a given list, as guard.Restricted does with Options.AllowedPrograms.
+- **proxy tool**: A core.Tool returned by Sandbox.Tools whose Execute forwards the call to the agent running inside the sandbox.
+- **scripted turn**: A faux.Turn handed to faux.New; the faux provider replays it as one assistant response.
+- **step error**: The error returned by the Sync or Tools call that made sandbox.Open fail after Create succeeded.
+- **structural test**: A test that parses an example's main.go with go/parser and fails on forbidden AST shapes (composite literals, calls, switch tags) instead of running the example.

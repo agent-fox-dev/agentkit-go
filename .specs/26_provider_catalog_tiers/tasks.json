@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "26",
   "spec_name": "provider_catalog_tiers",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make check",
     "linter": "make lint",
@@ -17,17 +17,12 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Declare provider names, tier type, Selection, sentinel errors and fallback constants",
       "criteria": [
-        "26-REQ-1.1",
-        "26-REQ-4.1",
-        "26-REQ-6.6",
-        "26-REQ-7.1"
-      ],
-      "tests": [
-        "TS-26-1",
-        "TS-26-24"
+        "REQ-1.1",
+        "REQ-4.1",
+        "REQ-6.6",
+        "REQ-7.1"
       ],
       "steps": [
         "Write TS-26-1 (internal test in catalog/) and TS-26-24 (external package catalog_test) and confirm they fail to compile or fail",
@@ -46,26 +41,19 @@
       ],
       "done_when": [
         "`go test ./catalog/... -count=1` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Parse and validate the optional per-vendor tiers block",
       "criteria": [
-        "26-REQ-4.6",
-        "26-REQ-5.1",
-        "26-REQ-5.2",
-        "26-REQ-5.3",
-        "26-REQ-5.4",
-        "26-REQ-5.5",
-        "26-REQ-5.6"
-      ],
-      "tests": [
-        "TS-26-18",
-        "TS-26-19",
-        "TS-26-20"
+        "REQ-4.6",
+        "REQ-5.1",
+        "REQ-5.2",
+        "REQ-5.3",
+        "REQ-5.4",
+        "REQ-5.5",
+        "REQ-5.6"
       ],
       "steps": [
         "Write TS-26-18, TS-26-19 and TS-26-20 as table tests next to TestParseRejectsCorruptCatalogs in catalog/catalog_test.go, using a valid base catalog JSON whose vendor has a row with a thinking_level_map and a tiers block; assert nil *Catalog, errors.As *ParseError with the exact Path and errors.Is ErrCorruptCatalog; include a second vendor row (for the other-vendor model case), a null level case and a row with no level map",
@@ -84,29 +72,19 @@
       ],
       "done_when": [
         "`go test ./catalog/... -count=1` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Add the openrouter and ollama sections, tier blocks and version 2026-10-21 to catalog.json",
       "criteria": [
-        "26-REQ-2",
-        "26-REQ-4.3",
-        "26-REQ-4.4",
-        "26-REQ-4.5",
-        "26-REQ-9.1",
-        "26-REQ-9.2",
-        "26-REQ-9.3"
-      ],
-      "tests": [
-        "TS-26-6",
-        "TS-26-7",
-        "TS-26-8",
-        "TS-26-9",
-        "TS-26-32",
-        "TS-26-33"
+        "REQ-2",
+        "REQ-4.3",
+        "REQ-4.4",
+        "REQ-4.5",
+        "REQ-9.1",
+        "REQ-9.2",
+        "REQ-9.3"
       ],
       "steps": [
         "BEFORE editing catalog.json, capture a pinned snapshot in the test (TS-26-9) of the 13 anthropic ids, and the core.Model Lookup returns for each, plus the anthropic vendor name/api/base_url/default_model",
@@ -130,31 +108,17 @@
       ],
       "done_when": [
         "`go test ./catalog/... ./provider/... -count=1` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Implement Select input checking and per-provider model id resolution",
       "criteria": [
-        "26-REQ-1.4",
-        "26-REQ-1.5",
-        "26-REQ-1.6",
-        "26-REQ-3",
-        "26-REQ-6"
-      ],
-      "tests": [
-        "TS-26-3",
-        "TS-26-4",
-        "TS-26-5",
-        "TS-26-10",
-        "TS-26-11",
-        "TS-26-12",
-        "TS-26-14",
-        "TS-26-21",
-        "TS-26-22",
-        "TS-26-23"
+        "REQ-1.4",
+        "REQ-1.5",
+        "REQ-1.6",
+        "REQ-3",
+        "REQ-6"
       ],
       "steps": [
         "Write TS-26-3, 4, 5, 10, 11, 12, 14, 21, 22 and 23 (use the existing testCatalog(t) for TS-26-4 and TS-26-5; TS-26-21 uses non-tier triples here)",
@@ -177,32 +141,21 @@
       ],
       "done_when": [
         "`go test ./catalog/... -count=1` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Resolve tiers in Select with effort precedence",
       "criteria": [
-        "26-REQ-1.2",
-        "26-REQ-1.3",
-        "26-REQ-4.2",
-        "26-REQ-7.2",
-        "26-REQ-7.3",
-        "26-REQ-7.4",
-        "26-REQ-7.5",
-        "26-REQ-7.6",
-        "26-REQ-7.7"
-      ],
-      "tests": [
-        "TS-26-2",
-        "TS-26-15",
-        "TS-26-16",
-        "TS-26-17",
-        "TS-26-25",
-        "TS-26-26",
-        "TS-26-27"
+        "REQ-1.2",
+        "REQ-1.3",
+        "REQ-4.2",
+        "REQ-7.2",
+        "REQ-7.3",
+        "REQ-7.4",
+        "REQ-7.5",
+        "REQ-7.6",
+        "REQ-7.7"
       ],
       "steps": [
         "Write TS-26-2, 15, 16, 17, 25, 26 and 27 (TS-26-17 needs a variant of the test catalog with a valid openrouter tiers block; TS-26-26 uses the plain test catalog, which has no tiers and no ollama section)",
@@ -222,30 +175,19 @@
       ],
       "done_when": [
         "`go test ./catalog/... -count=1` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Prove Select guarantees and package boundaries, and update documentation",
       "criteria": [
-        "26-REQ-3.4",
-        "26-REQ-8.1",
-        "26-REQ-8.2",
-        "26-REQ-8.3",
-        "26-REQ-8.4",
-        "26-REQ-9.4",
-        "26-REQ-9.5"
-      ],
-      "tests": [
-        "TS-26-13",
-        "TS-26-28",
-        "TS-26-29",
-        "TS-26-30",
-        "TS-26-31",
-        "TS-26-34",
-        "TS-26-35"
+        "REQ-3.4",
+        "REQ-8.1",
+        "REQ-8.2",
+        "REQ-8.3",
+        "REQ-8.4",
+        "REQ-9.4",
+        "REQ-9.5"
       ],
       "steps": [
         "Write TS-26-13 and TS-26-31 as seeded property tests (rand.New(rand.NewSource(...))) over random, Unicode, whitespace, tier-like, prefixed and very long strings against Default() and the test catalog; assert no panic, no cross-provider Listed result, and error or positive limits with Provider in Providers()",
@@ -275,39 +217,7 @@
       "done_when": [
         "`make check` passes",
         "`go test -race ./catalog/... -count=1` passes"
-      ],
-      "state": "done"
-    },
-    {
-      "id": 7,
-      "kind": "integration",
-      "title": "Verify the tier, fallback, parse-rejection and unchanged-Lookup paths end to end",
-      "tests": [
-        "TS-26-36",
-        "TS-26-37",
-        "TS-26-38",
-        "TS-26-39"
-      ],
-      "steps": [
-        "Write TS-26-36 and TS-26-37 in catalog/smoke_test.go (package catalog_test): the real Default() catalog, catalog.Select and provider.ComputeCost with Usage{InputTokens:1000000} giving 0.15; and the ' Ollama ' / llama4:8b / HIGH fallback case",
-        "Write TS-26-38 in the same file: take the embedded catalog.json bytes (read the file from disk relative to the test), edit only the ollama STANDARD tier effort to \"xhigh\", call catalog.Parse and assert nil catalog, *ParseError Path vendors.ollama.tiers.STANDARD.effort and ErrCorruptCatalog",
-        "Write TS-26-39 in the root package: agentkit.New with Model claude-sonnet-5-5 and a faux provider client scripted with one text reply, run one turn, assert the request's model id and max-output cap equal the pre-spec claude-sonnet-5-5 row values and the run completes; follow the existing faux-based tests in loop_test.go for setup",
-        "Trace 26-PATH-1 to 26-PATH-4 through the real code: Select calls Default() and the tier table, ComputeCost consumes Selection.Model, Parse validates tiers, agentkit.New still calls catalog.Lookup; confirm each step calls the next and no stub remains",
-        "Confirm every contract with a production consumer: Parse's tiers are read by Select; Select is the exported entry point of the package (no production caller is expected in this spec, agent.go keeps Lookup by design, so confirm only that Select is reachable from the exported API)",
-        "Grep catalog/, agent.go and the other touched files for TODO, NotImplementedError, panic(\"not implemented\") and bare stub returns, and remove any that remain",
-        "Run `make check` (not make check-release) and note in the handoff that the full gate was left to the user"
-      ],
-      "touches": [
-        "catalog/smoke_test.go",
-        "catalog_tiers_smoke_test.go"
-      ],
-      "depends_on": [
-        6
-      ],
-      "done_when": [
-        "`make check` passes"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

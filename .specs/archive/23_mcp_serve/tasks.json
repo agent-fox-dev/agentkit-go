@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "23",
   "spec_name": "mcp_serve",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -29,27 +29,16 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Create the mcpserve module with New, tool definitions and server info",
       "criteria": [
-        "23-REQ-1.3",
-        "23-REQ-2.1",
-        "23-REQ-2.2",
-        "23-REQ-2.3",
-        "23-REQ-2.4",
-        "23-REQ-2.5",
-        "23-REQ-2.6",
-        "23-REQ-2.7"
-      ],
-      "tests": [
-        "TS-23-3",
-        "TS-23-5",
-        "TS-23-6",
-        "TS-23-7",
-        "TS-23-8",
-        "TS-23-9",
-        "TS-23-10",
-        "TS-23-11"
+        "REQ-1.3",
+        "REQ-2.1",
+        "REQ-2.2",
+        "REQ-2.3",
+        "REQ-2.4",
+        "REQ-2.5",
+        "REQ-2.6",
+        "REQ-2.7"
       ],
       "steps": [
         "Write TS-23-3, 5, 6, 7, 8, 9, 10 and 11 as Go tests in mcpserve/ and confirm they fail (TS-23-3 shells out to `go list ./...` and parses non-test imports with go/parser)",
@@ -73,30 +62,19 @@
       ],
       "done_when": [
         "`cd mcpserve && go test ./... -count=1` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Run every tools/call through Runner.Call with result mapping and call logging",
       "criteria": [
-        "23-REQ-3.1",
-        "23-REQ-3.2",
-        "23-REQ-3.3",
-        "23-REQ-3.4",
-        "23-REQ-3.5",
-        "23-REQ-3.6",
-        "23-REQ-8.2"
-      ],
-      "tests": [
-        "TS-23-13",
-        "TS-23-14",
-        "TS-23-15",
-        "TS-23-16",
-        "TS-23-17",
-        "TS-23-18",
-        "TS-23-45"
+        "REQ-3.1",
+        "REQ-3.2",
+        "REQ-3.3",
+        "REQ-3.4",
+        "REQ-3.5",
+        "REQ-3.6",
+        "REQ-8.2"
       ],
       "steps": [
         "Write TS-23-13 to 18 and TS-23-45 (TS-23-14 as a property test with testing/quick or a seeded generator over core.ToolResult incl. TextBlock/ThinkingBlock/ToolUseBlock) and confirm they fail",
@@ -117,31 +95,19 @@
       ],
       "done_when": [
         "`cd mcpserve && go test ./... -count=1 -race` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Implement ServeStdio over the strict NDJSON pipe transport",
       "criteria": [
-        "23-REQ-4.1",
-        "23-REQ-4.2",
-        "23-REQ-4.3",
-        "23-REQ-4.4",
-        "23-REQ-4.5",
-        "23-REQ-4.6",
-        "23-REQ-8.4"
-      ],
-      "tests": [
-        "TS-23-20",
-        "TS-23-21",
-        "TS-23-22",
-        "TS-23-23",
-        "TS-23-24",
-        "TS-23-25",
-        "TS-23-26",
-        "TS-23-47"
+        "REQ-4.1",
+        "REQ-4.2",
+        "REQ-4.3",
+        "REQ-4.4",
+        "REQ-4.5",
+        "REQ-4.6",
+        "REQ-8.4"
       ],
       "steps": [
         "Write TS-23-20 to 26 and TS-23-47 and confirm they fail; the child-process test (TS-23-21) re-executes the test binary via TestMain with a marker env var plus PATH/HOME and connects with mcp.Pool ServerConfig.Command; skip it on Windows",
@@ -162,36 +128,22 @@
       ],
       "done_when": [
         "`cd mcpserve && go test ./... -count=1 -race` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Implement ServeLoopback listener, authentication and body guard",
       "criteria": [
-        "23-REQ-1.4",
-        "23-REQ-5.1",
-        "23-REQ-5.2",
-        "23-REQ-5.3",
-        "23-REQ-5.4",
-        "23-REQ-5.5",
-        "23-REQ-5.6",
-        "23-REQ-5.7",
-        "23-REQ-5.8",
-        "23-REQ-8.3"
-      ],
-      "tests": [
-        "TS-23-4",
-        "TS-23-27",
-        "TS-23-28",
-        "TS-23-29",
-        "TS-23-30",
-        "TS-23-31",
-        "TS-23-32",
-        "TS-23-33",
-        "TS-23-34",
-        "TS-23-46"
+        "REQ-1.4",
+        "REQ-5.1",
+        "REQ-5.2",
+        "REQ-5.3",
+        "REQ-5.4",
+        "REQ-5.5",
+        "REQ-5.6",
+        "REQ-5.7",
+        "REQ-5.8",
+        "REQ-8.3"
       ],
       "steps": [
         "Write TS-23-4, 27 to 34 and 46 and confirm they fail; add package-level test seams in loopback.go (listen func and random reader vars) so listen/rand failures and `no listen when ctx done` are testable",
@@ -212,30 +164,19 @@
       ],
       "done_when": [
         "`cd mcpserve && go test ./... -count=1 -race` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Bound the endpoint lifetime and prove end-to-end loopback use",
       "criteria": [
-        "23-REQ-2.8",
-        "23-REQ-3.7",
-        "23-REQ-6.1",
-        "23-REQ-6.2",
-        "23-REQ-6.3",
-        "23-REQ-6.4",
-        "23-REQ-6.5"
-      ],
-      "tests": [
-        "TS-23-12",
-        "TS-23-19",
-        "TS-23-35",
-        "TS-23-36",
-        "TS-23-37",
-        "TS-23-38",
-        "TS-23-39"
+        "REQ-2.8",
+        "REQ-3.7",
+        "REQ-6.1",
+        "REQ-6.2",
+        "REQ-6.3",
+        "REQ-6.4",
+        "REQ-6.5"
       ],
       "steps": [
         "Write TS-23-12, 19, 35, 36, 37, 38 and 39 and confirm the lifetime ones fail (TS-23-19 builds a workspace with workspace.Open, tools.For and code_mode, a Runner with a recording Guard, and connects mcp.Pool with URL and Authorization header)",
@@ -255,24 +196,16 @@
       ],
       "done_when": [
         "`cd mcpserve && go test ./... -count=1 -race` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Add ClaudeConfig and PiConfig",
       "criteria": [
-        "23-REQ-7.1",
-        "23-REQ-7.2",
-        "23-REQ-7.3",
-        "23-REQ-7.4"
-      ],
-      "tests": [
-        "TS-23-40",
-        "TS-23-41",
-        "TS-23-42",
-        "TS-23-43"
+        "REQ-7.1",
+        "REQ-7.2",
+        "REQ-7.3",
+        "REQ-7.4"
       ],
       "steps": [
         "Write TS-23-40 to 43 (TS-23-43 as a property test over generated names, URLs and tokens) and confirm they fail",
@@ -290,20 +223,14 @@
       ],
       "done_when": [
         "`cd mcpserve && go test ./... -count=1 -race` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Pin Options and the no-secret logging rule",
       "criteria": [
-        "23-REQ-8.1",
-        "23-REQ-8.5"
-      ],
-      "tests": [
-        "TS-23-44",
-        "TS-23-48"
+        "REQ-8.1",
+        "REQ-8.5"
       ],
       "steps": [
         "Write TS-23-44 (reflect on Options fields; run a call, a 401 refusal and a stdio session with Options{} and captured stdout/stderr) and TS-23-48 (property test with a capturing slog handler that records message and all attribute values) and confirm they fail or pass for the right reason",
@@ -323,26 +250,17 @@
       ],
       "done_when": [
         "`cd mcpserve && go test ./... -count=1 -race` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Wire mcpserve into the Makefile and the root module's policy tests",
       "criteria": [
-        "23-REQ-1.1",
-        "23-REQ-1.2",
-        "23-REQ-9.1",
-        "23-REQ-9.2",
-        "23-REQ-9.3"
-      ],
-      "tests": [
-        "TS-23-1",
-        "TS-23-2",
-        "TS-23-49",
-        "TS-23-50",
-        "TS-23-51"
+        "REQ-1.1",
+        "REQ-1.2",
+        "REQ-9.1",
+        "REQ-9.2",
+        "REQ-9.3"
       ],
       "steps": [
         "Write TS-23-1 and TS-23-2 in internal/policy/mcpserve_deps_test.go mirroring TS-19-60/61 in gatewayd_deps_test.go (module path, go 1.27, replace of the root at \"../\", direct set exactly the root and go-sdk, SDK version equal to the root's, validateAllowlist with approvedDeps plus the mcpserve path; `go list -m all` graph subset with the mcpserve path removed)",
@@ -365,30 +283,19 @@
       ],
       "done_when": [
         "`go test ./internal/policy/... -count=1` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 9,
-      "kind": "implement",
       "title": "Move examples/harness onto mcpserve, sandbox.Open, guard.Allow and the faux helpers",
       "criteria": [
-        "23-REQ-10.1",
-        "23-REQ-10.2",
-        "23-REQ-10.3",
-        "23-REQ-10.4",
-        "23-REQ-10.5",
-        "23-REQ-10.6",
-        "23-REQ-10.7"
-      ],
-      "tests": [
-        "TS-23-54",
-        "TS-23-55",
-        "TS-23-56",
-        "TS-23-57",
-        "TS-23-58",
-        "TS-23-59",
-        "TS-23-60"
+        "REQ-10.1",
+        "REQ-10.2",
+        "REQ-10.3",
+        "REQ-10.4",
+        "REQ-10.5",
+        "REQ-10.6",
+        "REQ-10.7"
       ],
       "steps": [
         "Write TS-23-54, 57, 58 and 59 as structural tests in examples/harness/main_test.go (go/parser over non-test files: no server.go, no go-sdk or net import, no listen call, helpers declared in calls.go, exactly one sandbox.Open and no Create/Sync/Tools call, guard.Allow used, no `faux.Turn{` literal or guard.Restricted; go mod edit -json for go.mod); adapt TestHarnessArgs to `&mcpserve.Endpoint{}` and TestExampleRunsOffline to expect `filled the workspace from the sample project`; remove TestServeRequiresTheToken",
@@ -415,20 +322,14 @@
       ],
       "done_when": [
         "`cd examples/harness && go test ./... -count=1` passes"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 10,
-      "kind": "implement",
       "title": "Update documentation, regenerate docs and confirm the root is unchanged and make check passes offline",
       "criteria": [
-        "23-REQ-9.4",
-        "23-REQ-9.5"
-      ],
-      "tests": [
-        "TS-23-52",
-        "TS-23-53"
+        "REQ-9.4",
+        "REQ-9.5"
       ],
       "steps": [
         "Run `make doc` and commit docs/generated/ (including docs/generated/mcpserve/mcpserve.txt)",
@@ -460,38 +361,7 @@
       ],
       "done_when": [
         "`GOPROXY=off make check` passes"
-      ],
-      "state": "done"
-    },
-    {
-      "id": 11,
-      "kind": "integration",
-      "title": "Verify the loopback, stdio, refusal and harness paths end to end",
-      "tests": [
-        "TS-23-61",
-        "TS-23-62",
-        "TS-23-63",
-        "TS-23-64"
-      ],
-      "steps": [
-        "Write TS-23-61 (workspace.Open + tools.For + code_mode, Runner with recording Guard, ServeLoopback, mcp.Pool with bearer header runs a read_file script, then Close and a refused TCP connect), TS-23-62 (re-executed test binary child over mcp.Pool Command, exits 0), TS-23-63 (401 without the token plus a blocked execute result with a capturing slog handler) and TS-23-64 (offline harness run) using real components, and confirm they pass",
-        "Trace 23-PATH-1 to 23-PATH-4 through the real code: New -> ServeLoopback/ServeStdio -> auth and body guard -> SDK handler -> callTool -> Runner.Call -> result mapping; confirm each step calls the next and no stub remains",
-        "Confirm every producer with a contract is consumed in production code: Endpoint.URL/Token/ClaudeConfig/PiConfig by examples/harness, Server.ServeLoopback by examples/harness main, and Runner.Tools()/Runner.Call from spec 21 by mcpserve",
-        "Confirm entry points owned by other specs (agentkit.NewRunner, sandbox.Open, guard.Allow, faux.ToolCall, faux.Text) are called from production code in examples/harness",
-        "Grep mcpserve/, examples/harness/ and internal/policy/ for panic(\"not implemented\"), TODO, and a bare `return nil` on a non-trivial path and remove any that remain",
-        "Run `make check` in every module and confirm it passes"
-      ],
-      "touches": [
-        "mcpserve/smoke_test.go",
-        "examples/harness/main_test.go"
-      ],
-      "depends_on": [
-        10
-      ],
-      "done_when": [
-        "`make test` and `make lint` pass in every module"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

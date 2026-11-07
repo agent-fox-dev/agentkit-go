@@ -4,9 +4,8 @@ spec_name: "anthropic_wire"
 title: "Rewrite Anthropic Wire over Official SDK with Vertex and Bedrock Resolution, Catalog Lookup, and Golden Tests"
 status: "active"
 created_at: "2026-10-09T11:26:14.24786Z"
-updated_at: "2026-10-09T11:26:14.24786Z"
 intent_hash: "b62b2934e23a57241cd81f261808d004f884bc404ea953f718c95a7e1eb136ea"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/10-cut-agentkit-down-to-the-hands.md"
 ---
 ## Intent
@@ -199,3 +198,10 @@ import "github.com/anthropics/anthropic-sdk-go/option"
 
 func WithGoogleAuth(ctx context.Context, project, region string) option.RequestOption
 ```
+
+## Glossary
+
+- **adaptive_thinking**: Claude reasoning mode where the model dynamically adjusts thinking token allocation based on a discrete Effort level instead of a fixed budget_tokens integer.
+- **effort**: Discrete reasoning effort levels (low, medium, high, xhigh, max) passed in output_config to guide adaptive thinking models.
+- **ephemeral_cache_control**: Anthropic prompt cache breakpoint annotation (cache_control: {type: ephemeral}) placed at strategic request positions to enable prompt prefix caching.
+- **strict_tool**: Anthropic tool definition serialized with strict: true guaranteeing strict JSON schema compliance by the model.

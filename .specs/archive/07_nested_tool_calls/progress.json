@@ -1,0 +1,33 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/progress.v3.json",
+  "spec_id": "07",
+  "spec_name": "nested_tool_calls",
+  "schema_version": 3,
+  "updated_at": "2026-10-08T14:55:20.462183Z",
+  "tasks": [
+    {
+      "id": 1,
+      "state": "done"
+    },
+    {
+      "id": 2,
+      "state": "done"
+    },
+    {
+      "id": 3,
+      "state": "done"
+    },
+    {
+      "id": 4,
+      "state": "done"
+    },
+    {
+      "id": 5,
+      "state": "done"
+    },
+    {
+      "id": 6,
+      "state": "done"
+    }
+  ]
+}

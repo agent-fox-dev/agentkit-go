@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "16",
   "spec_name": "sandbox_images",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -33,18 +33,12 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Add the link-time version stamp to buildver and prove agentkit-sandboxd prints it",
       "criteria": [
-        "16-REQ-4.1",
-        "16-REQ-4.2",
-        "16-REQ-4.3",
-        "16-REQ-4.4"
-      ],
-      "tests": [
-        "TS-16-1",
-        "TS-16-2",
-        "TS-16-3"
+        "REQ-4.1",
+        "REQ-4.2",
+        "REQ-4.3",
+        "REQ-4.4"
       ],
       "steps": [
         "Write TS-16-1 in sandbox/internal/buildver/stamp_test.go (package buildver, no t.Parallel): save stamp, restore it with t.Cleanup, set \"v0.6.0\" and require Version() == \"v0.6.0\", then set \"\" and require Version() to equal an independent oracle that reads debug.ReadBuildInfo, takes the github.com/agent-fox-dev/agentkit-go entry from Main or Deps, and falls back to \"(devel)\" when absent or empty",
@@ -61,23 +55,13 @@
         "sandbox/internal/buildver/stamp_test.go",
         "sandbox/internal/buildver/api_test.go",
         "sandbox/cmd/agentkit-sandboxd/stamp_test.go"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Add the image references, ImageTag, DefaultImage, OverlayImage and OverlayCopyLine to package sandbox",
       "criteria": [
-        "16-REQ-5"
-      ],
-      "tests": [
-        "TS-16-4",
-        "TS-16-5",
-        "TS-16-6",
-        "TS-16-7",
-        "TS-16-8",
-        "TS-16-9"
+        "REQ-5"
       ],
       "steps": [
         "Write TS-16-4, TS-16-5 and TS-16-9 as table tests in sandbox/image_test.go (package sandbox_test) with exactly the accepted and refused rows the test spec lists, requiring (\"\", false) for every refusal",
@@ -94,29 +78,19 @@
         "sandbox/image.go",
         "sandbox/image_test.go",
         "sandbox/image_internal_test.go"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Write the two-target Containerfile and the root .dockerignore, with offline Containerfile checks",
       "criteria": [
-        "16-REQ-1",
-        "16-REQ-2",
-        "16-REQ-3.1",
-        "16-REQ-3.2",
-        "16-REQ-4.5",
-        "16-REQ-4.6",
-        "16-REQ-8.1"
-      ],
-      "tests": [
-        "TS-16-10",
-        "TS-16-13",
-        "TS-16-14",
-        "TS-16-15",
-        "TS-16-16",
-        "TS-16-17"
+        "REQ-1",
+        "REQ-2",
+        "REQ-3.1",
+        "REQ-3.2",
+        "REQ-4.5",
+        "REQ-4.6",
+        "REQ-8.1"
       ],
       "steps": [
         "Create the test-only package sandbox/images (package images, _test.go files only) with a Containerfile parser in containerfile_test.go: join backslash continuations, drop comments, split into stages at each FROM keyed by the lower-cased AS name, and record FROM, ARG, ENV, RUN, COPY (--from, --chown, --chmod, sources, destination), LABEL key=value pairs with quotes stripped, USER, WORKDIR, ENTRYPOINT (JSON form) and VOLUME",
@@ -143,21 +117,13 @@
       ],
       "done_when": [
         "With an engine available, `--target base` and `--target overlay` builds from the repository root exit 0, or docs/errata/16_sandbox_images.md records the psx link failure"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Add the sandbox-images and sandbox-images-test make targets and their variables",
       "criteria": [
-        "16-REQ-6"
-      ],
-      "tests": [
-        "TS-16-18",
-        "TS-16-19",
-        "TS-16-20",
-        "TS-16-21"
+        "REQ-6"
       ],
       "steps": [
         "Write sandbox/images/makefile_test.go with helpers: resolve make with exec.LookPath before changing PATH (skip when absent); build stub dir A (podman and docker shell stubs that append their argv to a marker file and exit 0), B (docker stub only) and C (nothing but a git symlink), each with a symlink to git when git is found; run make by absolute path with Dir and an Env whose PATH is replaced; extract build lines containing `build -f sandbox/images/Containerfile`",
@@ -175,23 +141,13 @@
       ],
       "depends_on": [
         3
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Build the image-test harness: engine selection, skip gates, run command, attach, cleanup and shared checks",
       "criteria": [
-        "16-REQ-7"
-      ],
-      "tests": [
-        "TS-16-22",
-        "TS-16-23",
-        "TS-16-24",
-        "TS-16-25",
-        "TS-16-47",
-        "TS-16-48"
+        "REQ-7"
       ],
       "steps": [
         "Write TS-16-22, TS-16-23, TS-16-24 and TS-16-25 in sandbox/images/harness_test.go against injected getenv/lookPath, a recording command runner and a recording logger, and TS-16-47 and TS-16-48 as opt-in tests gated like the image tests; confirm they fail",
@@ -212,26 +168,15 @@
       "depends_on": [
         2,
         4
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Verify the base image end to end over the agent protocol",
       "criteria": [
-        "16-REQ-2",
-        "16-REQ-4.5",
-        "16-REQ-7.4"
-      ],
-      "tests": [
-        "TS-16-38",
-        "TS-16-39",
-        "TS-16-40",
-        "TS-16-41",
-        "TS-16-42",
-        "TS-16-43",
-        "TS-16-44"
+        "REQ-2",
+        "REQ-4.5",
+        "REQ-7.4"
       ],
       "steps": [
         "Create sandbox/images/base_image_test.go with TestBaseImage: requireImage(t, \"AGENTKIT_SANDBOX_BASE_IMAGE\"), one startT harness and one Tools list shared by subtests attach_TS16_38, packages_TS16_39, user_TS16_40 and landlock_TS16_43; name every opt-in function here TestBaseImage* so TS-16-26 can select them",
@@ -256,25 +201,16 @@
       ],
       "done_when": [
         "With podman or docker available, every TestBaseImage* test reports PASS (TS-16-44 under an unstamped build) in `make sandbox-images-test`"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Verify the overlay image, the derived image, the cross-arch and unsupported-arch builds, and the skip behaviour",
       "criteria": [
-        "16-REQ-3",
-        "16-REQ-1.4",
-        "16-REQ-1.5",
-        "16-REQ-7.1"
-      ],
-      "tests": [
-        "TS-16-26",
-        "TS-16-45",
-        "TS-16-46",
-        "TS-16-49",
-        "TS-16-50"
+        "REQ-3",
+        "REQ-1.4",
+        "REQ-1.5",
+        "REQ-7.1"
       ],
       "steps": [
         "Create sandbox/images/overlay_image_test.go with TestOverlayImage (TS-16-45): requireImage(t, \"AGENTKIT_SANDBOX_OVERLAY_IMAGE\"); inspectJSON of .RootFS.Layers has exactly one entry and .Config.Entrypoint is [AgentPath]; `run --rm --entrypoint AgentPath <overlay> --version` exits 0 and prints exactly fmt.Sprintf(\"agentkit-sandboxd %s (protocol %d.%d)\\n\", expected, ProtocolMajor, ProtocolMinor)",
@@ -296,26 +232,14 @@
       ],
       "done_when": [
         "With podman or docker available, TestOverlayImage, TestOverlayImageDerived, TestBaseImageCrossArchBuild and TestBaseImageUnsupportedArch report PASS in `make sandbox-images-test`"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Write the release workflow with the images and verify jobs",
       "criteria": [
-        "16-REQ-9",
-        "16-REQ-10"
-      ],
-      "tests": [
-        "TS-16-30",
-        "TS-16-31",
-        "TS-16-32",
-        "TS-16-33",
-        "TS-16-34",
-        "TS-16-35",
-        "TS-16-36",
-        "TS-16-37"
+        "REQ-9",
+        "REQ-10"
       ],
       "steps": [
         "Write a line-oriented workflow reader in sandbox/images/workflow_test.go (no YAML dependency): indentation-based top-level keys (on, permissions, concurrency, jobs), per-job runs-on, if, needs, permissions, outputs, env and steps, and per-step name, id, uses, with, env, if, continue-on-error and `run: |` literal blocks; plus runBash(block, env) running `bash --noprofile --norc -eo pipefail <file>` (skip when bash is absent) and a fake docker script first on PATH that logs each argv and answers per scripted case",
@@ -335,26 +259,17 @@
       ],
       "depends_on": [
         4
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 9,
-      "kind": "implement",
       "title": "Close the offline consistency checks, keep make check engine-free and dependency-free, and update the documentation",
       "criteria": [
-        "16-REQ-8.2",
-        "16-REQ-8.3",
-        "16-REQ-8.4",
-        "16-REQ-8.5",
-        "16-REQ-8.6"
-      ],
-      "tests": [
-        "TS-16-11",
-        "TS-16-12",
-        "TS-16-27",
-        "TS-16-28",
-        "TS-16-29"
+        "REQ-8.2",
+        "REQ-8.3",
+        "REQ-8.4",
+        "REQ-8.5",
+        "REQ-8.6"
       ],
       "steps": [
         "In sandbox/images/consistency_test.go add pure functions checkMakefile(text) []string (the default assigned to SANDBOX_BASE_IMAGE and SANDBOX_OVERLAY_IMAGE equals sandbox.BaseImageRepo and sandbox.OverlayImageRepo; findings name \"Makefile\" and the expected value) and checkWorkflow(text) []string (both repositories as whole tokens, i.e. not followed by [A-Za-z0-9_.-], and sandbox/images/Containerfile; findings name \".github/workflows/sandbox-images.yml\" and the expected value)",
@@ -381,47 +296,7 @@
       "depends_on": [
         7,
         8
-      ],
-      "state": "done"
-    },
-    {
-      "id": 10,
-      "kind": "integration",
-      "title": "Verify the local build, derived-image, release and default-image paths end to end",
-      "tests": [
-        "TS-16-51",
-        "TS-16-52",
-        "TS-16-53",
-        "TS-16-54"
-      ],
-      "steps": [
-        "Write TS-16-54: sandbox/testdata/imageref/main.go (prints DefaultImage() and OverlayImage() on two lines and exits 0, or prints the error to stderr and exits 1) and sandbox/imageref_smoke_test.go (package sandbox_test, skipped under -short) building it with -buildvcs=false three times (stamp v1.2.3, no stamp, stamp v1.2.4-0.20240102150405-abcdefabcdef) and checking the outputs and stderr texts",
-        "Write TS-16-51 and TS-16-52 in sandbox/images/smoke_test.go, opt-in via AGENTKIT_SANDBOX_SMOKE=1 (skip otherwise with a message naming make sandbox-images-test, and skip when AGENTKIT_IMGTEST_NESTED is set): one sync.Once run of `make sandbox-images-test AGENTKIT_VERSION=v0.6.0` from the module root; TS-16-51 requires exit 0, `--- PASS: TestBaseImage` in the output, both :dev images present, --version printing v0.6.0 for both and no agentkit-imgtest-* container; TS-16-52 requires `--- PASS: TestOverlayImageDerived`, no derived image and no leftover container",
-        "Write TS-16-53 in sandbox/images/release_smoke_test.go, opt-in via AGENTKIT_SANDBOX_RELEASE_VERSION=vX.Y.Z: with DOCKER_CONFIG pointing at an empty temp dir (anonymous), pull both repositories at X.Y.Z and X.Y for linux/amd64 and linux/arm64, run --version with --entrypoint AgentPath and require `agentkit-sandboxd vX.Y.Z (protocol M.N)`, and require `docker buildx imagetools inspect` to list both platforms",
-        "Run TS-16-54 with `go test -count=1 -run TS16_54 ./sandbox/` and TS-16-51/TS-16-52 with `AGENTKIT_SANDBOX_SMOKE=1 go test -count=1 -v -run 'TS16_5[12]' ./sandbox/images/` on a host with podman or docker",
-        "Trace 16-PATH-1: Makefile sandbox-images resolves CONTAINER and passes AGENTKIT_VERSION/AGENTKIT_REVISION; the Containerfile ARGs reach the -X stamp and the labels; buildver.Version() returns the stamp to 13's Hello and --version; sandbox-images-test sets the AGENTKIT_SANDBOX_* variables the harness reads; the harness's run, stdioconn.New, attach.Dial, Tools and proxy calls connect; confirm each step calls the next",
-        "Trace 16-PATH-2: OverlayCopyLine's output is written verbatim by buildDerived and the derived image runs the static agent at AgentPath; confirm OverlayCopyLine and the overlay reference are documented for embedders in README.md and docs/configuration.md, since the provider that prints it (sandbox_podman) is a later scope",
-        "Trace 16-PATH-3 in .github/workflows/sandbox-images.yml: the version step's outputs feed the test step's AGENTKIT_VERSION, the push step's VERSION/TAGS and the images job outputs, which verify reads through needs.images.outputs; the test step precedes QEMU, buildx, login and push; if Actions are available, run a workflow_dispatch dry run and confirm it tests without logging in or pushing",
-        "Trace 16-PATH-4: DefaultImage and OverlayImage call buildver.Version() and ImageTag through imageRef in sandbox/image.go, and sandbox/testdata/imageref exercises them as an embedder binary; confirm DefaultImage is exported for sandbox_podman, which applies it when Spec.Image is empty",
-        "For each criterion with a contract confirm the producer is consumed in production code or configuration: stamp by Version(); ImageTag by imageRef; ErrNoPublishedImage wrapped by imageRef; Makefile variables by the recipes; the version step's outputs by the test, push and verify steps; AGENTKIT_VERSION/AGENTKIT_REVISION by the -X flag and labels",
-        "Search sandbox/image.go, sandbox/internal/buildver/, sandbox/images/, sandbox/testdata/imageref/, Makefile, .dockerignore and .github/workflows/sandbox-images.yml for panic(\"not implemented\"), TODO, FIXME, TBD and bare `return nil` / `return \"\", nil` on non-trivial paths, and remove any; confirm no file contains CGO_LDFLAGS_ALLOW",
-        "Run `make check` and `make sandbox-images-test`, and confirm both exit 0"
-      ],
-      "touches": [
-        "sandbox/testdata/imageref/main.go",
-        "sandbox/imageref_smoke_test.go",
-        "sandbox/images/smoke_test.go",
-        "sandbox/images/release_smoke_test.go"
-      ],
-      "depends_on": [
-        9
-      ],
-      "done_when": [
-        "`make check` passes on a host without podman or docker",
-        "TS-16-51 and TS-16-52 pass with AGENTKIT_SANDBOX_SMOKE=1 on a host with podman or docker",
-        "TS-16-53 passes with AGENTKIT_SANDBOX_RELEASE_VERSION set once the first vX.Y.Z tag has been pushed and both GHCR packages are public"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

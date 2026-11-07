@@ -1,498 +1,891 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
   "spec_id": "14",
   "spec_name": "sandbox_rsync_sync",
-  "schema_version": 2,
-  "introduction": "Specification 14 adds `sandbox.LocalDir`, which fills a sandbox's workspace from a host directory, re-syncs it incrementally, and exports workspace content back into a host directory. The bytes are carried by an in-process Go implementation of the rsync protocol (`github.com/gokrazy/rsync`, client on the host and server in the agent) over a new bidirectional `Rsync` stream of the `agentkit.sandbox.v1` protocol. Both directions apply the `tools` ignore engine's rules, never transfer escaping symlinks, never export `.git`, and never confine or otherwise alter the process that embeds AgentKit.",
-  "glossary": {
-    "Rsync stream": "One call of the bidirectional Agent.Rsync RPC. It carries exactly one transfer as RsyncFrame messages in the order start, plan, args, data (both ways), done.",
-    "combined rules": "The deduplicated, sorted union of the host's exclude rules and the agent's exclude rules from the plan frame. They are passed to the rsync client as `--exclude` options and apply to both sending and deletion.",
-    "deliberate refusal": "As defined by 13_sandbox_core: an RPC error with status InvalidArgument, FailedPrecondition, NotFound or Unimplemented. It does not make the sandbox unavailable.",
-    "escaping symlink": "A symlink whose target is absolute or, resolved lexically against the link's own directory, leaves the transfer root. This is the same predicate as tarsafe's symlink rule.",
-    "exclude rule": "One rsync `--exclude` pattern. Every rule except the unanchored `.git` rule is anchored at the transfer root, with rsync's wildcard characters escaped so that it matches only its own path.",
-    "option allowlist": "The server-side rsync options this module itself produces: recursion, links, times, permissions, delete, exclude rules, and the server and sender role flags.",
-    "quick check": "rsync's rule that a file whose size and modification time already match on both sides is not transferred. Preserving times with `-t` is what makes incremental re-syncs cheap.",
-    "rsyncx": "The package sandbox/internal/rsyncx. It holds the stream-as-connection adapter, the exclude-rule computation, the argument checks and the single rsyncd server constructor, which host and agent share.",
-    "sending side / receiving side": "On Sync the host sends and the agent receives. On Export the agent sends and the host receives. The receiving side's tree is the workspace for Sync, and the host destination directory (when it exists) for Export.",
-    "transfer root": "The directory a transfer maps. On Sync it is the resolved LocalDir.Path on the host and the workspace root in the sandbox. On Export it is the export path in the workspace and the destination directory on the host.",
-    "transport failure": "As defined by 13_sandbox_core: a gRPC error that is not a deliberate refusal, or a malformed response. It makes the sandbox unavailable for good."
-  },
+  "schema_version": 3,
   "requirements": [
     {
-      "id": "14-REQ-1",
+      "id": "REQ-1",
       "title": "LocalDir and the sync result",
       "rationale": "One value type names a host directory for both directions, and the result reports what an incremental transfer actually did without exposing the library's own types.",
       "criteria": [
         {
-          "id": "14-REQ-1.1",
+          "id": "REQ-1.1",
           "pattern": "ubiquitous",
           "system": "sandbox package",
-          "action": "export `type LocalDir struct { Path string; Ignore tools.IgnoreOptions; IncludeIgnored bool; ExcludeGit bool; Delete bool }` and make it implement both the sealed Source interface and the sealed Destination interface, alongside Tar and TarOut, without exposing any github.com/gokrazy/rsync type in the sandbox package's exported API"
+          "action": "export `type LocalDir struct { Path string; Ignore tools.IgnoreOptions; IncludeIgnored bool; ExcludeGit bool; Delete bool }` and make it implement both the sealed Source interface and the sealed Destination interface, alongside Tar and TarOut, without exposing any github.com/gokrazy/rsync type in the sandbox package's exported API",
+          "contract": "reflect.TypeOf(sandbox.LocalDir{}) has exactly the fields Path string, Ignore tools.IgnoreOptions, IncludeIgnored bool, ExcludeGit bool, Delete bool, in that order; `var _ sandbox.Source = sandbox.LocalDir{}` and `var _ sandbox.Destination = sandbox.LocalDir{}` compile, and Tar and TarOut still satisfy their interfaces; reflect.TypeOf(sandbox.SyncResult{}) has exactly the fields Files int, Bytes int64, Deleted int, Sent int64; no non-test file of package sandbox imports a package under github.com/gokrazy/rsync, and no field or method signature of LocalDir or SyncResult names a type whose PkgPath starts with github.com/gokrazy/rsync",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the sandbox package as built on a non-Windows host"
+            ],
+            "pseudocode": "assert fields(LocalDir) == [(Path,string),(Ignore,tools.IgnoreOptions),(IncludeIgnored,bool),(ExcludeGit,bool),(Delete,bool)]\nvar _ Source = LocalDir{}; var _ Destination = LocalDir{}; var _ Source = Tar{}; var _ Destination = TarOut{}\nassert fields(SyncResult) == [(Files,int),(Bytes,int64),(Deleted,int),(Sent,int64)]\nfor f in nonTestFiles('sandbox'): for imp in imports(f): assert !hasPrefix(imp,'github.com/gokrazy/rsync')\nfor typ in reachableTypes(LocalDir, SyncResult): assert !hasPrefix(typ.PkgPath(),'github.com/gokrazy/rsync')"
+          }
         },
         {
-          "id": "14-REQ-1.2",
+          "id": "REQ-1.2",
           "pattern": "event_driven",
           "condition": "Sync or Export receives a LocalDir whose Path is relative or passes through a symlink",
           "system": "sandbox attach package",
           "action": "resolve Path once, before any walk or RPC, by joining a relative Path to the process's working directory at call time and applying filepath.EvalSymlinks, then transfer to or from the resolved directory only",
-          "contract": "the files land in, or are read from, the directory the resolved path names; the process's working directory is unchanged by the call"
+          "contract": "the files land in, or are read from, the directory the resolved path names; the process's working directory is unchanged by the call",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a local.Unisolated() sandbox",
+              "directory A with A/src/a.txt, A/realdst/ (empty) and symlinks A/srclink -> A/src and A/dstlink -> A/realdst",
+              "directory B with B/src/b.txt"
+            ],
+            "pseudocode": "t.Chdir(A); sync(LocalDir{Path:'src',Ignore:NoGlobalExcludes()}); assert exists(ws+'/a.txt')\nt.Chdir(B); sync(LocalDir{Path:'src'}); assert exists(ws+'/b.txt')\nsync(LocalDir{Path:A+'/srclink'}); assert !exists(ws+'/srclink')\nwd0=Getwd(); export('.', LocalDir{Path:'out'}); assert exists(B+'/out/b.txt'); assert Getwd()==wd0\nexport('.', LocalDir{Path:A+'/dstlink'}); assert exists(A+'/realdst/b.txt'); assert isSymlink(Lstat(A+'/dstlink'))"
+          }
         },
         {
-          "id": "14-REQ-1.3",
+          "id": "REQ-1.3",
           "pattern": "ubiquitous",
           "system": "sandbox package",
-          "action": "give SyncResult the fields `Files int`, `Bytes int64`, `Deleted int` and `Sent int64`. For a LocalDir sync, Files is the number of regular files the transfer created or changed in the workspace, Bytes is those files' content bytes, Deleted is the number of entries removed under Delete, and Sent is the number of rsync data bytes the host wrote to the Rsync stream"
+          "action": "give SyncResult the fields `Files int`, `Bytes int64`, `Deleted int` and `Sent int64`. For a LocalDir sync, Files is the number of regular files the transfer created or changed in the workspace, Bytes is those files' content bytes, Deleted is the number of entries removed under Delete, and Sent is the number of rsync data bytes the host wrote to the Rsync stream",
+          "check": {
+            "same_as": "REQ-1.1"
+          }
         },
         {
-          "id": "14-REQ-1.4",
+          "id": "REQ-1.4",
           "pattern": "event_driven",
           "condition": "Sync(ctx, Tar{R, Path, Replace}) completes successfully",
           "system": "sandbox attach package",
           "action": "keep Files and Bytes as 13-REQ-8.4 defines them, set Deleted to 0 even when Replace removed existing entries, and set Sent to the number of tar bytes read from R and sent to the agent",
-          "contract": "returns SyncResult{Files, Bytes, Deleted: 0, Sent: number of bytes of R sent} and nil"
+          "contract": "returns SyncResult{Files, Bytes, Deleted: 0, Sent: number of bytes of R sent} and nil",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a local.Unisolated() sandbox",
+              "an in-memory tar archive with one directory and three regular files of 10, 2000 and 70000 bytes, read through a counting io.Reader"
+            ],
+            "pseudocode": "r1 = sb.Sync(ctx, Tar{R:c1}); assert r1 == SyncResult{Files:3,Bytes:72010,Deleted:0,Sent:c1.n} && c1.n == len(archive)\ncall(write_file,'extra.txt'); r2 = sb.Sync(ctx, Tar{R:c2, Replace:true}); assert !exists(ws+'/extra.txt'); assert r2.Deleted == 0 && r2.Sent == c2.n == len(archive)"
+          }
         }
       ]
     },
     {
-      "id": "14-REQ-2",
+      "id": "REQ-2",
       "title": "The Rsync RPC",
       "rationale": "A single self-contained bidirectional stream carries the whole transfer, so the protocol stays versioned and a gateway can relay the transfer like any other stream.",
       "criteria": [
         {
-          "id": "14-REQ-2.1",
+          "id": "REQ-2.1",
           "pattern": "ubiquitous",
           "system": "sandbox/internal/sandboxpb/sandbox.proto",
-          "action": "add `rpc Rsync(stream RsyncFrame) returns (stream RsyncFrame)` to service Agent. RsyncFrame is a oneof of: start (a direction enum with SYNC, EXPORT and an unspecified zero value, a workspace-relative path, include_ignored, exclude_git, delete); plan (the agent's exclude rules, and whether the export path is a regular file); args (the server-side argument list); data (bytes); and done (files, bytes, deleted)"
+          "action": "add `rpc Rsync(stream RsyncFrame) returns (stream RsyncFrame)` to service Agent. RsyncFrame is a oneof of: start (a direction enum with SYNC, EXPORT and an unspecified zero value, a workspace-relative path, include_ignored, exclude_git, delete); plan (the agent's exclude rules, and whether the export path is a regular file); args (the server-side argument list); data (bytes); and done (files, bytes, deleted)",
+          "contract": "service Agent has a method Rsync whose input and output are RsyncFrame and for which IsStreamingClient and IsStreamingServer are both true; RsyncFrame has one oneof whose members are exactly start, plan, args, data and done; the start message has a direction enum field whose values are an unspecified zero value, SYNC and EXPORT, plus path (string), include_ignored, exclude_git and delete (bool); plan carries a repeated string of rules and a bool marking a regular-file export path; args carries a repeated string; data is bytes; done carries integer fields files, bytes and deleted",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the checked-in sandbox/internal/sandboxpb generated code"
+            ],
+            "pseudocode": "m = svc('Agent').Methods().ByName('Rsync'); assert m.IsStreamingClient() && m.IsStreamingServer() && m.Input().Name()=='RsyncFrame' && m.Output().Name()=='RsyncFrame'\nassert oneofMembers(RsyncFrame) == {start,plan,args,data,done}\nassert enumValues(start.direction) == {UNSPECIFIED:0, SYNC, EXPORT}; assert fields(start) ⊇ {path:string, include_ignored:bool, exclude_git:bool, delete:bool}\nassert plan.rules is repeated string && plan has a bool file field; assert args is repeated string; assert data is bytes; assert done has integer files, bytes, deleted"
+          }
         },
         {
-          "id": "14-REQ-2.2",
+          "id": "REQ-2.2",
           "pattern": "ubiquitous",
           "system": "sandbox package and sandboxpb",
           "action": "export ProtocolMinor = 1, and keep checked in the code and SHA-256 hash file that `make proto` regenerates from the updated sandbox.proto. The service then has exactly six RPCs with Rsync bidirectional (TS-13-1), and the tests that pinned minor 0 (TS-13-6 and the Hello test) pin minor 1",
-          "contract": "Hello reports ProtocolMajor 1 and ProtocolMinor 1; the sandboxpb staleness test passes offline"
+          "contract": "Hello reports ProtocolMajor 1 and ProtocolMinor 1; the sandboxpb staleness test passes offline",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the checked-in sandboxpb code and hash file",
+              "a local.Unisolated() sandbox"
+            ],
+            "pseudocode": "assert sandbox.ProtocolMajor==1 && sandbox.ProtocolMinor==1\nassert len(svc('Agent').Methods())==6 && has('Rsync')\nassert sb.Agent().ProtocolMinor==1\nt.Setenv('PATH',''); assert checkProtoHash(read('sandbox.proto'), read(hashFile)) == nil"
+          }
         },
         {
-          "id": "14-REQ-2.3",
+          "id": "REQ-2.3",
           "pattern": "event_driven",
           "condition": "a LocalDir Sync or Export runs",
           "system": "sandbox attach package and agent Rsync service",
           "action": "exchange frames in exactly this order: the host sends start, the agent answers plan, the host sends args, data frames flow in both directions, the agent sends done and then ends the RPC with status OK",
-          "contract": "the host observes exactly one plan frame before it sends args and exactly one done frame before status OK"
+          "contract": "the host observes exactly one plan frame before it sends args and exactly one done frame before status OK",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a recording relay: a test Agent server that forwards Hello, Tools, Call, SyncTar and ExportTar to a real agent.Agent over net.Pipe, forwards every RsyncFrame of Rsync unchanged in both directions, and records each frame's kind, direction and order plus every other RPC it serves",
+              "a host sandbox attached to the relay with attach.Dial, and a second host sandbox attached directly to its own real agent.Agent",
+              "a source tree with nested directories, a .gitignore and a 3 MiB file"
+            ],
+            "pseudocode": "rSync = relayed.Sync(...); dSync = direct.Sync(...)\nfor tr in relay.transfers: assert tr.hostToAgent == ['start','args'] + ['data']*; assert tr.agentToHost == ['plan'] + ['data']* + ['done']; assert idx(tr,'plan') < idx(tr,'args'); assert tr.status == OK; assert relay.otherRPCsDuring(tr) == 0\nassert (rSync.Files,rSync.Bytes,rSync.Deleted) == (dSync.Files,dSync.Bytes,dSync.Deleted)\nassert tree(relayedWS)==tree(directWS) && tree(dstRelayed)==tree(dstDirect)"
+          }
         },
         {
-          "id": "14-REQ-2.4",
+          "id": "REQ-2.4",
           "pattern": "unwanted",
           "condition": "the agent receives a frame out of the order of 14-REQ-2.3 (for example a first frame other than start, a second start, data before args, or a second args)",
           "system": "agent Rsync service",
           "action": "refuse the stream at that frame and stop any rsync server it started for the stream",
-          "contract": "the RPC ends with gRPC InvalidArgument naming the unexpected frame kind; the sandbox stays live, and a following Call succeeds"
+          "contract": "the RPC ends with gRPC InvalidArgument naming the unexpected frame kind; the sandbox stays live, and a following Call succeeds",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a real agent.Agent served over net.Pipe with a raw sandboxpb client, as in TS-13-6",
+              "a workspace holding a.txt"
+            ],
+            "pseudocode": "for case in [[data],[args],[start,start],[start,<plan>,data],[start,<plan>,args,args]]:\n  st = client.Rsync(ctx); send(case); err = drain(st)\n  assert status.Code(err)==InvalidArgument && contains(err, case.unexpectedKind)\n  assert call(list_files).OK\nst = client.Rsync(ctx); st.Send(start(SYNC)); f,_ = st.Recv(); assert f.Plan != nil"
+          }
         },
         {
-          "id": "14-REQ-2.5",
+          "id": "REQ-2.5",
           "pattern": "ubiquitous",
           "system": "rsyncx stream adapter",
-          "action": "put at most 1 MiB (1<<20 bytes) of data into each data frame on both ends, splitting a larger write into several frames"
+          "action": "put at most 1 MiB (1<<20 bytes) of data into each data frame on both ends, splitting a larger write into several frames",
+          "contract": "the single large Write produces data frames of 1<<20, 1<<20 and 1<<19+1 bytes whose concatenation equals the input, on both ends; no data frame anywhere exceeds 1<<20 bytes; the reassembled concurrent output is 8 contiguous runs of 1.5 MiB, each of one byte value, so no two Writes interleave; Read returns \"abcd\" and then (0, io.EOF), further Reads return io.EOF, and the done frame's counts are available to the caller; Close on the host adapter calls CloseSend exactly once",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the rsyncx host-end and agent-end adapters over a fake stream that records sent frames and replays scripted received frames"
+            ],
+            "pseudocode": "w.Write(make(2.5MiB+1)); assert sizes(fake.sent) == [1<<20,1<<20,1<<19+1] && concat(fake.sent)==input\nparallel(8, i -> w.Write(fill(byte(i),1.5MiB))); assert runs(concat(fake.sent)) == 8 runs of 1.5MiB each uniform\nfake.recv = [data('ab'),data('cd'),done{2}]; assert readAll(r)=='abcd'; n,err=r.Read(buf); assert n==0 && err==io.EOF; assert r.Done().Files==2\nh.Close(); h.Close(); assert fake.closeSendCalls==1"
+          }
         },
         {
-          "id": "14-REQ-2.6",
+          "id": "REQ-2.6",
           "pattern": "ubiquitous",
           "system": "rsyncx stream adapter",
-          "action": "wrap the stream on each end as the io.ReadWriteCloser the library reads and writes. Concurrent Write calls are serialised, so that each Write's bytes leave in order and no two frames interleave. On the host, Close half-closes the send side with CloseSend, and Read returns io.EOF once a done frame has arrived"
+          "action": "wrap the stream on each end as the io.ReadWriteCloser the library reads and writes. Concurrent Write calls are serialised, so that each Write's bytes leave in order and no two frames interleave. On the host, Close half-closes the send side with CloseSend, and Read returns io.EOF once a done frame has arrived",
+          "check": {
+            "same_as": "REQ-2.5"
+          }
         },
         {
-          "id": "14-REQ-2.7",
+          "id": "REQ-2.7",
           "pattern": "ubiquitous",
           "system": "agentkit.sandbox.v1 protocol",
-          "action": "carry all state of one transfer on its one Rsync stream, referencing no other RPC, session or out-of-band state, so that a relay forwarding RsyncFrame messages unchanged between the host and the agent completes the transfer with the same result as a direct stream"
+          "action": "carry all state of one transfer on its one Rsync stream, referencing no other RPC, session or out-of-band state, so that a relay forwarding RsyncFrame messages unchanged between the host and the agent completes the transfer with the same result as a direct stream",
+          "check": {
+            "same_as": "REQ-2.3"
+          }
         }
       ]
     },
     {
-      "id": "14-REQ-3",
+      "id": "REQ-3",
       "title": "The transfer set",
       "rationale": "Ignore rules are decided path by path by the tools ignore engine on each side, and the union applies to both sending and deletion, because rsync merge files do not mean what .gitignore means and protocol 27 has no side-specific rules.",
       "criteria": [
         {
-          "id": "14-REQ-3.1",
+          "id": "REQ-3.1",
           "pattern": "ubiquitous",
           "system": "rsyncx rule computation",
-          "action": "compute each side's ignore rules over its own tree. These are the entries that tools.Walk with IncludeHidden: true does not visit, with one rule per ignored directory at its highest ignored level, and no rule for any path that has a `.git` component. The host walks with LocalDir.Ignore, whose zero value reads the real environment including global excludes, exactly as tools.Options.Ignore does. The agent walks with tools.NoGlobalExcludes()"
+          "action": "compute each side's ignore rules over its own tree. These are the entries that tools.Walk with IncludeHidden: true does not visit, with one rule per ignored directory at its highest ignored level, and no rule for any path that has a `.git` component. The host walks with LocalDir.Ignore, whose zero value reads the real environment including global excludes, exactly as tools.Options.Ignore does. The agent walks with tools.NoGlobalExcludes()",
+          "contract": "the rules equal the oracle: every entry found by filepath.WalkDir that tools.Walk(IncludeHidden: true) does not visit and whose parent Walk visits; so build is one rule and build/sub has none, and nested/tmp and secret.txt are rules; no rule has a `.git` path component; with G as the global layer the host rules contain a.global and the workspace lacks it after Sync; with NoGlobalExcludes the workspace holds it; the agent's plan rules do not contain w.global, because the agent walks with tools.NoGlobalExcludes()",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a tree with a root .gitignore ignoring build/ and *.log, build/sub/deep.txt, x.log, a nested repository nested/ with its own .git and a .gitignore ignoring tmp/, .git/info/exclude ignoring secret.txt, and .git/objects content",
+              "a global-excludes directory G holding git/ignore with `*.global`",
+              "a local.Unisolated() sandbox"
+            ],
+            "pseudocode": "oracle = {p in walkDir(root) | p not in visited(tools.Walk(IncludeHidden:true)) && parent(p) in visited∪{root}}\nassert sort(rsyncx.IgnoreRules(root, NoGlobalExcludes())) == sort(oracle)\nassert 'build' in rules && 'build/sub' not in rules; assert none(rules, hasGitComponent)\nsync(LocalDir{Path:src, Ignore:withXDG(G)}); assert !exists(ws+'/a.global'); sync2(LocalDir{Path:src, Ignore:NoGlobalExcludes()}); assert exists(ws2+'/a.global')\nt.Setenv('XDG_CONFIG_HOME',G); plan = rawStart(SYNC); assert 'w.global' not in anyRule(plan.rules)"
+          }
         },
         {
-          "id": "14-REQ-3.2",
+          "id": "REQ-3.2",
           "pattern": "optional",
           "condition": "LocalDir.IncludeIgnored is set, or the export path names a single regular file",
           "system": "rsyncx rule computation",
-          "action": "produce no ignore rules on either side, while still producing the escaping-symlink rules of 14-REQ-3.3 and the `.git` rule of 14-REQ-3.4"
+          "action": "produce no ignore rules on either side, while still producing the escaping-symlink rules of 14-REQ-3.3 and the `.git` rule of 14-REQ-3.4",
+          "contract": "the host rules are exactly the escaping-symlink rule for esc and the unanchored .git rule; after the Sync the workspace holds build/out.o, lacks esc and .git, and cache.log was deleted because the agent produced no ignore rule for it; the plan for logs/app.log has its regular-file flag set and contains no ignore rule",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a src with .gitignore ignoring build/, build/out.o, an escaping symlink esc -> /etc and .git/HEAD",
+              "a local sandbox whose workspace holds .gitignore ignoring *.log, logs/app.log and an ignored cache.log not present in src"
+            ],
+            "pseudocode": "assert sort(rsyncx.Rules(src, {IncludeIgnored:true, ExcludeGit:true})) == ['.git','esc']\nsync(LocalDir{Path:src,IncludeIgnored:true,Delete:true,ExcludeGit:true}); assert exists(ws+'/build/out.o') && !exists(ws+'/esc') && !exists(ws+'/.git') && !exists(ws+'/cache.log')\nplan = rawStart(EXPORT,'logs/app.log'); assert plan.File && none(plan.Rules, r -> r != '.git')"
+          }
         },
         {
-          "id": "14-REQ-3.3",
+          "id": "REQ-3.3",
           "pattern": "ubiquitous",
           "system": "rsyncx rule computation",
-          "action": "on both sides, and regardless of IncludeIgnored, produce a rule for every escaping symlink, decided by the same predicate tarsafe applies to symlinks"
+          "action": "on both sides, and regardless of IncludeIgnored, produce a rule for every escaping symlink, decided by the same predicate tarsafe applies to symlinks",
+          "contract": "the escaping-symlink rules are exactly abs, up, sub/up2 and sub/dd in both runs; for each symlink, a rule exists exactly when tarsafe's symlink predicate rejects its target relative to the tree root; the plan's rules contain the same four escaping-symlink rules",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a tree with symlinks abs -> /etc/hosts, up -> ../x, sub/up2 -> ../../x, sub/dd -> x/../../.., sub/in -> ../a.txt, self -> . and sub/in2 -> y/../a"
+            ],
+            "pseudocode": "for inc in [false,true]: assert symlinkRules(rsyncx.Rules(root,{IncludeIgnored:inc})) == {abs,up,sub/up2,sub/dd}\nfor l in links: assert (l in rules) == (tarsafe.symlinkRejects(l.path, l.target) != nil)\nplan = rawStart(SYNC); assert {abs,up,sub/up2,sub/dd} ⊆ plan.Rules"
+          }
         },
         {
-          "id": "14-REQ-3.4",
+          "id": "REQ-3.4",
           "pattern": "ubiquitous",
           "system": "rsyncx rule computation",
-          "action": "add the single unanchored rule `.git` on a Sync with ExcludeGit and on every Export regardless of ExcludeGit, so that every `.git` directory or file at any depth is excluded. On a Sync without ExcludeGit add no `.git` rule, so that `.git` content transfers whole"
+          "action": "add the single unanchored rule `.git` on a Sync with ExcludeGit and on every Export regardless of ExcludeGit, so that every `.git` directory or file at any depth is excluded. On a Sync without ExcludeGit add no `.git` rule, so that `.git` content transfers whole",
+          "contract": "with ExcludeGit the workspace holds a.txt and nested/n.txt and no entry with a .git component, and the args frame carries exactly one exclude whose pattern is the unanchored .git; without ExcludeGit the workspace holds .git/HEAD, .git/config, sub/.git and nested/.git byte-identical to src, and no exclude in the args mentions .git; both exports leave dst and dst2 without any .git entry, and each export's args carry the unanchored .git exclude exactly once",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a src with .git/HEAD, .git/config, sub/.git as a file, nested/.git/ as a directory, nested/n.txt and a.txt",
+              "local sandboxes reached through the recording relay of TS-14-6"
+            ],
+            "pseudocode": "sync(sbA, LocalDir{Path:src,ExcludeGit:true}); assert none(walk(wsA), hasGitComponent); assert count(excludes(relay.args), '.git') == 1\nsync(sbB, LocalDir{Path:src}); assert tree(wsB/.git)==tree(src/.git) && read(wsB/sub/.git)==read(src/sub/.git) && exists(wsB/nested/.git); assert none(excludes(relay.args), containsGit)\nfor eg in [false,true]: export(sbB,'.',LocalDir{Path:d,ExcludeGit:eg}); assert none(walk(d), hasGitComponent); assert count(excludes(relay.args),'.git')==1"
+          }
         },
         {
-          "id": "14-REQ-3.5",
+          "id": "REQ-3.5",
           "pattern": "unwanted",
           "condition": "the walk on either side meets an entry it cannot read",
           "system": "rsyncx rule computation",
           "action": "exclude that entry, together with its subtree if it is a directory, and continue the transfer",
-          "contract": "the transfer returns nil; the unreadable entry is neither sent nor deleted"
+          "contract": "the transfer returns nil; the unreadable entry is neither sent nor deleted",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a Unix host, skipped when running as root",
+              "a src with a.txt, locked/x.txt with locked/ chmod 0000, and secret.txt chmod 0000",
+              "a local sandbox whose workspace directory (Agent().Workdir) holds wslocked/ chmod 0000 and wssecret.txt chmod 0000",
+              "a destination dst holding hold/ chmod 0000; all modes restored in t.Cleanup"
+            ],
+            "pseudocode": "skipIf(Geteuid()==0)\nr,err = sb.Sync(ctx, LocalDir{Path:src,Delete:true}); assert err==nil; assert exists(ws+'/a.txt') && !exists(ws+'/locked') && !exists(ws+'/secret.txt')\nassert mode(ws+'/wslocked')==0 && mode(ws+'/wssecret.txt')==0\nassert sb.Export(ctx,'.',LocalDir{Path:dst,Delete:true})==nil; assert !exists(dst+'/wslocked') && !exists(dst+'/wssecret.txt') && mode(dst+'/hold')==0"
+          }
         },
         {
-          "id": "14-REQ-3.6",
+          "id": "REQ-3.6",
           "pattern": "ubiquitous",
           "system": "sandbox attach package",
-          "action": "combine the host's rules with the plan frame's rules into their union, remove duplicates, sort them, anchor every rule except `.git` at the transfer root, escape rsync's wildcard characters so that each rule matches only its own path (names containing `*`, `?`, `[` and spaces included), and pass each rule to the rsync client as one `--exclude` option"
+          "action": "combine the host's rules with the plan frame's rules into their union, remove duplicates, sort them, anchor every rule except `.git` at the transfer root, escape rsync's wildcard characters so that each rule matches only its own path (names containing `*`, `?`, `[` and spaces included), and pass each rule to the rsync client as one `--exclude` option",
+          "contract": "the combined list is [.git, /a\\*b, /br\\[c]k, /build, /dup, /q\\?x, /sp ace]: union, duplicates removed, sorted by raw rule, every rule except .git anchored with a leading slash, and *, ? and [ escaped; the client arguments contain exactly one --exclude option per combined rule, in that order; after the Sync the workspace holds axxb, qzx and brck and none of the three symlinks, so each escaped rule matched only its own path",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "host rules [build, a*b, dup, sp ace] and plan rules [dup, q?x, br[c]k, .git]",
+              "for the integration part, a src with escaping symlinks named a*b, q?x and br[c]k beside regular files axxb, qzx and brck"
+            ],
+            "pseudocode": "got = rsyncx.Combine(host, plan); assert got == ['.git','/a\\\\*b','/br\\\\[c]k','/build','/dup','/q\\\\?x','/sp ace']\nargs = clientArgs(opts, got); assert excludeValues(args) == got\nsync(LocalDir{Path:src}); assert exists(ws+'/axxb') && exists(ws+'/qzx') && exists(ws+'/brck'); assert !lexists(ws+'/a*b') && !lexists(ws+'/q?x') && !lexists(ws+'/br[c]k')"
+          }
         },
         {
-          "id": "14-REQ-3.7",
+          "id": "REQ-3.7",
           "pattern": "unwanted",
           "condition": "the combined rules exceed 8 MiB (8<<20 bytes), or the agent's own rules alone exceed that size",
           "system": "sandbox attach package and agent Rsync service",
           "action": "refuse the transfer before any data frame is sent. The agent refuses its own oversized rules instead of sending plan, and the host refuses oversized combined rules instead of sending args",
-          "contract": "Sync or Export returns a non-nil error whose message names the rules' size and the 8 MiB limit (the agent's refusal is gRPC FailedPrecondition); no file is transferred; the sandbox stays live"
+          "contract": "Sync or Export returns a non-nil error whose message names the rules' size and the 8 MiB limit (the agent's refusal is gRPC FailedPrecondition); no file is transferred; the sandbox stays live",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the rsyncx size check",
+              "file-heavy cases skipped under -short: a src with a .gitignore of `*.ign` and enough ignored files with 240-byte names to give over 8 MiB of rules; a workspace (written directly under Agent().Workdir) with the same for the agent side; and a split case with about 5 MiB of rules on each side",
+              "local sandboxes reached through the recording relay"
+            ],
+            "pseudocode": "assert rsyncx.CheckRuleSize(rules(8<<20))==nil; err=rsyncx.CheckRuleSize(rules(8<<20+1)); assert contains(err,str(8<<20+1)) && contains(err,'8 MiB')\nif testing.Short(): skip\nfor c in [hostBig, split]: _,err=sb.Sync(ctx,LocalDir{Path:c.src}); assert contains(err,'8 MiB'); assert relay.count('args')==0 && relay.count('data')==0; assert tree(ws)==before\nst=rawStart(SYNC on agentBig); assert status.Code(err)==FailedPrecondition && noPlanReceived\nassert call(list_files).OK"
+          }
         },
         {
-          "id": "14-REQ-3.8",
+          "id": "REQ-3.8",
           "pattern": "ubiquitous",
           "system": "LocalDir transfer",
-          "action": "for any source and destination trees, leave every path that either side's rules exclude untouched on the receiving side: it is not sent, not overwritten, not written through, and not deleted under Delete"
+          "action": "for any source and destination trees, leave every path that either side's rules exclude untouched on the receiving side: it is not sent, not overwritten, not written through, and not deleted under Delete",
+          "contract": "every receiving-side path in the oracle's excluded set (union of both sides' Walk-unvisited entries, escaping symlinks and, for Export, .git) has the same existence, type, mode, content, modification time and link target before and after; no file outside the receiving tree changes, so no excluded symlink on the receiving side was written through",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a seeded generator of (source, receiving) tree pairs with overlapping names, a .gitignore on each side with different patterns, escaping symlinks on each side (some named like directories the other side has), and optional .git directories",
+              "seeds logged for reproduction"
+            ],
+            "pseudocode": "for seed in 1..50: (src, recv) = gen(seed)\n  excl = oracleRules(src) ∪ oracleRules(recv) ∪ escaping(src) ∪ escaping(recv)\n  snap = snapshot(recv, excl); outside = snapshot(outsideDirs)\n  sb.Sync(ctx, LocalDir{Path:src, Ignore:NoGlobalExcludes(), Delete:true})\n  assert snapshot(ws, excl) == snap && snapshot(outsideDirs) == outside\n  // mirror for Export with the source as workspace and recv as dst, adding '.git' to excl"
+          }
         }
       ]
     },
     {
-      "id": "14-REQ-4",
+      "id": "REQ-4",
       "title": "Sync of a LocalDir",
       "rationale": "An embedder fills and re-fills the workspace from a project directory with delta transfer, and the sandbox's tools see exactly what the host's own file tools would have listed.",
       "criteria": [
         {
-          "id": "14-REQ-4.1",
+          "id": "REQ-4.1",
           "pattern": "unwanted",
           "condition": "Sync receives a LocalDir whose Path is empty, does not exist, or is not a directory",
           "system": "sandbox attach package",
           "action": "refuse after the sandbox state check and before walking the source or opening any RPC",
-          "contract": "Sync returns a zero SyncResult and a non-nil error naming the path; no Rsync stream is opened; the sandbox stays live"
+          "contract": "Sync returns a zero SyncResult and a non-nil error naming the path; no Rsync stream is opened; the sandbox stays live",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a sandbox attached to 13's fakeagent, extended with a configurable Rsync behaviour and an Rsync call counter, reporting ProtocolMinor 1"
+            ],
+            "pseudocode": "for p in ['', missing, file]: r,err = sb.Sync(ctx, LocalDir{Path:p}); assert r == SyncResult{} && contains(err.Error(), quote(p)); assert fa.rsyncCalls==0; assert call(list_files).OK\nsb.Close(); _,err = sb.Sync(ctx, LocalDir{Path:''}); assert errors.Is(err, ErrClosed)"
+          }
         },
         {
-          "id": "14-REQ-4.2",
+          "id": "REQ-4.2",
           "pattern": "event_driven",
           "condition": "Sync(ctx, LocalDir{...}) is called with a valid Path on a live sandbox whose agent reports ProtocolMinor 1 or higher",
           "system": "sandbox attach package and agent Rsync service",
           "action": "walk the source and open one Rsync stream with a SYNC start frame that carries an empty path, include_ignored, exclude_git and delete. Run the rsync client with rsyncclient.WithSender(), the options `-r -l -t -p` (plus `--delete` when Delete is set) and the combined rules, so that the contents of Path map onto the workspace root. The agent serves the workspace as its one writable module",
-          "contract": "returns a SyncResult and nil after the done frame and status OK arrive"
+          "contract": "returns a SyncResult and nil after the done frame and status OK arrive",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a local sandbox reached through the recording relay",
+              "a src with a/b.txt and c.txt"
+            ],
+            "pseudocode": "sync(LocalDir{Path:src,Delete:true,ExcludeGit:true}); s = relay.start; assert s.Direction==SYNC && s.Path=='' && !s.IncludeIgnored && s.ExcludeGit && s.Delete\nopts = rsyncx.ParseArgs(relay.args); assert opts.Recursive && opts.Links && opts.Times && opts.Perms && opts.Delete && !opts.Sender && opts.Extra==nil && opts.Excludes==combined\nsync(LocalDir{Path:src}); assert !rsyncx.ParseArgs(relay.args).Delete\nassert read(ws+'/a/b.txt')==read(src+'/a/b.txt') && !exists(ws+'/'+base(src))"
+          }
         },
         {
-          "id": "14-REQ-4.3",
+          "id": "REQ-4.3",
           "pattern": "ubiquitous",
           "system": "LocalDir sync over local",
-          "action": "for any tree produced by the seeded generator (nested .gitignore files, `!` re-includes, .git/info/exclude, a nested repository, hidden files, internal and escaping symlinks, names containing `*`, `?`, `[` and spaces), a Sync of LocalDir{Path: src, Ignore: tools.NoGlobalExcludes()} into an empty workspace, run with PATH emptied, leaves the workspace holding exactly these entries: every entry tools.Walk lists for src with IncludeHidden: true; plus src/.git, and every other `.git` whose parent directory Walk lists, in full; minus every symlink whose target leaves src"
+          "action": "for any tree produced by the seeded generator (nested .gitignore files, `!` re-includes, .git/info/exclude, a nested repository, hidden files, internal and escaping symlinks, names containing `*`, `?`, `[` and spaces), a Sync of LocalDir{Path: src, Ignore: tools.NoGlobalExcludes()} into an empty workspace, run with PATH emptied, leaves the workspace holding exactly these entries: every entry tools.Walk lists for src with IncludeHidden: true; plus src/.git, and every other `.git` whose parent directory Walk lists, in full; minus every symlink whose target leaves src",
+          "contract": "the set of workspace entries equals: every entry tools.Walk lists for src with IncludeHidden: true, plus src/.git and every .git whose parent Walk lists, in full, minus every symlink whose target leaves src; each regular file has the same content and permission bits as in src, and each symlink has the same target",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a seeded generator producing trees with nested .gitignore files, `!` re-includes, .git/info/exclude, a nested repository, hidden files, internal and escaping symlinks, and names containing *, ?, [ and spaces",
+              "PATH set to the empty string with t.Setenv",
+              "seeds logged for reproduction"
+            ],
+            "pseudocode": "t.Setenv('PATH','')\nfor seed in 1..100: src = gen(seed); sb = newLocal(t)\n  expect = walkSet(src, IncludeHidden:true) ∪ gitTrees(src, parentListed) − escapingSymlinks(src)\n  sb.Sync(ctx, LocalDir{Path:src, Ignore:tools.NoGlobalExcludes()})\n  assert entries(ws) == expect\n  for p in expect: assert sameContentModeOrTarget(src/p, ws/p)"
+          }
         },
         {
-          "id": "14-REQ-4.4",
+          "id": "REQ-4.4",
           "pattern": "event_driven",
           "condition": "the rsync server finishes a SYNC transfer without error",
           "system": "agent Rsync service",
           "action": "compute done by comparing the size and modification time of the workspace's regular files recorded before the server started with those after it finished. files counts regular files that are new or whose size or modification time changed, bytes is their content bytes, and deleted counts entries present before and absent after. Then, if a tool set is configured, rebuild it with the options it was built with, as after SyncTar, and send done",
-          "contract": "Sync returns SyncResult{Files, Bytes, Deleted} from the done frame, with Sent set from the host's own count of rsync bytes written to the stream"
+          "contract": "Sync returns SyncResult{Files, Bytes, Deleted} from the done frame, with Sent set from the host's own count of rsync bytes written to the stream",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a local sandbox reached through the recording relay, whose workspace was synced with keep.txt (100 B), change.txt (100 B) and gone.txt, and on which Tools(ctx, ToolOptions{}) has been called",
+              "a src with keep.txt unchanged (same size and mtime), change.txt rewritten to 250 B with a new mtime, new.txt (40 B) and newsym.go declaring func NewlyAdded"
+            ],
+            "pseudocode": "r = sb.Sync(ctx, LocalDir{Path:src, Delete:true}); d = relay.done\nassert r.Files==3 && r.Bytes==250+40+size(newsym.go) && r.Deleted==1 && (d.Files,d.Bytes,d.Deleted)==(r.Files,r.Bytes,r.Deleted)\nassert r.Sent == sum(len(f.Data) for f in relay.hostToAgent if f.Data) && r.Sent > 0\nassert contains(call(find_symbol,{name:'NewlyAdded'}).text, 'newsym.go')"
+          }
         },
         {
-          "id": "14-REQ-4.5",
+          "id": "REQ-4.5",
           "pattern": "event_driven",
           "condition": "a tree of 100 files of 16 KiB each has been synced, the content of one file is then changed, and Sync runs again with the same LocalDir",
           "system": "LocalDir sync",
           "action": "transfer only the changed file, using the quick check",
-          "contract": "the second SyncResult has Files == 1, Bytes == that file's size, and Sent less than one tenth of the first Sync's Sent"
+          "contract": "the second SyncResult has Files == 1, Bytes == that file's size, and Sent less than one tenth of the first Sync's Sent",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a local sandbox",
+              "a src of 100 files of 16 KiB random content each"
+            ],
+            "pseudocode": "r1 = sb.Sync(ctx, ld); write(src/f42, rand(16384)); Chtimes(src/f42, now+2s)\nr2 = sb.Sync(ctx, ld); assert r2.Files==1 && r2.Bytes==16384 && r2.Sent*10 < r1.Sent; assert read(ws/f42)==read(src/f42)"
+          }
         },
         {
-          "id": "14-REQ-4.6",
+          "id": "REQ-4.6",
           "pattern": "event_driven",
           "condition": "a file previously synced is removed from src and Sync runs again",
           "system": "LocalDir sync",
           "action": "remove the file from the workspace when Delete is set and keep it when Delete is not set. With Delete, keep every workspace entry under a path that the workspace's own .gitignore ignores",
-          "contract": "with Delete the file is gone and SyncResult.Deleted is at least 1; without Delete the file remains and Deleted is 0; the workspace-ignored entry survives in both cases"
+          "contract": "with Delete the file is gone and SyncResult.Deleted is at least 1; without Delete the file remains and Deleted is 0; the workspace-ignored entry survives in both cases",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a local sandbox synced from a src holding .gitignore with `*.o`, a.txt and b.txt",
+              "out/x.o written into the workspace through the proxy write_file (src has no out/)"
+            ],
+            "pseudocode": "rm(src/b.txt); r1 = sb.Sync(ctx, LocalDir{Path:src}); assert exists(ws/b.txt) && r1.Deleted==0 && exists(ws/out/x.o)\nr2 = sb.Sync(ctx, LocalDir{Path:src, Delete:true}); assert !exists(ws/b.txt) && r2.Deleted>=1 && read(ws/out/x.o)==orig"
+          }
         },
         {
-          "id": "14-REQ-4.7",
+          "id": "REQ-4.7",
           "pattern": "event_driven",
           "condition": "Sync of a LocalDir is called repeatedly, before and after Tools",
           "system": "sandbox attach package and agent Rsync service",
           "action": "accept every call, and make the proxy tools see the latest synced content after each one",
-          "contract": "each Sync returns nil; a proxy read_file of a file added by the latest Sync returns its content, and a proxy search_files finds text in it"
+          "contract": "each Sync returns nil; a proxy read_file of a file added by the latest Sync returns its content, and a proxy search_files finds text in it",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a local sandbox",
+              "src versions v1 (a.txt), v2 (adds b.txt containing needle-xyz) and v3 (adds c.txt)"
+            ],
+            "pseudocode": "for v in [v1,v1]: assert sync(v)==nil\ntools = sb.Tools(ctx, {}); assert sync(v2)==nil; assert call(read_file,'b.txt').text contains 'needle-xyz'; assert call(search_files,'needle-xyz').text contains 'b.txt'\nassert sync(v3)==nil; assert call(read_file,'c.txt').OK"
+          }
         },
         {
-          "id": "14-REQ-4.8",
+          "id": "REQ-4.8",
           "pattern": "unwanted",
           "condition": "ctx is cancelled while a LocalDir Sync is in flight",
           "system": "sandbox attach package",
           "action": "cancel the Rsync stream, keep the files already transferred, and leave the sandbox live",
-          "contract": "Sync returns a non-nil error for which errors.Is(err, ctx.Err()) is true; a following Call or Sync on the same sandbox succeeds"
+          "contract": "Sync returns a non-nil error for which errors.Is(err, ctx.Err()) is true; a following Call or Sync on the same sandbox succeeds",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a real agent.Agent attached with attach.Dial over a net.Pipe pair whose host end is throttled to 256 KiB/s",
+              "a workspace already synced with earlier.txt",
+              "a src with earlier.txt and a 16 MiB file"
+            ],
+            "pseudocode": "ctx,cancel = WithCancel(); pipe.onBytes(512<<10, cancel)\n_,err = sb.Sync(ctx, LocalDir{Path:src}); assert errors.Is(err, context.Canceled)\nassert exists(ws/earlier.txt); assert call(list_files).OK; assert sb.Sync(bg, LocalDir{Path:small})==nil"
+          }
         }
       ]
     },
     {
-      "id": "14-REQ-5",
+      "id": "REQ-5",
       "title": "Export to a LocalDir",
       "rationale": "The model's edits come back into a host directory without letting untrusted workspace content write outside it, touch its .git, or plant escaping symlinks.",
       "criteria": [
         {
-          "id": "14-REQ-5.1",
+          "id": "REQ-5.1",
           "pattern": "unwanted",
           "condition": "Export with a LocalDir destination receives a path that tarsafe.CleanRel rejects",
           "system": "sandbox attach package",
           "action": "refuse the export before any RPC and before touching the destination",
-          "contract": "Export returns a non-nil error naming the path; no Rsync stream is opened; nothing is created under the destination; the sandbox stays live"
+          "contract": "Export returns a non-nil error naming the path; no Rsync stream is opened; nothing is created under the destination; the sandbox stays live",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a sandbox attached to the fakeagent with an Rsync counter, reporting ProtocolMinor 1",
+              "a host directory P that exists, with dst = P/new missing, a regular file P/file, and P/nope/child whose parent is missing"
+            ],
+            "pseudocode": "for p in ['../x','/etc','a/../../b']: err=sb.Export(ctx,p,LocalDir{Path:dst}); assert contains(err,p) && !exists(dst)\nerr=sb.Export(ctx,'.',LocalDir{Path:P+'/file'}); assert contains(err,P+'/file') && read(P+'/file')==orig\nerr=sb.Export(ctx,'.',LocalDir{Path:P+'/nope/child'}); assert contains(err,'nope/child') && !exists(P+'/nope')\nassert fa.rsyncCalls==0; assert call(list_files).OK"
+          }
         },
         {
-          "id": "14-REQ-5.2",
+          "id": "REQ-5.2",
           "pattern": "unwanted",
           "condition": "the destination LocalDir.Path exists but is not a directory, or does not exist and its parent directory does not exist either",
           "system": "sandbox attach package",
           "action": "refuse the export before any RPC",
-          "contract": "Export returns a non-nil error naming the destination; no Rsync stream is opened; no directory or file is created"
+          "contract": "Export returns a non-nil error naming the destination; no Rsync stream is opened; no directory or file is created",
+          "check": {
+            "same_as": "REQ-5.1"
+          }
         },
         {
-          "id": "14-REQ-5.3",
+          "id": "REQ-5.3",
           "pattern": "event_driven",
           "condition": "Export(ctx, path, LocalDir{Path: dst}) is called on a live sandbox and path names a workspace directory",
           "system": "sandbox attach package and agent Rsync service",
           "action": "create dst when it is missing and its parent exists, and open one Rsync stream with an EXPORT start frame. Run the rsync client as the receiver (without WithSender), with the same option set as Sync and the combined rules, so that the directory's contents map onto dst. The agent serves the workspace as its one read-only module",
-          "contract": "Export returns nil; a file that a proxy write_file created under path is present at the same relative path under dst, with the same content"
+          "contract": "Export returns nil; a file that a proxy write_file created under path is present at the same relative path under dst, with the same content",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a local sandbox reached through the recording relay",
+              "out/result.txt created by a proxy write_file with content hello",
+              "a host directory P with P/dst and P/dst2 missing"
+            ],
+            "pseudocode": "call(write_file,{path:'out/result.txt',content:'hello'}); snap=tree(ws)\nassert sb.Export(ctx,'.',LocalDir{Path:P+'/dst'})==nil && read(P+'/dst/out/result.txt')=='hello'\nassert sb.Export(ctx,'out',LocalDir{Path:P+'/dst2'})==nil && read(P+'/dst2/result.txt')=='hello'\nassert relay.start.Direction==EXPORT && relay.start.Path=='out'; o=rsyncx.ParseArgs(relay.args); assert o.Sender && o.Recursive && o.Links && o.Times && o.Perms && !o.Delete\nassert tree(ws)==snap"
+          }
         },
         {
-          "id": "14-REQ-5.4",
+          "id": "REQ-5.4",
           "pattern": "event_driven",
           "condition": "the Export path names a regular file in the workspace",
           "system": "sandbox attach package and agent Rsync service",
           "action": "write that file into dst under its base name, applying no ignore rules",
-          "contract": "Export returns nil; dst/<base name> holds the file's content, even when the workspace's ignore rules match the file"
+          "contract": "Export returns nil; dst/<base name> holds the file's content, even when the workspace's ignore rules match the file",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a local sandbox reached through the recording relay, whose workspace holds .gitignore with `*.log` and logs/app.log with content L1",
+              "an empty host directory dst and a missing dst3 with an existing parent"
+            ],
+            "pseudocode": "assert sb.Export(ctx,'logs/app.log',LocalDir{Path:dst})==nil; assert read(dst+'/app.log')=='L1' && !exists(dst+'/logs'); assert relay.plan.File\nassert sb.Export(ctx,'logs',LocalDir{Path:dst3})==nil; assert !exists(dst3+'/app.log')"
+          }
         },
         {
-          "id": "14-REQ-5.5",
-          "pattern": "complex_event",
-          "condition": "Export of a workspace directory runs",
-          "guard": "LocalDir.Delete is set",
+          "id": "REQ-5.5",
+          "pattern": "event_driven",
+          "condition": "Export of a workspace directory runs and LocalDir.Delete is set",
           "system": "LocalDir export",
           "action": "remove every entry in dst that the exported directory lacks, except entries matched by dst's own ignore rules, dst's `.git`, and dst's escaping symlinks",
-          "contract": "Export returns nil; files in dst that the workspace lacks are gone, and dst's ignored files (such as a .gitignore-matched .env) remain byte-identical"
+          "contract": "Export returns nil; files in dst that the workspace lacks are gone, and dst's ignored files (such as a .gitignore-matched .env) remain byte-identical",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a dst holding .git/HEAD and .git/config, .gitignore with `.env`, .env, stale.txt, and an escaping symlink link-out -> a directory outside dst",
+              "a local sandbox whose workspace holds the same .gitignore and result.txt, and no .env, stale.txt, .git or link-out"
+            ],
+            "pseudocode": "envB=read(dst/.env); gitB=hashTree(dst/.git); tgt=Readlink(dst/link-out)\nsb.Export(ctx,'.',LocalDir{Path:dst}); assert exists(dst/stale.txt)\nassert sb.Export(ctx,'.',LocalDir{Path:dst,Delete:true})==nil; assert !exists(dst/stale.txt) && exists(dst/result.txt)\nassert read(dst/.env)==envB && hashTree(dst/.git)==gitB && Readlink(dst/link-out)==tgt"
+          }
         },
         {
-          "id": "14-REQ-5.6",
+          "id": "REQ-5.6",
           "pattern": "ubiquitous",
           "system": "LocalDir export",
-          "action": "for any workspace content, including content planted through the proxy execute tool (an escaping symlink, a workspace directory whose name shadows a symlink in dst that points outside dst, and .git/hooks or .git/config files), have every Export write nothing outside dst, create, change or remove nothing under dst/.git, and create no symlink whose target leaves dst"
+          "action": "for any workspace content, including content planted through the proxy execute tool (an escaping symlink, a workspace directory whose name shadows a symlink in dst that points outside dst, and .git/hooks or .git/config files), have every Export write nothing outside dst, create, change or remove nothing under dst/.git, and create no symlink whose target leaves dst",
+          "contract": "the sentinel directory and every entry of dst's parent other than dst are unchanged; when dst had a .git its tree hash is unchanged, and when it had none no .git entry exists anywhere under dst; no symlink under dst has a target that tarsafe's predicate rejects relative to dst",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a seeded generator of hostile workspace content planted through the proxy execute tool: absolute and ../ symlinks, a workspace directory named like a dst symlink that points to a sentinel directory outside dst, .git/hooks/post-checkout and .git/config with core.fsmonitor, and nested escaping links",
+              "a dst that, depending on the seed, has or lacks a .git and a shadowing symlink",
+              "a sentinel directory outside dst and a snapshot of dst's parent",
+              "seeds logged for reproduction"
+            ],
+            "pseudocode": "for seed in 1..50: plant(sb, gen(seed)) via execute; dst = genDst(seed); s0=snapshot(sentinel); p0=snapshotExcept(parent(dst),dst); g0=hashTree(dst/.git)\n  for path in ['.', genSubdir(seed)]: for del in [false,true]: sb.Export(ctx, path, LocalDir{Path:dst, Delete:del})\n  assert snapshot(sentinel)==s0 && snapshotExcept(parent(dst),dst)==p0\n  assert hadGit(seed) ? hashTree(dst/.git)==g0 : none(walk(dst), hasGitComponent)\n  for l in symlinks(dst): assert tarsafe.symlinkRejects(l) == nil"
+          }
         }
       ]
     },
     {
-      "id": "14-REQ-6",
+      "id": "REQ-6",
       "title": "The agent's Rsync service",
       "rationale": "The agent binary is trusted, so it must refuse any stream that steps outside the workspace or asks the library for behaviour this module never uses.",
+      "system": "agent Rsync service",
       "criteria": [
         {
-          "id": "14-REQ-6.1",
+          "id": "REQ-6.1",
           "pattern": "unwanted",
           "condition": "the start frame has an unspecified or unknown direction; or a SYNC path that is not empty; or an EXPORT path that fails tarsafe.CleanRel, does not exist, or names a symlink; or delete set together with an EXPORT path that names a regular file",
-          "system": "agent Rsync service",
           "action": "refuse the stream before sending plan and before building any rsync server",
-          "contract": "the RPC ends with gRPC NotFound naming the path for a missing EXPORT path, and with gRPC InvalidArgument naming the offending field otherwise; Sync or Export returns a non-nil error carrying that message; no workspace or destination file changes; the sandbox stays live"
+          "contract": "the RPC ends with gRPC NotFound naming the path for a missing EXPORT path, and with gRPC InvalidArgument naming the offending field otherwise; Sync or Export returns a non-nil error carrying that message; no workspace or destination file changes; the sandbox stays live",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a real agent.Agent over net.Pipe with a raw sandboxpb client",
+              "a workspace with file.txt, dir/, and a symlink link -> file.txt",
+              "a host sandbox attached to the same kind of agent"
+            ],
+            "pseudocode": "for (start, code, word) in cases: st=client.Rsync(ctx); st.Send(start); f,err=st.Recv(); assert f==nil && status.Code(err)==code && contains(err,word)\nerr=sb.Export(ctx,'missing',LocalDir{Path:dst}); assert status.Code(errors.Unwrap...)==NotFound && contains(err,'missing')\nassert tree(ws)==snap; assert call(list_files).OK"
+          }
         },
         {
-          "id": "14-REQ-6.2",
+          "id": "REQ-6.2",
           "pattern": "unwanted",
           "condition": "an Rsync stream arrives while another Rsync stream on the same sandbox is still running",
-          "system": "agent Rsync service",
           "action": "refuse the second stream and leave the first one running",
-          "contract": "the second RPC ends with gRPC FailedPrecondition; the first transfer completes with its own result; the sandbox stays live"
+          "contract": "the second RPC ends with gRPC FailedPrecondition; the first transfer completes with its own result; the sandbox stays live",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a real agent.Agent over net.Pipe with a raw sandboxpb client",
+              "a src holding a.txt"
+            ],
+            "pseudocode": "s1=open(); s1.Send(start(SYNC)); recvPlan(s1); s1.Send(args)\ns2=open(); s2.Send(start(SYNC)); _,err=s2.Recv(); assert status.Code(err)==FailedPrecondition\nres = runClient(rsyncx.HostConn(s1), WithSender, src); assert res.done.Files==1 && res.status==OK && exists(ws/a.txt)\ns3=open(); s3.Send(start(SYNC)); assert recvPlan(s3)!=nil; assert call(list_files).OK"
+          }
         },
         {
-          "id": "14-REQ-6.3",
+          "id": "REQ-6.3",
           "pattern": "unwanted",
           "condition": "the args frame carries an option that the library's own option parser does not recognise",
-          "system": "agent Rsync service",
           "action": "refuse the stream before building any rsync server",
-          "contract": "the RPC ends with gRPC InvalidArgument whose message names the option; the sandbox stays live"
+          "contract": "the RPC ends with gRPC InvalidArgument whose message names the option; the sandbox stays live",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a real agent.Agent over net.Pipe with a raw sandboxpb client",
+              "baseline server args produced by rsyncx for SYNC and for an EXPORT of dir",
+              "rsyncx's server-construction counter exposed to tests"
+            ],
+            "pseudocode": "for opt in ['--remove-source-files','--include=x','--filter=- x','-c']: assert rsyncx.ParseArgs(base+[opt]) recognises opt\nfor (args, word) in cases: n0=rsyncx.serversBuilt(); err=runArgs(start, args); assert status.Code(err)==InvalidArgument && contains(err,word); assert rsyncx.serversBuilt()==n0; assert call(list_files).OK\nassert tree(ws)==snap; assert runArgs(syncStart, baseSync) reaches data phase && runArgs(exportStart('dir'), baseExport) reaches data phase"
+          }
         },
         {
-          "id": "14-REQ-6.4",
+          "id": "REQ-6.4",
           "pattern": "unwanted",
           "condition": "the args frame carries an option that the library's parser recognises but that is outside the option allowlist, such as an option that deletes source files",
-          "system": "agent Rsync service",
           "action": "refuse the stream before building any rsync server",
-          "contract": "the RPC ends with gRPC InvalidArgument whose message names the option; no workspace file changes; the sandbox stays live"
+          "contract": "the RPC ends with gRPC InvalidArgument whose message names the option; no workspace file changes; the sandbox stays live",
+          "check": {
+            "same_as": "REQ-6.3"
+          }
         },
         {
-          "id": "14-REQ-6.5",
+          "id": "REQ-6.5",
           "pattern": "unwanted",
           "condition": "the args frame's sender flag does not match the direction (it must be present for EXPORT and absent for SYNC), or a path operand names anything other than the module root or the start frame's path",
-          "system": "agent Rsync service",
           "action": "refuse the stream before building any rsync server",
-          "contract": "the RPC ends with gRPC InvalidArgument naming the flag or operand; the sandbox stays live"
+          "contract": "the RPC ends with gRPC InvalidArgument naming the flag or operand; the sandbox stays live",
+          "check": {
+            "same_as": "REQ-6.3"
+          }
         },
         {
-          "id": "14-REQ-6.6",
+          "id": "REQ-6.6",
           "pattern": "ubiquitous",
-          "system": "agent Rsync service",
-          "action": "serve each accepted stream with exactly one module, whose path is the workspace root and which is writable exactly when the direction is SYNC, so that an EXPORT stream cannot create, change or delete any workspace file"
+          "action": "serve each accepted stream with exactly one module, whose path is the workspace root and which is writable exactly when the direction is SYNC, so that an EXPORT stream cannot create, change or delete any workspace file",
+          "contract": "each configuration has exactly one module whose path is the workspace root; Writable is true for SYNC and false for EXPORT; after the Export the workspace's paths, contents and modification times are unchanged and dst no longer has extra.txt; the push against the EXPORT server returns a non-nil error and the workspace is unchanged",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the rsyncx server constructor with a test accessor for its module configuration",
+              "a local sandbox whose workspace holds a.txt and dir/b.txt",
+              "a dst holding extra.txt"
+            ],
+            "pseudocode": "m = rsyncx.ModulesFor(ws, SYNC); assert len(m)==1 && m[0].Path==ws && m[0].Writable\nm = rsyncx.ModulesFor(ws, EXPORT); assert len(m)==1 && !m[0].Writable\nsnap=tree(ws); sb.Export(ctx,'.',LocalDir{Path:dst,Delete:true}); assert tree(ws)==snap && !exists(dst/extra.txt)\nerr = pushInto(rsyncx.NewServer(ws, EXPORT), src); assert err!=nil && tree(ws)==snap"
+          }
         },
         {
-          "id": "14-REQ-6.7",
+          "id": "REQ-6.7",
           "pattern": "unwanted",
           "condition": "the rsync library fails inside the agent while the gRPC stream is still intact",
-          "system": "agent Rsync service",
           "action": "end the stream with the library's message and keep serving",
-          "contract": "the RPC ends with gRPC FailedPrecondition carrying the library's message; Sync or Export returns a non-nil error; the sandbox stays live"
+          "contract": "the RPC ends with gRPC FailedPrecondition carrying the library's message; Sync or Export returns a non-nil error; the sandbox stays live",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a real agent.Agent over net.Pipe with a raw sandboxpb client",
+              "a local sandbox reached through a relay that flips bytes in host-to-agent data frames after the first one"
+            ],
+            "pseudocode": "st=open(); st.Send(start(SYNC)); recvPlan(st); st.Send(args); st.Send(data(0xFF*64)); st.CloseSend(); err=drain(st)\nassert status.Code(err)==FailedPrecondition && status.Convert(err).Message()!=''\nassert call(list_files).OK; assert recvPlan(openStart(SYNC))!=nil\n_,err=corrupt.Sync(ctx,LocalDir{Path:src}); assert err!=nil; assert call(corrupt,list_files).OK"
+          }
         },
         {
-          "id": "14-REQ-6.8",
+          "id": "REQ-6.8",
           "pattern": "state_driven",
           "condition": "an Rsync stream is in flight when the agent's TTL expires",
-          "system": "agent Rsync service",
           "action": "cancel the stream and stop its rsync server, as the TTL does for any RPC",
-          "contract": "Sync or Export returns a non-nil error, and the sandbox becomes unavailable as 13_sandbox_core specifies for the TTL"
+          "contract": "Sync or Export returns a non-nil error, and the sandbox becomes unavailable as 13_sandbox_core specifies for the TTL",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a real agent.Agent built with Config{TTL: 1s} and attached with attach.Dial over a net.Pipe pair whose host end is throttled to 256 KiB/s",
+              "a src holding one 8 MiB file"
+            ],
+            "pseudocode": "start=now(); _,err=sb.Sync(ctx,LocalDir{Path:src}); assert err!=nil && since(start)<10s\nassert serveReturned(agent); _,err=sb.Sync(ctx,LocalDir{Path:small}); assert errors.Is(err, ErrUnavailable)"
+          }
         }
       ]
     },
     {
-      "id": "14-REQ-7",
+      "id": "REQ-7",
       "title": "Nothing confines or alters the embedding process",
       "rationale": "rsyncd applies Landlock to its whole process unless told not to, and Landlock is irreversible, so a regression must fail one clear test instead of silently confining the embedder.",
       "criteria": [
         {
-          "id": "14-REQ-7.1",
+          "id": "REQ-7.1",
           "pattern": "event_driven",
           "condition": "a process has completed a LocalDir Sync and a LocalDir Export over local",
           "system": "rsync client and server code in that process",
           "action": "leave all process-wide state as it was: apply no Landlock ruleset and no chroot, and change neither the working directory, the user id nor the umask",
-          "contract": "the process can create a file in a fresh directory outside the workspace; on Linux it can read a file under /sys; os.Getwd, os.Getuid and the umask return the values recorded before the transfers. The check runs in a re-executed child of the test binary, so that a regression confines only the child"
+          "contract": "the process can create a file in a fresh directory outside the workspace; on Linux it can read a file under /sys; os.Getwd, os.Getuid and the umask return the values recorded before the transfers. The check runs in a re-executed child of the test binary, so that a regression confines only the child",
+          "check": {
+            "same_as": "PATH-4"
+          }
         },
         {
-          "id": "14-REQ-7.2",
+          "id": "REQ-7.2",
           "pattern": "ubiquitous",
           "system": "root module",
           "action": "contain calls to rsyncd.NewServer in exactly one function, which lives in sandbox/internal/rsyncx and passes rsyncd.DontRestrict() among its arguments. An AST test over every non-test Go file of the root module enforces this",
-          "contract": "the AST test fails, naming the file and line, for any rsyncd.NewServer call outside sandbox/internal/rsyncx or without rsyncd.DontRestrict() among its arguments"
+          "contract": "the AST test fails, naming the file and line, for any rsyncd.NewServer call outside sandbox/internal/rsyncx or without rsyncd.DontRestrict() among its arguments",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "every non-test Go file of the root module, skipping nested modules and testdata",
+              "fixture sources for the checker: a call without DontRestrict, a call outside rsyncx, and a call through an aliased import"
+            ],
+            "pseudocode": "calls = findCalls(rootNonTestFiles(), 'github.com/gokrazy/rsync/rsyncd', 'NewServer')\nassert len(enclosingFuncs(calls))==1; for c in calls: assert dir(c.file)=='sandbox/internal/rsyncx' && hasArgCall(c, rsyncdAlias(c.file), 'DontRestrict')\nfor fx in fixtures: v = check(fx); assert len(v)==1 && contains(v[0], fx.name+':'+str(fx.line))"
+          }
         }
       ]
     },
     {
-      "id": "14-REQ-8",
+      "id": "REQ-8",
       "title": "Failure handling and compatibility",
       "rationale": "LocalDir transfers follow 13's state rules, so that only a lost agent makes a sandbox unavailable and an old agent or an unsupported platform fails clearly before any work.",
       "criteria": [
         {
-          "id": "14-REQ-8.1",
+          "id": "REQ-8.1",
           "pattern": "unwanted",
           "condition": "Sync or Export of a LocalDir is called on a sandbox that is unavailable or closed",
           "system": "sandbox attach package",
           "action": "refuse without walking any tree or opening any RPC",
-          "contract": "returns an error for which errors.Is(err, ErrUnavailable) or errors.Is(err, ErrClosed) is true, matching the sandbox state, as 13_sandbox_core specifies"
+          "contract": "returns an error for which errors.Is(err, ErrUnavailable) or errors.Is(err, ErrClosed) is true, matching the sandbox state, as 13_sandbox_core specifies",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a closed local sandbox, a local sandbox made unavailable with localtest.Cut",
+              "a sandbox attached to the fakeagent reporting ProtocolMinor 0, with an Rsync counter",
+              "a src path that does not exist, so any walk or path check would produce a different error"
+            ],
+            "pseudocode": "for (sb, want) in [(closed,ErrClosed),(cut,ErrUnavailable)]: _,e1=sb.Sync(ctx,LocalDir{Path:missing}); e2=sb.Export(ctx,'.',LocalDir{Path:dst}); assert errors.Is(e1,want) && errors.Is(e2,want)\n_,e1=old.Sync(ctx,LocalDir{Path:validSrc}); e2=old.Export(ctx,'.',LocalDir{Path:dst}); for e in [e1,e2]: assert errors.Is(e,ErrUnsupported) && contains(e,'1.0') && contains(e,'1.1')\nassert fa.rsyncCalls==0 && !exists(dst)"
+          }
         },
         {
-          "id": "14-REQ-8.2",
+          "id": "REQ-8.2",
           "pattern": "unwanted",
           "condition": "the agent's Hello reported a ProtocolMinor below 1 and Sync or Export of a LocalDir is called",
           "system": "sandbox attach package",
           "action": "refuse before walking the source or the destination and before opening any Rsync stream",
-          "contract": "returns an error for which errors.Is(err, ErrUnsupported) is true and whose message names both the agent's and the required protocol version"
+          "contract": "returns an error for which errors.Is(err, ErrUnsupported) is true and whose message names both the agent's and the required protocol version",
+          "check": {
+            "same_as": "REQ-8.1"
+          }
         },
         {
-          "id": "14-REQ-8.3",
+          "id": "REQ-8.3",
           "pattern": "unwanted",
           "condition": "the agent ends an Rsync stream with a deliberate refusal, including Unimplemented from an agent that lacks the RPC",
           "system": "sandbox attach package",
           "action": "return the refusal as an error and keep the sandbox live",
-          "contract": "Sync or Export returns a non-nil error carrying the agent's message; the sandbox state stays live, and a following Call succeeds"
+          "contract": "Sync or Export returns a non-nil error carrying the agent's message; the sandbox state stays live, and a following Call succeeds",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "sandboxes attached to the fakeagent reporting ProtocolMinor 1, whose Rsync returns InvalidArgument, FailedPrecondition, NotFound or Unimplemented with message `agent says no` after reading start"
+            ],
+            "pseudocode": "for code in [InvalidArgument,FailedPrecondition,NotFound,Unimplemented]: fa.rsync=refuse(code,'agent says no'); _,err=sb.Sync(ctx,LocalDir{Path:src})\n  assert contains(err,'agent says no') && status.Code(cause(err))==code; assert call(list_files).OK && fa.calls==before+1; assert fa.rsyncCalls==1"
+          }
         },
         {
-          "id": "14-REQ-8.4",
+          "id": "REQ-8.4",
           "pattern": "unwanted",
           "condition": "the Rsync stream fails with a gRPC transport failure, or it ends with status OK but no done frame, or the agent sends a frame out of the order of 14-REQ-2.3",
           "system": "sandbox attach package",
           "action": "treat the failure, or the malformed response, as a transport failure and mark the sandbox unavailable",
-          "contract": "Sync or Export returns a non-nil error; a following Sync returns ErrUnavailable without any RPC, as 13_sandbox_core specifies"
+          "contract": "Sync or Export returns a non-nil error; a following Sync returns ErrUnavailable without any RPC, as 13_sandbox_core specifies",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a fresh fakeagent-backed sandbox per case, reporting ProtocolMinor 1, whose Rsync: returns Internal; stops the connection after plan; sends plan, reads args and ends OK without done; sends done as its first frame; or sends two plan frames"
+            ],
+            "pseudocode": "for b in [internal, stopAfterPlan, okNoDone, doneFirst, twoPlans]: sb=fresh(b); _,err=sb.Sync(ctx,LocalDir{Path:src}); assert err!=nil && fa.rsyncCalls==1\n  _,err=sb.Sync(ctx,LocalDir{Path:src}); assert errors.Is(err,ErrUnavailable) && fa.rsyncCalls==1\nok=fresh(success); ok.Sync(...); assert fa.rsyncCalls==1"
+          }
         },
         {
-          "id": "14-REQ-8.5",
+          "id": "REQ-8.5",
           "pattern": "unwanted",
           "condition": "the rsync client on the host fails while the stream is intact, including a read error on the source or a write error in the destination",
           "system": "sandbox attach package",
           "action": "cancel the Rsync stream and keep the sandbox live",
-          "contract": "Sync or Export returns a non-nil error wrapping the library's error; a following Call succeeds"
+          "contract": "Sync or Export returns a non-nil error wrapping the library's error; a following Call succeeds",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a Unix host, skipped when running as root",
+              "a local sandbox whose workspace holds out/new.txt",
+              "a dst whose out/ directory is chmod 0555, restored in t.Cleanup"
+            ],
+            "pseudocode": "skipIf(Geteuid()==0); Chmod(dst+'/out',0o555)\nerr=sb.Export(ctx,'.',LocalDir{Path:dst}); assert err!=nil && !errors.Is(err,ErrUnavailable) && errors.Unwrap(err)!=nil && (contains(err,'out/new.txt') || contains(err,'permission denied'))\nassert call(list_files).OK; assert sb.Sync(ctx,LocalDir{Path:small})==nil"
+          }
         },
         {
-          "id": "14-REQ-8.6",
+          "id": "REQ-8.6",
           "pattern": "ubiquitous",
           "system": "sandbox attach package",
-          "action": "open at most one Rsync stream per Sync or Export call, and never retry a failed transfer"
+          "action": "open at most one Rsync stream per Sync or Export call, and never retry a failed transfer",
+          "check": {
+            "same_as": "REQ-8.4"
+          }
         },
         {
-          "id": "14-REQ-8.7",
+          "id": "REQ-8.7",
           "pattern": "unwanted",
           "condition": "Sync or Export of a LocalDir runs on a Windows host, or a Windows-built agent receives an Rsync stream",
           "system": "sandbox attach package and agent Rsync service",
           "action": "refuse at run time: the host refuses before walking any tree or opening any RPC, and the agent refuses the stream before reading args",
-          "contract": "on the host, Sync or Export returns an error for which errors.Is(err, ErrUnsupported) is true and whose message names the platform; the agent ends the RPC with gRPC FailedPrecondition"
+          "contract": "on the host, Sync or Export returns an error for which errors.Is(err, ErrUnsupported) is true and whose message names the platform; the agent ends the RPC with gRPC FailedPrecondition",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a `//go:build windows` test file in the sandbox tree, type-checked by the cross-target vet for windows/amd64 and run on a Windows host",
+              "a sandbox attached to a real agent.Agent over net.Pipe, and a fakeagent-backed sandbox with an Rsync counter"
+            ],
+            "pseudocode": "//go:build windows\n_,e1=sb.Sync(ctx,LocalDir{Path:src}); e2=sb.Export(ctx,'.',LocalDir{Path:dst}); for e in [e1,e2]: assert errors.Is(e,ErrUnsupported) && contains(e,'windows'); assert fa.rsyncCalls==0\nst=raw.Rsync(ctx); st.Send(start(SYNC)); _,err=st.Recv(); assert status.Code(err)==FailedPrecondition"
+          }
         }
       ]
     },
     {
-      "id": "14-REQ-9",
+      "id": "REQ-9",
       "title": "Dependency, gates and compatibility",
       "rationale": "Exactly one approved module enters go.mod without moving any existing version, and the new code stays inside the module's existing build, size and API gates.",
       "criteria": [
         {
-          "id": "14-REQ-9.1",
+          "id": "REQ-9.1",
           "pattern": "ubiquitous",
           "system": "root go.mod",
           "action": "require github.com/gokrazy/rsync v0.3.8 directly and add its own requirements as indirect ones. Change the version of no module already in go.mod, and add no other direct requirement beyond those 13_sandbox_core added",
-          "contract": "the regenerated internal/policy/testdata/go-list-m-all.txt differs from 13's snapshot only by added lines; TS-13-65's expected direct set is 13's set plus github.com/gokrazy/rsync, and the test passes"
+          "contract": "the regenerated internal/policy/testdata/go-list-m-all.txt differs from 13's snapshot only by added lines; TS-13-65's expected direct set is 13's set plus github.com/gokrazy/rsync, and the test passes",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "internal/policy tests reading go.mod, deps_test.go, the regenerated snapshot internal/policy/testdata/go-list-m-all.txt and 13's snapshot kept as a baseline copy, and the go toolchain"
+            ],
+            "pseudocode": "assert require(go.mod,'github.com/gokrazy/rsync')=={v0.3.8, indirect:false}\nassert directSet() == set13 ∪ {'github.com/gokrazy/rsync'}\nassert goListMAll() == read(snapshot); for line in read(snapshot13): assert line in read(snapshot)\nassert precedingComment(approvedDeps,'github.com/gokrazy/rsync') != ''; run(TS_09_15, TS_09_16)\nfor m in ['golang.org/x/net','github.com/landlock-lsm/go-landlock']: assert !direct(m)"
+          }
         },
         {
-          "id": "14-REQ-9.2",
+          "id": "REQ-9.2",
           "pattern": "ubiquitous",
           "system": "internal/policy",
           "action": "add github.com/gokrazy/rsync to approvedDeps with a one-line reason comment, keep golang.org/x/net out of the direct set so that TS-09-15 passes, and keep github.com/landlock-lsm/go-landlock an indirect requirement",
-          "contract": "TS-09-15 and TS-09-16 pass"
+          "contract": "TS-09-15 and TS-09-16 pass",
+          "check": {
+            "same_as": "REQ-9.1"
+          }
         },
         {
-          "id": "14-REQ-9.3",
+          "id": "REQ-9.3",
           "pattern": "ubiquitous",
           "system": "root module",
-          "action": "put `//go:build !windows` on every non-test file that imports github.com/gokrazy/rsync, with Windows stubs that provide the same identifiers and refuse at run time. Pass the cross-target gate (build and vet for linux/amd64, linux/arm64, darwin/arm64 and windows/amd64 with cgo off) and the host-cgo gate without adding any environment variable to either, so that `make check` exits 0"
+          "action": "put `//go:build !windows` on every non-test file that imports github.com/gokrazy/rsync, with Windows stubs that provide the same identifiers and refuse at run time. Pass the cross-target gate (build and vet for linux/amd64, linux/arm64, darwin/arm64 and windows/amd64 with cgo off) and the host-cgo gate without adding any environment variable to either, so that `make check` exits 0",
+          "contract": "every file importing a github.com/gokrazy/rsync package has a constraint that is false for windows and true for linux and darwin, and each such package has a windows-only file declaring the identifiers other packages use; the cross-target gate builds and vets linux/amd64, linux/arm64, darwin/arm64 and windows/amd64 with cgo off, and the host-cgo gate passes, with no environment variable added to either; TS-12-14 passes with the root module at most 20,000 non-test lines, sandboxpb included, and its limit constant is still 20000",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "every non-test Go file of the root module",
+              "internal/policy/crosstarget_test.go with its environment unchanged",
+              "core/size_test.go with the 20,000-line budget unchanged"
+            ],
+            "pseudocode": "for f in nonTestFiles(root): if importsPrefix(f,'github.com/gokrazy/rsync'): c=constraint(f); assert !c.eval(windows) && c.eval(linux) && c.eval(darwin); assert hasWindowsStub(dir(f))\nrun(TestCrossTargetBuildAndVet, TestHostCgoBuildAndVet); assert gateEnv unchanged\nrun(TestLineBudgets_TS12_14); assert codeLines(root) <= 20000"
+          }
         },
         {
-          "id": "14-REQ-9.4",
+          "id": "REQ-9.4",
           "pattern": "ubiquitous",
           "system": "root module",
-          "action": "stay within TS-12-14's budget of 20,000 non-test Go lines, generated sandboxpb code included, without raising the budget. If the code does not fit, move the sandbox tree into a nested module as 13_sandbox_core's Design Decision 5 prescribes"
+          "action": "stay within TS-12-14's budget of 20,000 non-test Go lines, generated sandboxpb code included, without raising the budget. If the code does not fit, move the sandbox tree into a nested module as 13_sandbox_core's Design Decision 5 prescribes",
+          "check": {
+            "same_as": "REQ-9.3"
+          }
         },
         {
-          "id": "14-REQ-9.5",
+          "id": "REQ-9.5",
           "pattern": "ubiquitous",
           "system": "agentkit, core, tools and codemode packages",
-          "action": "leave every exported identifier and exported signature of these four packages unchanged"
+          "action": "leave every exported identifier and exported signature of these four packages unchanged",
+          "contract": "the output equals the golden byte for byte; the golden file is unchanged relative to 13's version",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "internal/policy/testdata/exported-api.golden from 13 (TS-13-67), unchanged by this spec"
+            ],
+            "pseudocode": "for pkg in ['.','core','tools','codemode']: assert exportedAPI(pkg) == golden[pkg]"
+          }
         },
         {
-          "id": "14-REQ-9.6",
+          "id": "REQ-9.6",
           "pattern": "event_driven",
           "condition": "`go test ./examples/sandbox` runs",
           "system": "examples/sandbox",
           "action": "run the example program with a LocalDir Sync into and a LocalDir Export out of a local.Unisolated() sandbox, driven by provider/faux, with no network access and no API key",
-          "contract": "the example's test passes and the program exits 0"
+          "contract": "the example's test passes and the program exits 0",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "examples/sandbox with provider/faux and local.Unisolated()",
+              "ANTHROPIC_API_KEY unset and no network"
+            ],
+            "pseudocode": "t.Setenv('ANTHROPIC_API_KEY',''); out,code = goRun('./examples/sandbox'); assert code==0 && contains(out,'Sandbox example completed successfully')\nast = parse('examples/sandbox/main.go'); assert usesLocalDir(ast,'Sync') && usesLocalDir(ast,'Export') && !hasLiteral(ast,'Tar') && !hasLiteral(ast,'TarOut')"
+          }
         }
       ]
     }
   ],
   "execution_paths": [
     {
-      "id": "14-PATH-1",
+      "id": "PATH-1",
       "title": "An embedder syncs a host project into a local sandbox, re-syncs one change, and a proxy tool reads it",
       "steps": [
         {
@@ -535,10 +928,30 @@
           "actor": "embedder",
           "action": "changes one file in src, calls Sync again and receives Files == 1, then calls the proxy read_file and receives the changed content"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "local.Unisolated provider",
+          "attach Sandbox",
+          "agent Rsync service",
+          "rsyncx adapter, rule computation and server constructor",
+          "gokrazy/rsync rsyncclient and rsyncd",
+          "tools.Walk and the ignore engine",
+          "proxy read_file over the Call RPC"
+        ],
+        "setup": [
+          "HOME and XDG_CONFIG_HOME pointed at empty temporary directories and GIT_CONFIG_GLOBAL at an empty file, so the zero Ignore is hermetic",
+          "a src of 20 files with .gitignore ignoring build/, build/out.o, .git/HEAD, an escaping symlink esc -> /etc, and old.txt"
+        ],
+        "end_state": [
+          "the first Sync returns Files equal to the number of regular files in src's transfer set and a positive Sent; the workspace holds .git/HEAD and lacks build/ and esc",
+          "the second Sync returns Files == 1, Bytes == notes.txt's new size and Deleted == 1, and old.txt is gone",
+          "the proxy read_file returns notes.txt's new content"
+        ]
+      }
     },
     {
-      "id": "14-PATH-2",
+      "id": "PATH-2",
       "title": "An embedder exports the model's edits into a host directory without touching its .git or ignored files",
       "steps": [
         {
@@ -577,10 +990,30 @@
           "actor": "embedder",
           "action": "finds dst/out/result.txt with the written content, the stale file gone, and dst/.env and dst/.git byte-identical to before"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "local.Unisolated provider",
+          "attach Sandbox",
+          "agent Rsync service",
+          "rsyncx adapter, rule computation and server constructor",
+          "gokrazy/rsync rsyncclient (receiver) and rsyncd (read-only sender)",
+          "tools.Walk and the ignore engine on both sides",
+          "proxy write_file over the Call RPC"
+        ],
+        "setup": [
+          "a local sandbox",
+          "a dst holding .git/ with HEAD and config, .gitignore with `.env`, .env and stale.txt"
+        ],
+        "end_state": [
+          "Export returns nil and dst/out/result.txt holds the written content",
+          "stale.txt is gone",
+          "dst/.env and every file under dst/.git are byte-identical to before, and no workspace .git entry appears in dst"
+        ]
+      }
     },
     {
-      "id": "14-PATH-3",
+      "id": "PATH-3",
       "title": "The agent refuses hostile Rsync streams and the sandbox stays live",
       "steps": [
         {
@@ -607,10 +1040,29 @@
           "actor": "test",
           "action": "calls a proxy list_files and a LocalDir Sync on the same sandbox, and both succeed"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "local.Unisolated provider",
+          "agent Rsync service",
+          "rsyncx argument checks",
+          "the gokrazy/rsync option parser",
+          "attach Sandbox",
+          "proxy list_files"
+        ],
+        "setup": [
+          "a local sandbox",
+          "localtest's raw-client helper returning the sandbox's sandboxpb.AgentClient"
+        ],
+        "end_state": [
+          "the first stream ends with InvalidArgument before any plan",
+          "the second and third end with InvalidArgument naming --frobnicate and --remove-source-files",
+          "the proxy list_files and the Sync both succeed"
+        ]
+      }
     },
     {
-      "id": "14-PATH-4",
+      "id": "PATH-4",
       "title": "A re-executed test child runs LocalDir transfers and stays unconfined",
       "steps": [
         {
@@ -633,7 +1085,25 @@
           "actor": "parent test",
           "action": "asserts that the child exited with status 0"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "re-executed test binary",
+          "local.Unisolated provider",
+          "attach Sandbox",
+          "agent Rsync service",
+          "rsyncx server constructor with DontRestrict",
+          "gokrazy/rsync rsyncclient and rsyncd",
+          "the host filesystem and /sys"
+        ],
+        "setup": [
+          "the test binary re-executed as a child with an environment marker selecting the child role and an empty PATH beyond what the child needs"
+        ],
+        "end_state": [
+          "the child prints its completion marker and exits 0, which the parent asserts together with the marker so a silently skipped child fails",
+          "inside the child, file creation outside the workspace succeeded, the /sys read succeeded on Linux, and the working directory, uid and umask equal the recorded values"
+        ]
+      }
     }
   ],
   "external_apis": [

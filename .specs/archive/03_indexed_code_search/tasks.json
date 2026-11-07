@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "03",
   "spec_name": "indexed_code_search",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -21,25 +21,15 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Settle the zoekt risks and create the nested codesearch module with its policy tests",
       "criteria": [
-        "03-REQ-1.1",
-        "03-REQ-1.2",
-        "03-REQ-1.3",
-        "03-REQ-8.6",
-        "03-REQ-8.7",
-        "03-REQ-9",
-        "03-REQ-10.1"
-      ],
-      "tests": [
-        "TS-03-4",
-        "TS-03-7",
-        "TS-03-60",
-        "TS-03-61",
-        "TS-03-62",
-        "TS-03-63",
-        "TS-03-64"
+        "REQ-1.1",
+        "REQ-1.2",
+        "REQ-1.3",
+        "REQ-8.6",
+        "REQ-8.7",
+        "REQ-9",
+        "REQ-10.1"
       ],
       "steps": [
         "Write TS-03-4, TS-03-7, TS-03-61, TS-03-62, TS-03-63 and TS-03-64 first and confirm they fail; add TS-03-60 once the Windows result is known",
@@ -66,33 +56,21 @@
       ],
       "done_when": [
         "`cd codesearch && go build ./... && go vet ./...` succeeds on the four targets with CGO_ENABLED=0"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Add the standard-library seam to tools and the Invalidate hooks",
       "criteria": [
-        "03-REQ-1.4",
-        "03-REQ-2.1",
-        "03-REQ-2.2",
-        "03-REQ-2.3",
-        "03-REQ-2.4",
-        "03-REQ-2.5",
-        "03-REQ-2.6",
-        "03-REQ-2.7",
-        "03-REQ-10.2"
-      ],
-      "tests": [
-        "TS-03-5",
-        "TS-03-8",
-        "TS-03-9",
-        "TS-03-10",
-        "TS-03-11",
-        "TS-03-12",
-        "TS-03-13",
-        "TS-03-14"
+        "REQ-1.4",
+        "REQ-2.1",
+        "REQ-2.2",
+        "REQ-2.3",
+        "REQ-2.4",
+        "REQ-2.5",
+        "REQ-2.6",
+        "REQ-2.7",
+        "REQ-10.2"
       ],
       "steps": [
         "Write TS-03-8 to TS-03-14 and TS-03-5 first and confirm they fail",
@@ -115,31 +93,19 @@
       ],
       "depends_on": [
         1
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Build the index lazily: New, options, walk filter, outline symbols, shard directory and sweep",
       "criteria": [
-        "03-REQ-1.5",
-        "03-REQ-1.6",
-        "03-REQ-1.7",
-        "03-REQ-5.2",
-        "03-REQ-5.3",
-        "03-REQ-5.5",
-        "03-REQ-5.6"
-      ],
-      "tests": [
-        "TS-03-1",
-        "TS-03-2",
-        "TS-03-3",
-        "TS-03-33",
-        "TS-03-34",
-        "TS-03-35",
-        "TS-03-37",
-        "TS-03-38"
+        "REQ-1.5",
+        "REQ-1.6",
+        "REQ-1.7",
+        "REQ-5.2",
+        "REQ-5.3",
+        "REQ-5.5",
+        "REQ-5.6"
       ],
       "steps": [
         "Write the eight tests first and confirm they fail; tests obtain symbols only through a fake Runner or DisableCtags",
@@ -159,26 +125,14 @@
       ],
       "depends_on": [
         2
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Implement the code_search tool: arguments, path conjunction, search and error codes",
       "criteria": [
-        "03-REQ-3",
-        "03-REQ-5.1"
-      ],
-      "tests": [
-        "TS-03-16",
-        "TS-03-17",
-        "TS-03-18",
-        "TS-03-19",
-        "TS-03-20",
-        "TS-03-21",
-        "TS-03-22",
-        "TS-03-23"
+        "REQ-3",
+        "REQ-5.1"
       ],
       "steps": [
         "Write the eight tests first and confirm they fail",
@@ -198,27 +152,14 @@
       ],
       "depends_on": [
         3
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Render ranked file-grouped code_search results with truncation markers and no-ctags header",
       "criteria": [
-        "03-REQ-4",
-        "03-REQ-5.4"
-      ],
-      "tests": [
-        "TS-03-24",
-        "TS-03-25",
-        "TS-03-26",
-        "TS-03-27",
-        "TS-03-28",
-        "TS-03-29",
-        "TS-03-30",
-        "TS-03-31",
-        "TS-03-36"
+        "REQ-4",
+        "REQ-5.4"
       ],
       "steps": [
         "Write the nine tests first and confirm they fail; golden marker text is tied to the pinned zoekt version and a test comment says so",
@@ -238,28 +179,18 @@
       ],
       "depends_on": [
         4
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Enforce build bounds, cancellation, locking and Close lifecycle",
       "criteria": [
-        "03-REQ-5.7",
-        "03-REQ-5.8",
-        "03-REQ-8.1",
-        "03-REQ-8.3",
-        "03-REQ-8.4",
-        "03-REQ-8.5"
-      ],
-      "tests": [
-        "TS-03-39",
-        "TS-03-40",
-        "TS-03-56",
-        "TS-03-57",
-        "TS-03-58",
-        "TS-03-59"
+        "REQ-5.7",
+        "REQ-5.8",
+        "REQ-8.1",
+        "REQ-8.3",
+        "REQ-8.4",
+        "REQ-8.5"
       ],
       "steps": [
         "Write the six tests first and confirm they fail; run the concurrency test with -race",
@@ -277,28 +208,18 @@
       ],
       "depends_on": [
         5
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Freshness: dirty marks, generations, revalidation walk and non-blocking Invalidate",
       "criteria": [
-        "03-REQ-2.8",
-        "03-REQ-6.1",
-        "03-REQ-6.2",
-        "03-REQ-6.3",
-        "03-REQ-6.6",
-        "03-REQ-6.7"
-      ],
-      "tests": [
-        "TS-03-15",
-        "TS-03-41",
-        "TS-03-42",
-        "TS-03-43",
-        "TS-03-47",
-        "TS-03-48"
+        "REQ-2.8",
+        "REQ-6.1",
+        "REQ-6.2",
+        "REQ-6.3",
+        "REQ-6.6",
+        "REQ-6.7"
       ],
       "steps": [
         "Write the six tests first and confirm they fail; use a blocking fake Runner, a revalidation counter and tools.All wired with the real index",
@@ -318,24 +239,16 @@
       ],
       "depends_on": [
         6
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Overlay shard for dirty files, score merge and the 5% rebuild threshold",
       "criteria": [
-        "03-REQ-6.4",
-        "03-REQ-6.5",
-        "03-REQ-6.8",
-        "03-REQ-8.2"
-      ],
-      "tests": [
-        "TS-03-44",
-        "TS-03-45",
-        "TS-03-46",
-        "TS-03-49"
+        "REQ-6.4",
+        "REQ-6.5",
+        "REQ-6.8",
+        "REQ-8.2"
       ],
       "steps": [
         "Write the four tests first and confirm they fail; TS-03-49 is a property test over random sequences of write_file, edit_file (success and failure) and shell edit, delete and create",
@@ -355,24 +268,13 @@
       ],
       "depends_on": [
         7
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 9,
-      "kind": "implement",
       "title": "Serve find_symbol through Index.Symbols with identical matches",
       "criteria": [
-        "03-REQ-7"
-      ],
-      "tests": [
-        "TS-03-32",
-        "TS-03-50",
-        "TS-03-51",
-        "TS-03-52",
-        "TS-03-53",
-        "TS-03-54",
-        "TS-03-55"
+        "REQ-7"
       ],
       "steps": [
         "Write the seven tests first and confirm they fail; TS-03-55 is a property test over generated trees and find_symbol queries comparing Index != nil with Index == nil",
@@ -391,26 +293,17 @@
       ],
       "depends_on": [
         8
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 10,
-      "kind": "implement",
       "title": "Wire the Makefile and update documentation",
       "criteria": [
-        "03-REQ-10.3",
-        "03-REQ-10.4",
-        "03-REQ-10.5",
-        "03-REQ-10.6",
-        "03-REQ-10.7"
-      ],
-      "tests": [
-        "TS-03-6",
-        "TS-03-65",
-        "TS-03-66",
-        "TS-03-67",
-        "TS-03-68"
+        "REQ-10.3",
+        "REQ-10.4",
+        "REQ-10.5",
+        "REQ-10.6",
+        "REQ-10.7"
       ],
       "steps": [
         "Write the five tests first and confirm they fail",
@@ -434,43 +327,7 @@
       ],
       "depends_on": [
         9
-      ],
-      "state": "done"
-    },
-    {
-      "id": 11,
-      "kind": "integration",
-      "title": "Verify every execution path end to end against the real index",
-      "tests": [
-        "TS-03-69",
-        "TS-03-70",
-        "TS-03-71",
-        "TS-03-72",
-        "TS-03-73",
-        "TS-03-74",
-        "TS-03-75"
-      ],
-      "steps": [
-        "Write the seven smoke tests against real components (real codesearch index, tools.All, tools.Walk, outline.OutlineMany, zoekt builder and searcher, file system) and confirm they pass; TS-03-75 runs the risk checks on a clean scratch module and on a cgo variant that must report no-go",
-        "Trace 03-PATH-1 through codesearch.New, tools.All, the code_search tool, tools.Walk, OutlineMany and the zoekt search; confirm each step calls the next and no stub remains",
-        "Trace 03-PATH-2 and 03-PATH-3 from edit_file/write_file/execute to Index.Invalidate, the overlay shard, the revalidation walk and the result; confirm the tools call Invalidate from production code",
-        "Trace 03-PATH-4: confirm find_symbol in production code calls Index.Symbols (spec 02 entry point) and falls back to its table, and that the header names the index",
-        "Trace 03-PATH-5 and 03-PATH-6: partial bound without retry, and Close deleting the run directory then index_closed",
-        "For every criterion with a contract (Symbols ok/err, Invalidate arguments, index_closed, partial_reason, CapMarker) confirm the producer's result is consumed by a caller in production code, not only by tests",
-        "Grep every file in the tasks' touches for panic(\"not implemented\"), TODO and bare `return nil` on non-trivial paths and remove them",
-        "Run `make check` and `go test -race ./...` in codesearch, with and without universal-ctags"
-      ],
-      "touches": [
-        "codesearch/smoke_test.go",
-        "codesearch/riskcheck_test.go"
-      ],
-      "depends_on": [
-        10
-      ],
-      "done_when": [
-        "`make test` and `make lint` pass, including codesearch/"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

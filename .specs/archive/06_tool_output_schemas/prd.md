@@ -4,9 +4,8 @@ spec_name: "tool_output_schemas"
 title: "Tool Output Schemas, Structured MCP Results, and Schema Conformance"
 status: "active"
 created_at: "2026-10-08T14:39:31.060914Z"
-updated_at: "2026-10-08T14:39:31.060914Z"
 intent_hash: "ef73894c4260d9b22ace2080048d376370d2882fb43bd8ff707dedbafc77ce90"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/08-run-tool-calls-from-model-written-scripts.md"
 ---
 ## Intent
@@ -191,3 +190,10 @@ What exists today:
 | `github.com/modelcontextprotocol/go-sdk/mcp` | `CallToolResult.StructuredContent` | `any` (decoded JSON object or primitive) | verified (read in `mcp/pool.go` line 333) |
 | `github.com/modelcontextprotocol/go-sdk/mcp` | `CallToolResult.Content` | `[]Content` | verified (read in `mcp/pool.go` line 320) |
 | `github.com/modelcontextprotocol/go-sdk/mcp` | `CallToolResult.IsError` | `bool` | verified (read in `mcp/pool.go` line 336) |
+
+## Glossary
+
+- **Diagnostic**: A non-fatal report (diag.Diagnostic) with severity level, file or line context, and descriptive message recorded during configuration or schema parsing.
+- **OutputSchema**: A typed schema definition (*schema.Schema) describing the JSON structure of a tool's structured Data result payload.
+- **StructuredContent**: Decoded JSON structured content returned in MCP CallToolResult payloads.
+- **ToolWire**: The provider-facing projection of a tool definition containing Name, Description, InputSchema, and ConstrainedSampling.

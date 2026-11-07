@@ -1,562 +1,930 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
   "spec_id": "16",
   "spec_name": "sandbox_images",
-  "schema_version": 2,
-  "introduction": "Two OCI images, built from one Containerfile at sandbox/images/Containerfile, carry the sandbox agent agentkit-sandboxd at sandbox.AgentPath. The base image is a Debian trixie-slim image that runs as is. The overlay image is a single-layer image that an embedder copies into its own toolchain image. This spec also adds the build-time version stamp in buildver, the image-reference helpers in package sandbox, the sandbox-images make targets, the opt-in end-to-end image tests, the offline consistency checks that run in make check, and the GHCR release workflow. That workflow publishes both images for linux/amd64 and linux/arm64 only after the tests pass, then verifies them with an anonymous pull.",
-  "glossary": {
-    "CA bundle": "The Debian CA certificate bundle at /etc/ssl/certs/ca-certificates.crt, installed by the ca-certificates package.",
-    "Landlock check": "The probe run through proxy execute when Agent().Landlock.ABI is 2 or more: `touch /var/tmp/agentkit-probe` must exit non-zero and `touch \"$HOME/p\" /tmp/p /workspace/p` must exit 0.",
-    "base image": "quay.io/agentfox/agentkit-sandbox, built by `--target base`. It is FROM debian:trixie-slim and holds the cgo-built agent, git, bash, ca-certificates and the uid-1000 user agentkit.",
-    "canonical release version": "`v` followed by MAJOR.MINOR.PATCH with no leading zeros and an optional `-prerelease`. It carries no `+` build metadata and is not a pseudo-version.",
-    "consistency test": "sandbox/images/consistency_test.go. It reads the Containerfile, the Makefile and the release workflow, needs no container engine, and runs in make check.",
-    "container engine": "podman or docker. make chooses it with the CONTAINER variable; the image tests choose it with AGENTKIT_CONTAINER, falling back to podman and then docker on PATH.",
-    "derived image": "An image built from a Containerfile of `FROM <image>` followed by the single line sandbox.OverlayCopyLine(<overlay ref>). In the tests the FROM image is the base image.",
-    "digest check": "13's Tools RPC comparison of the agent's tool-definition digests with the host's. It fails with sandbox.ErrToolMismatch on any difference.",
-    "expected version": "The agent version the image tests require: the value of AGENTKIT_SANDBOX_IMAGE_VERSION, or `(devel)` when that variable is empty.",
-    "harness": "The helper in the test-only package sandbox/images. It starts an agent container with `run --rm -i`, wraps the child's pipes with stdioconn.New and attaches with attach.Dial.",
-    "overlay image": "quay.io/agentfox/agentkit-sandboxd, built by `--target overlay`. It is a FROM scratch image with one layer, holding only the statically linked agent at sandbox.AgentPath.",
-    "proxy tool": "A core.Tool returned by Sandbox.Tools whose handler runs the named tool (execute, write_file) inside the sandbox.",
-    "pseudo-version": "A Go module version whose prerelease ends, at its start or after a `.`, in a 14-digit timestamp, a `-` and 12 lowercase hex digits. The three forms are vX.0.0-yyyymmddhhmmss-abcdefabcdef, vX.Y.Z-0.yyyymmddhhmmss-abcdefabcdef and vX.Y.Z-pre.0.yyyymmddhhmmss-abcdefabcdef.",
-    "release workflow": ".github/workflows/sandbox-images.yml. Its images job builds, tests and publishes; its verify job pulls anonymously and runs the published agents.",
-    "stamp": "The unexported string variable buildver.stamp. It is set only at link time with `-ldflags -X` from the AGENTKIT_VERSION build argument."
-  },
+  "schema_version": 3,
   "requirements": [
     {
-      "id": "16-REQ-1",
+      "id": "REQ-1",
       "title": "One Containerfile with two targets and its build context",
       "rationale": "Both images share one module download and one source tree, and the build is the same on a developer's machine and on the release runner. If psx's cgo variant fails to link without CGO_LDFLAGS_ALLOW, the work stops and the failure is recorded in docs/errata/16_sandbox_images.md instead of being worked around (DD 19).",
       "criteria": [
         {
-          "id": "16-REQ-1.1",
+          "id": "REQ-1.1",
           "pattern": "ubiquitous",
           "system": "sandbox/images/Containerfile",
           "action": "build the base image under `--target base` and the overlay image under `--target overlay`, with the repository root as the build context, where the overlay target copies only from the static build stage",
-          "contract": "`<engine> build -f sandbox/images/Containerfile --target base .` and `--target overlay .`, each run from the repository root, exit 0 and produce one image each"
+          "contract": "`<engine> build -f sandbox/images/Containerfile --target base .` and `--target overlay .`, each run from the repository root, exit 0 and produce one image each",
+          "check": {
+            "same_as": "REQ-8.1"
+          }
         },
         {
-          "id": "16-REQ-1.2",
+          "id": "REQ-1.2",
           "pattern": "ubiquitous",
           "system": "sandbox/images/Containerfile",
           "action": "run every build stage `FROM --platform=$BUILDPLATFORM golang:1.27-trixie` with `GOTOOLCHAIN=local` set, and copy go.mod and go.sum and run `go mod download` before copying the rest of the source",
-          "contract": "a go directive in go.mod that is newer than the builder's toolchain fails the build instead of downloading a toolchain"
+          "contract": "a go directive in go.mod that is newer than the builder's toolchain fails the build instead of downloading a toolchain",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the Containerfile split into stages as in TS-16-10; a build stage is every stage other than base and overlay",
+              "the go directive read from go.mod"
+            ],
+            "pseudocode": "for s in buildStages: assert s.from == '--platform=$BUILDPLATFORM golang:'+goDirective(gomod)+'-trixie' && setsEnv(s,'GOTOOLCHAIN','local')\n  assert idx(s,'COPY go.mod go.sum') < idx(s,'go mod download') < idx(s,firstSourceCopy)\nfor s in [cgo, static]: b = goBuild(s); assert b.pkg == './sandbox/cmd/agentkit-sandboxd' && {'-trimpath','-buildvcs=false'} <= b.flags && b.ldflags == '-s -w -X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=${AGENTKIT_VERSION}'\nassert argDefault('AGENTKIT_VERSION') in ['', none] && argDefault('AGENTKIT_REVISION') in ['', none]\nassert !contains(text,'CGO_LDFLAGS_ALLOW') && envNames(text) <= {'GOTOOLCHAIN','CGO_ENABLED','GOOS','GOARCH','CC'}"
+          }
         },
         {
-          "id": "16-REQ-1.3",
+          "id": "REQ-1.3",
           "pattern": "ubiquitous",
           "system": "sandbox/images/Containerfile",
           "action": "compile ./sandbox/cmd/agentkit-sandboxd in the cgo stage with CGO_ENABLED=1, GOOS=linux and GOARCH=$TARGETARCH, and in the static stage with CGO_ENABLED=0, both with `-trimpath`, `-buildvcs=false` and `-ldflags \"-s -w -X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=${AGENTKIT_VERSION}\"`",
-          "contract": "the cgo-built agent reports OutlineBackend \"tree-sitter\"; the static agent runs in an image that holds no libc"
+          "contract": "the cgo-built agent reports OutlineBackend \"tree-sitter\"; the static agent runs in an image that holds no libc",
+          "check": {
+            "same_as": "REQ-1.2"
+          }
         },
         {
-          "id": "16-REQ-1.4",
+          "id": "REQ-1.4",
           "pattern": "event_driven",
           "condition": "TARGETARCH differs from BUILDARCH",
           "system": "sandbox/images/Containerfile",
           "action": "install Debian's crossbuild-essential-$TARGETARCH in the cgo stage and set CC to x86_64-linux-gnu-gcc for amd64 or aarch64-linux-gnu-gcc for arm64",
-          "contract": "a linux/arm64 build on an amd64 builder, and the reverse, compiles the cgo agent on the build platform without emulating the target"
+          "contract": "a linux/arm64 build on an amd64 builder, and the reverse, compiles the cgo agent on the build platform without emulating the target",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the Containerfile split into stages as in TS-16-10",
+              "an engine and AGENTKIT_SANDBOX_BASE_IMAGE set, so this runs only in the opt-in run",
+              "the cgo stage name and the binary's source path read from the base stage's `COPY --from=<stage> <src> <AgentPath>`",
+              "the other architecture: arm64 when runtime.GOARCH is amd64, else amd64"
+            ],
+            "pseudocode": "r = runText(cgoStage); assert contains(r,'crossbuild-essential-') && comparesArch(r,'TARGETARCH','BUILDARCH')\nassert branch(r,'amd64').sets('CC','x86_64-linux-gnu-gcc') && branch(r,'arm64').sets('CC','aarch64-linux-gnu-gcc')\nfor s in [cgoStage, staticStage]: g = defaultBranch(runText(s)); assert g.exitsNonZero && contains(g.msg,'linux/amd64') && contains(g.msg,'linux/arm64') && idx(g) < idx(goBuild(s))\nstage, src = cgoCopy(stages(cf)['base']); other = runtime.GOARCH == 'amd64' ? 'arm64' : 'amd64'\nref = 'agentkit-imgtest-cgo-'+hex(); assert run(engine,'build','-f','sandbox/images/Containerfile','--target',stage,'--platform','linux/'+other,'--build-arg','AGENTKIT_VERSION=v9.8.7','-t',ref,'.').code == 0\nid = run(engine,'create',ref).out; run(engine,'cp',id+':'+src,tmp+'/agent'); t.Cleanup(rm(id), rmi(ref))\nassert elf.Open(tmp+'/agent').Machine == machineFor(other)\nbi = buildinfo.ReadFile(tmp+'/agent'); assert bi.setting('GOOS') == 'linux' && bi.setting('GOARCH') == other && bi.setting('CGO_ENABLED') == '1' && bi.setting('-trimpath') == 'true' && has(bi.setting('-ldflags'),'buildver.stamp=v9.8.7')"
+          }
         },
         {
-          "id": "16-REQ-1.5",
+          "id": "REQ-1.5",
           "pattern": "unwanted",
           "condition": "TARGETARCH is neither amd64 nor arm64",
           "system": "sandbox/images/Containerfile",
           "action": "fail the build before compiling the agent",
-          "contract": "the build exits non-zero with a message naming linux/amd64 and linux/arm64 as the two supported platforms"
+          "contract": "the build exits non-zero with a message naming linux/amd64 and linux/arm64 as the two supported platforms",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an engine and AGENTKIT_SANDBOX_BASE_IMAGE set, so this runs only in the opt-in run",
+              "the cgo stage name read as in TS-16-49"
+            ],
+            "pseudocode": "for target in ['overlay', cgoStage]:\n  ref = 'agentkit-imgtest-bad-'+hex(); out, code = run(engine,'build','-f','sandbox/images/Containerfile','--target',target,'--platform','linux/riscv64','-t',ref,'.')\n  assert code != 0 && has(out,'linux/amd64') && has(out,'linux/arm64') && run(engine,'image','inspect',ref).code != 0"
+          }
         },
         {
-          "id": "16-REQ-1.6",
+          "id": "REQ-1.6",
           "pattern": "ubiquitous",
           "system": "sandbox/images/Containerfile",
           "action": "declare the build arguments AGENTKIT_VERSION and AGENTKIT_REVISION, both defaulting to empty, and set neither CGO_LDFLAGS_ALLOW nor any environment variable other than GOTOOLCHAIN, CGO_ENABLED, GOOS, GOARCH and CC",
-          "contract": "the Containerfile text contains no CGO_LDFLAGS_ALLOW; a build with no build arguments stamps nothing"
+          "contract": "the Containerfile text contains no CGO_LDFLAGS_ALLOW; a build with no build arguments stamps nothing",
+          "check": {
+            "same_as": "REQ-1.2"
+          }
         },
         {
-          "id": "16-REQ-1.7",
+          "id": "REQ-1.7",
           "pattern": "ubiquitous",
           "system": ".dockerignore",
           "action": "exclude .git, .github, .specs, .claude, build, codesearch, docs, coverage.*, *.test and .DS_Store from the build context, and exclude neither go.mod, go.sum nor any directory that holds a root-module package",
-          "contract": "for every package that `go list ./...` reports in the root module, no .dockerignore pattern matches its directory, and every listed exclusion is present"
+          "contract": "for every package that `go list ./...` reports in the root module, no .dockerignore pattern matches its directory, and every listed exclusion is present",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the root .dockerignore read with comment and blank lines dropped, and each pattern trimmed of a leading and trailing /",
+              "`go list -f '{{.Dir}}' ./...` run from the module root, each directory made relative to the root"
+            ],
+            "pseudocode": "pats = parseIgnore(read('.dockerignore'))\nassert {'.git','.github','.specs','.claude','build','codesearch','docs','coverage.*','*.test','.DS_Store'} <= set(pats)\nfor f in ['go.mod','go.sum']: assert !anyMatch(pats, f)\nfor d in goListDirs('./...'): for p in d and parents(d): assert !anyMatch(pats, p)"
+          }
         }
       ]
     },
     {
-      "id": "16-REQ-2",
+      "id": "REQ-2",
       "title": "The base image",
       "rationale": "The base image is the default sandbox: a small Debian image with exactly git, bash and ca-certificates, a numeric non-root user, and a root-owned agent laid out to match 15's Landlock roots.",
+      "system": "base image",
       "criteria": [
         {
-          "id": "16-REQ-2.1",
+          "id": "REQ-2.1",
           "pattern": "ubiquitous",
-          "system": "base image",
           "action": "be built FROM debian:trixie-slim with git, bash and ca-certificates installed with --no-install-recommends and the apt lists removed afterwards, and contain no rsync, curl or tini",
-          "contract": "inside the container, `git --version` and `test -s` of the CA bundle exit 0, while `command -v rsync` and `command -v curl` exit non-zero"
+          "contract": "inside the container, `git --version` and `test -s` of the CA bundle exit 0, while `command -v rsync` and `command -v curl` exit non-zero",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the Containerfile split into stages as in TS-16-10",
+              "the base image attached as in TS-16-38",
+              "each command run through the proxy execute tool as `<command>; echo rc=$?`, with the exit code parsed from the output"
+            ],
+            "pseudocode": "b = stages(cf)['base']; assert b.from == 'debian:trixie-slim'\ni = aptInstalls(b); assert len(i) == 1 && '--no-install-recommends' in i[0].flags && set(i[0].pkgs) == {'git','bash','ca-certificates'} && removesAptLists(i[0].run)\nassert no token in ['rsync','curl','tini'] occurs in b\nassert instr(b,'USER') == ['1000:1000'] && instr(b,'WORKDIR') == ['/workspace']\nassert no VOLUME in any stage && no ENV in base or overlay\nrc, out = exec(sb, 'git --version'); assert rc == 0 && startsWith(out,'git version')\nassert exec(sb,'test -x /bin/bash').rc == 0 && exec(sb,'test -s /etc/ssl/certs/ca-certificates.crt').rc == 0\nfor c in ['rsync','curl','tini']: assert exec(sb,'command -v '+c).rc != 0\nassert !has(exec(sb,'ls /var/lib/apt/lists').out,'_Packages')\nassert trim(exec(sb,'git config --system --get-all safe.directory').out) == '*'"
+          }
         },
         {
-          "id": "16-REQ-2.2",
+          "id": "REQ-2.2",
           "pattern": "ubiquitous",
-          "system": "base image",
           "action": "define user agentkit with uid 1000, group agentkit with gid 1000, home /home/agentkit owned 1000:1000 and login shell /bin/bash, and declare `USER 1000:1000` in numeric form",
-          "contract": "`id -u` and `id -g` run through proxy execute each print 1000; `image inspect` reports Config.User \"1000:1000\""
+          "contract": "`id -u` and `id -g` run through proxy execute each print 1000; `image inspect` reports Config.User \"1000:1000\"",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the base image attached as in TS-16-38, commands run as in TS-16-39",
+              "an engine and AGENTKIT_SANDBOX_BASE_IMAGE as in TS-16-38"
+            ],
+            "pseudocode": "assert trim(exec(sb,'id -u').out) == '1000' && trim(exec(sb,'id -g').out) == '1000'\np = split(exec(sb,'getent passwd agentkit').out, ':'); assert p[2:4] == ['1000','1000'] && p[5] == '/home/agentkit' && p[6] == '/bin/bash'\nassert trim(exec(sb,\"stat -c '%u %g %a' /workspace\").out) == '1000 1000 755' && lines(exec(sb,'stat -c %u /workspace /home/agentkit').out) == ['1000','1000']\nassert trim(exec(sb,\"stat -c '%u %a' \"+AgentPath).out) == '0 755' && exec(sb,'test -w '+AgentPath).rc != 0\nr = call(sb,'write_file',{path:'probe.txt',content:'x'}); assert !r.IsError && exec(sb,'cat /workspace/probe.txt').out == 'x'\nc = inspectConfig(engine, base)\nassert c.User == '1000:1000' && c.Entrypoint == [AgentPath] && c.WorkingDir == '/workspace' && len(c.Volumes) == 0\nassert {split(e,'=')[0] for e in c.Env} <= {'PATH'}"
+          }
         },
         {
-          "id": "16-REQ-2.3",
+          "id": "REQ-2.3",
           "pattern": "ubiquitous",
-          "system": "base image",
           "action": "create /workspace owned 1000:1000 with mode 0755, set `WORKDIR /workspace`, and declare no VOLUME",
-          "contract": "`stat -c %u /workspace /home/agentkit` prints 1000 twice; Config.Volumes is empty; Agent().Workdir is \"/workspace\"; a proxy write_file of probe.txt succeeds"
+          "contract": "`stat -c %u /workspace /home/agentkit` prints 1000 twice; Config.Volumes is empty; Agent().Workdir is \"/workspace\"; a proxy write_file of probe.txt succeeds",
+          "check": {
+            "same_as": "REQ-2.1"
+          }
         },
         {
-          "id": "16-REQ-2.4",
+          "id": "REQ-2.4",
           "pattern": "ubiquitous",
-          "system": "base image",
           "action": "set `safe.directory = *` in the system git config",
-          "contract": "`git config --system --get-all safe.directory` prints `*`"
+          "contract": "`git config --system --get-all safe.directory` prints `*`",
+          "check": {
+            "same_as": "REQ-2.1"
+          }
         },
         {
-          "id": "16-REQ-2.5",
+          "id": "REQ-2.5",
           "pattern": "ubiquitous",
-          "system": "base image",
           "action": "hold the cgo-built agent at sandbox.AgentPath, owned 0:0 with mode 0755, and set `ENTRYPOINT [\"/usr/local/libexec/agentkit-sandboxd\"]`",
-          "contract": "`stat -c '%u %a'` of the agent prints `0 755`; Config.Entrypoint is [sandbox.AgentPath]; Agent().OutlineBackend is \"tree-sitter\" and Agent().Git is true"
+          "contract": "`stat -c '%u %a'` of the agent prints `0 755`; Config.Entrypoint is [sandbox.AgentPath]; Agent().OutlineBackend is \"tree-sitter\" and Agent().Git is true",
+          "check": {
+            "same_as": "REQ-7.3"
+          }
         },
         {
-          "id": "16-REQ-2.6",
+          "id": "REQ-2.6",
           "pattern": "ubiquitous",
-          "system": "base image",
           "action": "declare no ENV beyond what debian:trixie-slim already sets",
-          "contract": "the variable names in Config.Env are a subset of {PATH}"
+          "contract": "the variable names in Config.Env are a subset of {PATH}",
+          "check": {
+            "same_as": "REQ-2.1"
+          }
         },
         {
-          "id": "16-REQ-2.7",
+          "id": "REQ-2.7",
           "pattern": "ubiquitous",
-          "system": "base image",
           "action": "carry the labels org.opencontainers.image.source=https://github.com/agent-fox-dev/agentkit-go, org.opencontainers.image.licenses=Apache-2.0, org.opencontainers.image.title, org.opencontainers.image.description, org.opencontainers.image.version from AGENTKIT_VERSION and org.opencontainers.image.revision from AGENTKIT_REVISION",
-          "contract": "Config.Labels carries exactly the source and licenses values above, and non-empty title and description values"
+          "contract": "Config.Labels carries exactly the source and licenses values above, and non-empty title and description values",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an engine and AGENTKIT_SANDBOX_BASE_IMAGE as in TS-16-38; the overlay half runs only when AGENTKIT_SANDBOX_OVERLAY_IMAGE is also set"
+            ],
+            "pseudocode": "for img in [base, overlay if set]: L = inspectLabels(engine, img)\n  assert L['org.opencontainers.image.source'] == 'https://github.com/agent-fox-dev/agentkit-go' && L['org.opencontainers.image.licenses'] == 'Apache-2.0'\n  assert L['org.opencontainers.image.title'] != '' && L['org.opencontainers.image.description'] != '' && L.get('org.opencontainers.image.version','') == getenv('AGENTKIT_SANDBOX_IMAGE_VERSION') && 'org.opencontainers.image.revision' in L\nassert pick(Lbase, keys4) == pick(Loverlay, keys4)"
+          }
         },
         {
-          "id": "16-REQ-2.8",
+          "id": "REQ-2.8",
           "pattern": "state_driven",
           "condition": "an agent started from the base image reports Agent().Landlock.ABI of 2 or more",
-          "system": "base image",
           "action": "place /home/agentkit, /tmp and /workspace under 15's writable roots and every other path the tools use under its read-only system directories, so that the Landlock check passes",
-          "contract": "through proxy execute, `touch /var/tmp/agentkit-probe` exits non-zero and `touch \"$HOME/p\" /tmp/p /workspace/p` exits 0"
+          "contract": "through proxy execute, `touch /var/tmp/agentkit-probe` exits non-zero and `touch \"$HOME/p\" /tmp/p /workspace/p` exits 0",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the base image attached as in TS-16-38; when Agent().Landlock.ABI is below 2 the Landlock helper logs the note and this check does not run (TS-16-25)"
+            ],
+            "pseudocode": "a = sb.Agent(); if a.Landlock.ABI < 2: t.Log(a.Landlock.Note); return\nassert exec(sb,'touch /var/tmp/agentkit-probe').rc != 0\nassert exec(sb,'touch \"$HOME/p\" /tmp/p /workspace/p').rc == 0"
+          }
         }
       ]
     },
     {
-      "id": "16-REQ-3",
+      "id": "REQ-3",
       "title": "The overlay image and derived images",
       "rationale": "An embedder who needs a toolchain adds the agent to its own image with one COPY line, so the overlay must be a single static file and that exact line must work.",
       "criteria": [
         {
-          "id": "16-REQ-3.1",
+          "id": "REQ-3.1",
           "pattern": "ubiquitous",
           "system": "overlay image",
           "action": "be built FROM scratch with a single COPY of the static agent to sandbox.AgentPath, so that the image has exactly one layer, holding the agent owned 0:0 with mode 0755",
-          "contract": "`image inspect` reports exactly one entry in RootFS.Layers"
+          "contract": "`image inspect` reports exactly one entry in RootFS.Layers",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the Containerfile split into stages as in TS-16-10",
+              "an engine and AGENTKIT_SANDBOX_OVERLAY_IMAGE naming an overlay image built by make sandbox-images; otherwise the test skips per 16-REQ-7.1"
+            ],
+            "pseudocode": "o = stages(cf)['overlay']; assert count(o,'RUN') == 0 && count(o,'ADD') == 0 && count(o,'COPY') == 1\nc = copies(o)[0]; assert c.from == staticStage && c.dest == AgentPath && c.chown in [none,'0:0'] && c.chmod in [none,'755','0755']\nassert entrypoint(o) == ['/usr/local/libexec/agentkit-sandboxd']\nfor s in ['base','overlay']: L = labels(s); assert L['org.opencontainers.image.source'] == 'https://github.com/agent-fox-dev/agentkit-go' && L['org.opencontainers.image.licenses'] == 'Apache-2.0' && L['...title'] != '' && L['...description'] != '' && L['...version'] == '${AGENTKIT_VERSION}' && L['...revision'] == '${AGENTKIT_REVISION}'\nassert labels('base') == labels('overlay')\nassert len(inspectJSON(engine, overlay, '.RootFS.Layers')) == 1 && inspectJSON(engine, overlay, '.Config.Entrypoint') == [AgentPath]\nout, code = run(engine,'run','--rm','--entrypoint',AgentPath,overlay,'--version'); assert code == 0 && out == sprintf('agentkit-sandboxd %s (protocol %d.%d)\\n', expected, ProtocolMajor, ProtocolMinor)"
+          }
         },
         {
-          "id": "16-REQ-3.2",
+          "id": "REQ-3.2",
           "pattern": "ubiquitous",
           "system": "overlay image",
           "action": "set `ENTRYPOINT [\"/usr/local/libexec/agentkit-sandboxd\"]` and carry the same OCI labels as the base image",
-          "contract": "Config.Entrypoint is [sandbox.AgentPath]; `run --rm --entrypoint <AgentPath> <overlay> --version` prints `agentkit-sandboxd <expected version> (protocol M.N)`, which proves the binary runs with no libc"
+          "contract": "Config.Entrypoint is [sandbox.AgentPath]; `run --rm --entrypoint <AgentPath> <overlay> --version` prints `agentkit-sandboxd <expected version> (protocol M.N)`, which proves the binary runs with no libc",
+          "check": {
+            "same_as": "REQ-3.1"
+          }
         },
         {
-          "id": "16-REQ-3.3",
+          "id": "REQ-3.3",
           "pattern": "event_driven",
           "condition": "an image is built from a context whose Containerfile is `FROM <base image>` followed by the single line sandbox.OverlayCopyLine(<overlay ref>)",
           "system": "derived image",
           "action": "run the copied static agent when the harness starts it",
-          "contract": "Agent().OutlineBackend is \"none\", Agent().Version is the expected version, Tools(ctx, ToolOptions{}) passes the digest check, and proxy execute of `echo ok` exits 0"
+          "contract": "Agent().OutlineBackend is \"none\", Agent().Version is the expected version, Tools(ctx, ToolOptions{}) passes the digest check, and proxy execute of `echo ok` exits 0",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an engine and both AGENTKIT_SANDBOX_BASE_IMAGE and AGENTKIT_SANDBOX_OVERLAY_IMAGE set; the derived part skips when the base variable is unset",
+              "a temp context whose Containerfile is exactly \"FROM <base>\\n\" + sandbox.OverlayCopyLine(<overlay>) + \"\\n\""
+            ],
+            "pseudocode": "dir = tmp(); write(dir+'/Containerfile', 'FROM '+base+'\\n'+sandbox.OverlayCopyLine(overlay)+'\\n')\nref = 'agentkit-imgtest-derived-'+hex(); assert run(engine,'build','-t',ref,dir).code == 0; t.Cleanup(rmi(ref))\nsb = harness.start(t, ref); a = sb.Agent(); assert a.OutlineBackend == 'none' && a.Version == expected\nts, err = sb.Tools(ctx, sandbox.ToolOptions{}); assert err == nil && len(ts) > 0\nr = exec(sb,'echo ok'); assert r.rc == 0 && trim(r.out) == 'ok' && trim(exec(sb,\"stat -c '%u %a' \"+AgentPath).out) == '0 755'\nassert landlockCheck(a, execVia(sb), t) == nil"
+          }
         },
         {
-          "id": "16-REQ-3.4",
+          "id": "REQ-3.4",
           "pattern": "state_driven",
           "condition": "an agent started from the derived image reports Agent().Landlock.ABI of 2 or more",
           "system": "derived image",
           "action": "pass the same Landlock check as the base image",
-          "contract": "through proxy execute, `touch /var/tmp/agentkit-probe` exits non-zero and `touch \"$HOME/p\" /tmp/p /workspace/p` exits 0"
+          "contract": "through proxy execute, `touch /var/tmp/agentkit-probe` exits non-zero and `touch \"$HOME/p\" /tmp/p /workspace/p` exits 0",
+          "check": {
+            "same_as": "REQ-3.3"
+          }
         }
       ]
     },
     {
-      "id": "16-REQ-4",
+      "id": "REQ-4",
       "title": "The build-time version stamp",
       "rationale": "An explicit build argument stamps the same version locally and in CI, without .git in the context or a tag-aware checkout (DD 4).",
       "criteria": [
         {
-          "id": "16-REQ-4.1",
+          "id": "REQ-4.1",
           "pattern": "ubiquitous",
           "system": "buildver package",
           "action": "declare an unexported package variable `stamp string` with no initializer, set only through `-ldflags -X`, and leave the package's exported API unchanged",
-          "contract": "`go doc -all ./sandbox/internal/buildver` lists the same exported identifiers as before this spec"
+          "contract": "`go doc -all ./sandbox/internal/buildver` lists the same exported identifiers as before this spec",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the non-test .go files of sandbox/internal/buildver parsed with go/parser"
+            ],
+            "pseudocode": "files = parseDir('sandbox/internal/buildver', nonTest)\nassert exportedTopLevel(files) == {'Version'}\nv = findVar(files, 'stamp'); assert v.Type == 'string' && len(v.Values) == 0\nassert no AssignStmt with LHS ident 'stamp' in files"
+          }
         },
         {
-          "id": "16-REQ-4.2",
+          "id": "REQ-4.2",
           "pattern": "state_driven",
           "condition": "stamp is non-empty",
           "system": "buildver package",
           "action": "return stamp from Version()",
-          "contract": "with stamp set to \"v0.6.0\", Version() returns \"v0.6.0\""
+          "contract": "with stamp set to \"v0.6.0\", Version() returns \"v0.6.0\"",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an in-package test file sandbox/internal/buildver/stamp_test.go (package buildver) that saves stamp and restores it with t.Cleanup, and does not call t.Parallel",
+              "an independent oracle in the test: debug.ReadBuildInfo, the github.com/agent-fox-dev/agentkit-go entry from Main or Deps, its Version, or \"(devel)\" when that is absent or empty"
+            ],
+            "pseudocode": "saved := stamp; t.Cleanup(func(){ stamp = saved })\nstamp = \"v0.6.0\"; assert Version() == \"v0.6.0\"\nstamp = \"\"; assert Version() == oracleFromBuildInfo()"
+          }
         },
         {
-          "id": "16-REQ-4.3",
+          "id": "REQ-4.3",
           "pattern": "state_driven",
           "condition": "stamp is empty",
           "system": "buildver package",
           "action": "return from Version() exactly what 13 specified: the agentkit-go module version from runtime/debug build info, or `(devel)` when that is absent or empty",
-          "contract": "after the in-package test clears stamp, Version() returns the build-info value; a host binary that never sets the stamp reports the same version as before this spec"
+          "contract": "after the in-package test clears stamp, Version() returns the build-info value; a host binary that never sets the stamp reports the same version as before this spec",
+          "check": {
+            "same_as": "REQ-4.2"
+          }
         },
         {
-          "id": "16-REQ-4.4",
+          "id": "REQ-4.4",
           "pattern": "event_driven",
           "condition": "agentkit-sandboxd is built with `-ldflags \"-X github.com/agent-fox-dev/agentkit-go/sandbox/internal/buildver.stamp=v9.8.7\"` and run with --version",
           "system": "agentkit-sandboxd",
           "action": "print the stamped version",
-          "contract": "stdout is `agentkit-sandboxd v9.8.7 (protocol <ProtocolMajor>.<ProtocolMinor>)`, formatted from sandbox.ProtocolMajor and sandbox.ProtocolMinor, and the exit code is 0; the command test that builds it into a temp dir skips under -short"
+          "contract": "stdout is `agentkit-sandboxd v9.8.7 (protocol <ProtocolMajor>.<ProtocolMinor>)`, formatted from sandbox.ProtocolMajor and sandbox.ProtocolMinor, and the exit code is 0; the command test that builds it into a temp dir skips under -short",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the go toolchain on PATH; the test is skipped under -short",
+              "the module path read from `go list -m` equals github.com/agent-fox-dev/agentkit-go"
+            ],
+            "pseudocode": "if testing.Short(): skip\nbin = tmp+'/agentkit-sandboxd'\nrun('go','build','-ldflags','-X '+mod+'/sandbox/internal/buildver.stamp=v9.8.7','-o',bin,'./sandbox/cmd/agentkit-sandboxd')\nout, code = run(bin,'--version')\nassert code == 0 && out == sprintf('agentkit-sandboxd v9.8.7 (protocol %d.%d)\\n', ProtocolMajor, ProtocolMinor)"
+          }
         },
         {
-          "id": "16-REQ-4.5",
+          "id": "REQ-4.5",
           "pattern": "event_driven",
           "condition": "an image is built with AGENTKIT_VERSION empty",
           "system": "image build",
           "action": "produce an agent that reports `(devel)`, because the context carries no .git and the build uses -buildvcs=false",
-          "contract": "Agent().Version is \"(devel)\" and `--version` prints `agentkit-sandboxd (devel) (protocol M.N)`"
+          "contract": "Agent().Version is \"(devel)\" and `--version` prints `agentkit-sandboxd (devel) (protocol M.N)`",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "both images built by `make sandbox-images-test` with AGENTKIT_VERSION left empty, so AGENTKIT_SANDBOX_IMAGE_VERSION is empty and the expected version is (devel)",
+              "an engine and both image variables set"
+            ],
+            "pseudocode": "assert getenv('AGENTKIT_SANDBOX_IMAGE_VERSION') == ''\nassert harness.start(t, base).Agent().Version == '(devel)'\nfor img in [base, overlay]: out, code = run(engine,'run','--rm','--entrypoint',AgentPath,img,'--version'); assert code == 0 && out == sprintf('agentkit-sandboxd (devel) (protocol %d.%d)\\n', ProtocolMajor, ProtocolMinor)\n  assert inspectLabels(engine,img).get('org.opencontainers.image.version','') == ''"
+          }
         },
         {
-          "id": "16-REQ-4.6",
+          "id": "REQ-4.6",
           "pattern": "event_driven",
           "condition": "an image is built with AGENTKIT_VERSION set to a version such as v0.6.0",
           "system": "image build",
           "action": "produce an agent that reports that version in Hello and in --version",
-          "contract": "Agent().Version is \"v0.6.0\" and `--version` prints `agentkit-sandboxd v0.6.0 (protocol M.N)`"
+          "contract": "Agent().Version is \"v0.6.0\" and `--version` prints `agentkit-sandboxd v0.6.0 (protocol M.N)`",
+          "check": {
+            "same_as": "PATH-1"
+          }
         }
       ]
     },
     {
-      "id": "16-REQ-5",
+      "id": "REQ-5",
       "title": "Image references in package sandbox",
       "rationale": "The publishing pipeline and the code that names the images must agree, and a build with no published image must get an explicit error, not a nearby release that might fail the digest check.",
+      "system": "sandbox package",
       "criteria": [
         {
-          "id": "16-REQ-5.1",
+          "id": "REQ-5.1",
           "pattern": "ubiquitous",
-          "system": "sandbox package",
-          "action": "export from sandbox/image.go the constants BaseImageRepo = \"quay.io/agentfox/agentkit-sandbox\" and OverlayImageRepo = \"quay.io/agentfox/agentkit-sandboxd\", and the variable ErrNoPublishedImage = errors.New(\"sandbox: no published image for this agentkit-go version\")"
+          "action": "export from sandbox/image.go the constants BaseImageRepo = \"quay.io/agentfox/agentkit-sandbox\" and OverlayImageRepo = \"quay.io/agentfox/agentkit-sandboxd\", and the variable ErrNoPublishedImage = errors.New(\"sandbox: no published image for this agentkit-go version\")",
+          "contract": "BaseImageRepo == \"quay.io/agentfox/agentkit-sandbox\", OverlayImageRepo == \"quay.io/agentfox/agentkit-sandboxd\" and ErrNoPublishedImage.Error() == \"sandbox: no published image for this agentkit-go version\"; for v1.2.3 the builder yields (\"quay.io/agentfox/agentkit-sandbox:1.2.3\", nil) and (\"quay.io/agentfox/agentkit-sandboxd:1.2.3\", nil); for v1.2.3-rc.1 the tags are 1.2.3-rc.1; DefaultImage() and OverlayImage() return exactly what the builder returns for buildver.Version() with BaseImageRepo and OverlayImageRepo respectively, reference and error alike",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an internal test in package sandbox that can call the unexported reference builder"
+            ],
+            "pseudocode": "assert BaseImageRepo == 'quay.io/agentfox/agentkit-sandbox' && OverlayImageRepo == 'quay.io/agentfox/agentkit-sandboxd'\nassert ErrNoPublishedImage.Error() == 'sandbox: no published image for this agentkit-go version'\nassert build(BaseImageRepo,'v1.2.3') == ('quay.io/agentfox/agentkit-sandbox:1.2.3', nil)\nassert build(OverlayImageRepo,'v1.2.3') == ('quay.io/agentfox/agentkit-sandboxd:1.2.3', nil)\nref, err = DefaultImage(); wref, werr = build(BaseImageRepo, buildver.Version()); assert ref == wref && (err == nil) == (werr == nil)"
+          }
         },
         {
-          "id": "16-REQ-5.2",
+          "id": "REQ-5.2",
           "pattern": "event_driven",
           "condition": "ImageTag receives a canonical release version",
-          "system": "sandbox package",
           "action": "return the version without its leading `v`",
-          "contract": "ImageTag(\"v0.6.0\") returns (\"0.6.0\", true) and ImageTag(\"v1.2.3-rc.1\") returns (\"1.2.3-rc.1\", true)"
+          "contract": "ImageTag(\"v0.6.0\") returns (\"0.6.0\", true) and ImageTag(\"v1.2.3-rc.1\") returns (\"1.2.3-rc.1\", true)",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the table test for ImageTag in sandbox/image_test.go"
+            ],
+            "pseudocode": "for v, want in {'v0.6.0':'0.6.0','v1.2.3-rc.1':'1.2.3-rc.1','v10.20.30':'10.20.30','v0.0.0':'0.0.0','v1.0.0-alpha':'1.0.0-alpha','v1.2.3-rc.20240102150405':'1.2.3-rc.20240102150405'}:\n  tag, ok = ImageTag(v); assert ok && tag == want"
+          }
         },
         {
-          "id": "16-REQ-5.3",
+          "id": "REQ-5.3",
           "pattern": "unwanted",
           "condition": "the version passed to ImageTag is empty, is `(devel)`, carries `+` build metadata (including +dirty and +incompatible), lacks the leading `v`, has a leading zero in a numeric part, or is otherwise not canonical",
-          "system": "sandbox package",
           "action": "refuse the version",
-          "contract": "ImageTag returns (\"\", false)"
+          "contract": "ImageTag returns (\"\", false)",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the same table test for ImageTag"
+            ],
+            "pseudocode": "for v in refusals: tag, ok = ImageTag(v); assert tag == '' && ok == false"
+          }
         },
         {
-          "id": "16-REQ-5.4",
+          "id": "REQ-5.4",
           "pattern": "unwanted",
           "condition": "the version passed to ImageTag is a pseudo-version in any of its three forms",
-          "system": "sandbox package",
           "action": "refuse the version",
-          "contract": "ImageTag returns (\"\", false) for v0.0.0-20240102150405-abcdefabcdef, v1.2.4-0.20240102150405-abcdefabcdef and v1.2.3-pre.0.20240102150405-abcdefabcdef"
+          "contract": "ImageTag returns (\"\", false) for v0.0.0-20240102150405-abcdefabcdef, v1.2.4-0.20240102150405-abcdefabcdef and v1.2.3-pre.0.20240102150405-abcdefabcdef",
+          "check": {
+            "same_as": "REQ-5.3"
+          }
         },
         {
-          "id": "16-REQ-5.5",
+          "id": "REQ-5.5",
           "pattern": "event_driven",
           "condition": "ImageTag accepts the version that buildver.Version() reports",
-          "system": "sandbox package",
           "action": "return BaseImageRepo + \":\" + tag from DefaultImage and OverlayImageRepo + \":\" + tag from OverlayImage, both thin wrappers over one unexported function that takes the version as a parameter",
-          "contract": "for version v1.2.3 the unexported builder yields (\"quay.io/agentfox/agentkit-sandbox:1.2.3\", nil) and (\"quay.io/agentfox/agentkit-sandboxd:1.2.3\", nil)"
+          "contract": "for version v1.2.3 the unexported builder yields (\"quay.io/agentfox/agentkit-sandbox:1.2.3\", nil) and (\"quay.io/agentfox/agentkit-sandboxd:1.2.3\", nil)",
+          "check": {
+            "same_as": "REQ-5.1"
+          }
         },
         {
-          "id": "16-REQ-5.6",
+          "id": "REQ-5.6",
           "pattern": "unwanted",
           "condition": "ImageTag refuses the build's version",
-          "system": "sandbox package",
           "action": "return an empty reference and an error from DefaultImage and OverlayImage",
-          "contract": "errors.Is(err, ErrNoPublishedImage) is true, and the message names the version, Spec.Image and `make sandbox-images`"
+          "contract": "errors.Is(err, ErrNoPublishedImage) is true, and the message names the version, Spec.Image and `make sandbox-images`",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the same internal test in package sandbox"
+            ],
+            "pseudocode": "for repo in [BaseImageRepo, OverlayImageRepo]: for v in ['(devel)','','v1.2.4-0.20240102150405-abcdefabcdef','v1.2.3+dirty']:\n  ref, err = build(repo, v)\n  assert ref == '' && errors.Is(err, ErrNoPublishedImage)\n  assert contains(err.Error(), v) && contains(err.Error(), 'Spec.Image') && contains(err.Error(), 'make sandbox-images')"
+          }
         },
         {
-          "id": "16-REQ-5.7",
+          "id": "REQ-5.7",
           "pattern": "ubiquitous",
-          "system": "sandbox package",
           "action": "return \"COPY --from=\" + ref + \" \" + AgentPath + \" \" + path.Dir(AgentPath) + \"/\" from OverlayCopyLine(ref)",
-          "contract": "OverlayCopyLine(\"x:1\") returns `COPY --from=x:1 /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/`"
+          "contract": "OverlayCopyLine(\"x:1\") returns `COPY --from=x:1 /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/`",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "sandbox.AgentPath == \"/usr/local/libexec/agentkit-sandboxd\""
+            ],
+            "pseudocode": "assert OverlayCopyLine('x:1') == 'COPY --from=x:1 /usr/local/libexec/agentkit-sandboxd /usr/local/libexec/'\nref = 'quay.io/agentfox/agentkit-sandboxd:0.6.0'\nassert OverlayCopyLine(ref) == 'COPY --from='+ref+' '+AgentPath+' '+path.Dir(AgentPath)+'/' && !contains(OverlayCopyLine(ref), '\\n')"
+          }
         },
         {
-          "id": "16-REQ-5.8",
+          "id": "REQ-5.8",
           "pattern": "ubiquitous",
-          "system": "sandbox package",
-          "action": "for any string v for which ImageTag(v) returns ok, guarantee that \"v\" + tag equals v, that v contains no `+`, and that v is not a pseudo-version"
+          "action": "for any string v for which ImageTag(v) returns ok, guarantee that \"v\" + tag equals v, that v contains no `+`, and that v is not a pseudo-version",
+          "contract": "whenever ImageTag(v) returns ok, \"v\" + tag == v and tag is non-empty; whenever ImageTag(v) returns ok, v contains no + and the pseudo-version oracle rejects it; whenever ImageTag(v) returns not ok, tag is \"\"; two calls with the same input return the same result",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "math/rand/v2 with a fixed seed and 5000 iterations",
+              "an independent pseudo-version oracle: the prerelease matches (^|\\.)[0-9]{14}-[0-9a-f]{12}$"
+            ],
+            "pseudocode": "r = rand.New(rand.NewPCG(1, 2))\nfor i in 0..5000:\n  v = gen(r); tag, ok = ImageTag(v)\n  if ok: assert 'v'+tag == v && tag != '' && !contains(v,'+') && !isPseudoOracle(v)\n  else: assert tag == ''\n  assert ImageTag(v) == (tag, ok)"
+          }
         }
       ]
     },
     {
-      "id": "16-REQ-6",
+      "id": "REQ-6",
       "title": "Make targets",
       "rationale": "One make target builds both images for the host platform with podman or docker, and a second runs the end-to-end tests against them, outside make check.",
+      "system": "Makefile",
       "criteria": [
         {
-          "id": "16-REQ-6.1",
+          "id": "REQ-6.1",
           "pattern": "ubiquitous",
-          "system": "Makefile",
-          "action": "define these variables, each overridable on the make command line: CONTAINER (podman when on PATH, else docker); SANDBOX_BASE_IMAGE (quay.io/agentfox/agentkit-sandbox); SANDBOX_OVERLAY_IMAGE (quay.io/agentfox/agentkit-sandboxd); SANDBOX_IMAGE_TAG (dev); SANDBOX_PLATFORM (empty); AGENTKIT_VERSION (empty); AGENTKIT_REVISION (`git rev-parse HEAD`, or empty outside a checkout)"
+          "action": "define these variables, each overridable on the make command line: CONTAINER (podman when on PATH, else docker); SANDBOX_BASE_IMAGE (quay.io/agentfox/agentkit-sandbox); SANDBOX_OVERLAY_IMAGE (quay.io/agentfox/agentkit-sandboxd); SANDBOX_IMAGE_TAG (dev); SANDBOX_PLATFORM (empty); AGENTKIT_VERSION (empty); AGENTKIT_REVISION (`git rev-parse HEAD`, or empty outside a checkout)",
+          "contract": "with PATH=A the build commands start with podman; with PATH=B they start with docker; by default the tags are quay.io/agentfox/agentkit-sandbox:latest and quay.io/agentfox/agentkit-sandboxd:latest, no --platform is passed, AGENTKIT_VERSION is passed empty, and AGENTKIT_REVISION is passed as the output of `git rev-parse HEAD` (checked only when git is found); with the overrides the commands use docker, example.com/b:t1, example.com/o:t1, --platform linux/arm64, AGENTKIT_VERSION=v1.0.0 and AGENTKIT_REVISION=abc; in the temp directory outside a checkout, AGENTKIT_REVISION is passed empty",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "make on PATH, else the test skips; make is invoked by absolute path",
+              "stub directory A holding executable podman and docker stubs, stub directory B holding only a docker stub, each also holding a symlink to git when git is found",
+              "a temp directory outside any git checkout holding a copy of the Makefile"
+            ],
+            "pseudocode": "out = makeN('sandbox-images', PATH=A); assert all(buildLines(out) startswith 'podman ')\nout = makeN('sandbox-images', PATH=B); assert all(buildLines(out) startswith 'docker ')\nassert has(out,'-t quay.io/agentfox/agentkit-sandbox:latest') && has(out,'-t quay.io/agentfox/agentkit-sandboxd:latest') && !has(out,'--platform') && buildArg(out,'AGENTKIT_VERSION') == '' && buildArg(out,'AGENTKIT_REVISION') == gitRevParseHEAD()\nout = makeN('sandbox-images', PATH=A, overrides); assert uses docker, example.com/b:t1, example.com/o:t1, --platform linux/arm64, v1.0.0, abc\nout = makeN('sandbox-images', dir=tmpCopy, PATH=A); assert buildArg(out,'AGENTKIT_REVISION') == ''"
+          }
         },
         {
-          "id": "16-REQ-6.2",
+          "id": "REQ-6.2",
           "pattern": "event_driven",
           "condition": "`make sandbox-images` runs",
-          "system": "Makefile",
           "action": "run `$(CONTAINER) build -f sandbox/images/Containerfile --target base` and then the same command with `--target overlay`, from the repository root. Each passes `--build-arg AGENTKIT_VERSION` and `--build-arg AGENTKIT_REVISION`; the two builds tag $(SANDBOX_BASE_IMAGE):$(SANDBOX_IMAGE_TAG) and $(SANDBOX_OVERLAY_IMAGE):$(SANDBOX_IMAGE_TAG) respectively; `--platform $(SANDBOX_PLATFORM)` is passed only when SANDBOX_PLATFORM is non-empty",
-          "contract": "`make -n sandbox-images` prints the base build before the overlay build, with exactly those arguments"
+          "contract": "`make -n sandbox-images` prints the base build before the overlay build, with exactly those arguments",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "make on PATH; PATH set to stub directory A from TS-16-18"
+            ],
+            "pseudocode": "L = buildLines(makeN('sandbox-images', PATH=A)); assert len(L) == 2 && has(L[0],'--target base') && has(L[1],'--target overlay')\nfor l in L: assert has(l,'podman build') && has(l,'-f sandbox/images/Containerfile') && has(l,'--build-arg AGENTKIT_VERSION=') && has(l,'--build-arg AGENTKIT_REVISION=') && contextIsRoot(l) && !has(l,'--platform')\nassert tags(L[0]) == ['quay.io/agentfox/agentkit-sandbox:latest'] && tags(L[1]) == ['quay.io/agentfox/agentkit-sandboxd:latest']\nL = buildLines(makeN('sandbox-images', PATH=A, SANDBOX_PLATFORM='linux/amd64')); assert all(has(l,'--platform linux/amd64') or has(l,'--platform=linux/amd64'))"
+          }
         },
         {
-          "id": "16-REQ-6.3",
+          "id": "REQ-6.3",
           "pattern": "unwanted",
           "condition": "CONTAINER names no command on PATH, which with the default means neither podman nor docker is installed",
-          "system": "Makefile",
           "action": "fail `make sandbox-images` before running any build",
-          "contract": "make exits non-zero with a message naming podman, docker and the CONTAINER variable, and no build command runs"
+          "contract": "make exits non-zero with a message naming podman, docker and the CONTAINER variable, and no build command runs",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "make on PATH; stub directory C holding only a git symlink, so neither podman nor docker is found",
+              "stub directory A from TS-16-18, whose engine stubs append their argv to a marker file"
+            ],
+            "pseudocode": "for (path, extra) in [(C, {}), (A, {CONTAINER:'agentkit-no-such-engine'})]:\n  out, code = make('sandbox-images', PATH=path, extra)\n  assert code != 0 && has(out,'podman') && has(out,'docker') && has(out,'CONTAINER') && !has(out,'build -f sandbox/images/Containerfile')\nassert !exists(marker)"
+          }
         },
         {
-          "id": "16-REQ-6.4",
+          "id": "REQ-6.4",
           "pattern": "event_driven",
           "condition": "`make sandbox-images-test` runs",
-          "system": "Makefile",
           "action": "build both images through its sandbox-images prerequisite, then run `go test -count=1 -v ./sandbox/images/` with AGENTKIT_SANDBOX_BASE_IMAGE and AGENTKIT_SANDBOX_OVERLAY_IMAGE set to the two tagged references, AGENTKIT_SANDBOX_IMAGE_VERSION set to AGENTKIT_VERSION, and AGENTKIT_CONTAINER set to CONTAINER",
-          "contract": "make exits with go test's status"
+          "contract": "make exits with go test's status",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "make on PATH; PATH set to stub directory A from TS-16-18, whose engine stubs append their argv to a marker file"
+            ],
+            "pseudocode": "out = makeN('sandbox-images-test', PATH=A); g = lineWith(out,'go test -count=1 -v ./sandbox/images/')\nassert idx(g) > idx(buildLines(out)[1]) && env(g) == {BASE:'quay.io/agentfox/agentkit-sandbox:latest', OVERLAY:'quay.io/agentfox/agentkit-sandboxd:latest', VERSION:'', AGENTKIT_CONTAINER:'podman'}\nassert !startsWith(recipe(g),'-') && !has(g,'|| true') && !has(g,'; true')\nassert envOf(lineWith(makeN('sandbox-images-test', PATH=A, AGENTKIT_VERSION='v0.6.0'),'go test'))['AGENTKIT_SANDBOX_IMAGE_VERSION'] == 'v0.6.0'\nh = make('help'); assert describedLine(h,'sandbox-images') && describedLine(h,'sandbox-images-test')\nassert prereqs('check') == ['fmt','vet','lint','test']; c = makeN('check', PATH=A); assert !has(c,'podman') && !has(c,'docker') && !has(c,'build -f sandbox/images') && !exists(marker)"
+          }
         },
         {
-          "id": "16-REQ-6.5",
+          "id": "REQ-6.5",
           "pattern": "ubiquitous",
-          "system": "Makefile",
           "action": "give sandbox-images and sandbox-images-test each a `## ` help comment, and keep both out of the prerequisites of check",
-          "contract": "`make help` lists both targets; `make -n check` prints no container engine command"
+          "contract": "`make help` lists both targets; `make -n check` prints no container engine command",
+          "check": {
+            "same_as": "REQ-6.4"
+          }
         }
       ]
     },
     {
-      "id": "16-REQ-7",
+      "id": "REQ-7",
       "title": "End-to-end image tests",
       "rationale": "The images are checked over the real agent protocol before release. The tests are skipped, not failed, where no engine or image is available (PRD 11).",
       "criteria": [
         {
-          "id": "16-REQ-7.1",
+          "id": "REQ-7.1",
           "pattern": "unwanted",
           "condition": "go test runs with -short, no container engine is found, or the image variable a test needs is unset",
           "system": "image tests",
           "action": "skip the test instead of failing it",
-          "contract": "the test reports SKIP with a message naming `make sandbox-images-test`, and go test exits 0"
+          "contract": "the test reports SKIP with a message naming `make sandbox-images-test`, and go test exits 0",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the go toolchain; the test skips when AGENTKIT_IMGTEST_NESTED is set and sets it in every subprocess, so it never recurses",
+              "a directory D holding only a symlink to the go binary, and stub directory A holding podman and docker stubs that append their argv to a marker file"
+            ],
+            "pseudocode": "if getenv('AGENTKIT_IMGTEST_NESTED') != '': skip\nfor env in [{args:'-short', BASE:'dummy:1', OVERLAY:'dummy:2'}, {PATH:D, CGO_ENABLED:'0', BASE:'dummy:1', OVERLAY:'dummy:2'}, {PATH:A+':'+PATH, BASE:unset, OVERLAY:unset}]:\n  out, code = goTest('-count=1','-v','-run',imageTests,'./sandbox/images/', env + {AGENTKIT_IMGTEST_NESTED:'1'})\n  assert code == 0 && skips(out) == imageTests && all(has(m,'make sandbox-images-test') for m in skipMessages(out))\nassert !exists(marker)"
+          }
         },
         {
-          "id": "16-REQ-7.2",
+          "id": "REQ-7.2",
           "pattern": "ubiquitous",
           "system": "image tests",
-          "action": "use the container engine named by AGENTKIT_CONTAINER, or, when it is unset, the first of podman and docker found on PATH"
+          "action": "use the container engine named by AGENTKIT_CONTAINER, or, when it is unset, the first of podman and docker found on PATH",
+          "contract": "the results are docker, podman, docker, not found and not found respectively; a not-found result is what the skip logic of 16-REQ-7.1 treats as no engine",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the engine-selection helper in sandbox/images, called with an injected getenv and lookPath"
+            ],
+            "pseudocode": "assert pick(env{AGENTKIT_CONTAINER:'docker'}, found{podman,docker}) == 'docker'\nassert pick(env{}, found{podman,docker}) == 'podman'\nassert pick(env{}, found{docker}) == 'docker'\nassert pick(env{}, found{}) == notFound\nassert pick(env{AGENTKIT_CONTAINER:'podman'}, found{docker}) == notFound"
+          }
         },
         {
-          "id": "16-REQ-7.3",
+          "id": "REQ-7.3",
           "pattern": "event_driven",
           "condition": "the harness starts an agent from an image",
           "system": "harness",
           "action": "run `$CONTAINER run --rm -i --name agentkit-imgtest-<random hex> --network none --env HOME=/home/agentkit --env TMPDIR=/tmp --entrypoint <sandbox.AgentPath> <image> <sandbox.AgentArgs(spec)…>` with spec {Network: NetworkNone, TTL: 10m, Workdir: \"/workspace\"}. Then wrap the child's pipes with stdioconn.New and attach with attach.Dial, whose Destroy kills the child and runs `$CONTAINER rm -f <name>`",
-          "contract": "attach.Dial returns a live sandbox.Sandbox"
+          "contract": "attach.Dial returns a live sandbox.Sandbox",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the harness's argument builder in sandbox/images, called without starting anything",
+              "an engine found per 16-REQ-7.2 and AGENTKIT_SANDBOX_BASE_IMAGE naming a base image built by make sandbox-images; otherwise the test skips per 16-REQ-7.1",
+              "the expected version from AGENTKIT_SANDBOX_IMAGE_VERSION, or (devel) when empty"
+            ],
+            "pseudocode": "argv1, name1, spec = runArgs('podman','img:1'); argv2, name2, _ = runArgs('podman','img:1')\nassert spec == sandbox.Spec{Network: sandbox.NetworkNone, TTL: 10*time.Minute, Workdir: '/workspace'}\nassert argv1 == ['podman','run','--rm','-i','--name',name1,'--network','none','--env','HOME=/home/agentkit','--env','TMPDIR=/tmp','--entrypoint',sandbox.AgentPath,'img:1'] + sandbox.AgentArgs(spec)\nassert match('^agentkit-imgtest-[0-9a-f]{8,}$', name1) && name1 != name2\nsb = harness.start(t, base); a = sb.Agent()\nassert a.Version == expected && a.ProtocolMajor == sandbox.ProtocolMajor && a.Workdir == '/workspace' && a.OutlineBackend == 'tree-sitter' && a.Git\nts, err = sb.Tools(ctx, sandbox.ToolOptions{}); assert err == nil && len(ts) > 0 && names(ts) >= {'execute','write_file'}"
+          }
         },
         {
-          "id": "16-REQ-7.4",
+          "id": "REQ-7.4",
           "pattern": "event_driven",
           "condition": "the harness has attached to an agent started from the base image or a derived image",
           "system": "image tests",
           "action": "require Agent().Version to equal the expected version, Agent().ProtocolMajor to equal sandbox.ProtocolMajor, and Tools(ctx, ToolOptions{}) to pass the digest check",
-          "contract": "Tools returns a nil error and a non-empty tool list; an ErrToolMismatch or a version difference fails the test with both values in the message"
+          "contract": "Tools returns a nil error and a non-empty tool list; an ErrToolMismatch or a version difference fails the test with both values in the message",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the expected-version helper and the common agent check helpers in sandbox/images, called with injected values"
+            ],
+            "pseudocode": "assert expected('') == '(devel)' && expected('v0.6.0') == 'v0.6.0'\ne = checkFacts(AgentInfo{Version:'v0.6.0', ProtocolMajor: sandbox.ProtocolMajor}, '(devel)'); assert has(e,'v0.6.0') && has(e,'(devel)')\ne = checkFacts(AgentInfo{Version:'(devel)', ProtocolMajor: sandbox.ProtocolMajor+1}, '(devel)'); assert has(e, itoa(sandbox.ProtocolMajor)) && has(e, itoa(sandbox.ProtocolMajor+1))\nassert checkFacts(AgentInfo{Version:'(devel)', ProtocolMajor: sandbox.ProtocolMajor}, '(devel)') == nil\nassert has(checkTools(nil, fmt.Errorf('%w: x', sandbox.ErrToolMismatch)), sandbox.ErrToolMismatch.Error()) && checkTools([], nil) != nil"
+          }
         },
         {
-          "id": "16-REQ-7.5",
+          "id": "REQ-7.5",
           "pattern": "unwanted",
           "condition": "the container fails to start, attach.Dial fails, or an assertion fails",
           "system": "image tests",
           "action": "fail the test, report the engine's stderr, and still run cleanup",
-          "contract": "the test fails with the engine's stderr in its output, and no container named agentkit-imgtest-<hex> from that test remains"
+          "contract": "the test fails with the engine's stderr in its output, and no container named agentkit-imgtest-<hex> from that test remains",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an engine and AGENTKIT_SANDBOX_BASE_IMAGE set, so this runs only in the opt-in run",
+              "the harness's start function, which returns its error instead of calling t.Fatal"
+            ],
+            "pseudocode": "h, err = harness.startErr(ctx, engine, 'agentkit-imgtest-INVALID:Ref')\nassert err != nil && has(err.Error(), 'agentkit-imgtest-INVALID') && stderrPart(err) != ''\nh.cleanup(); assert trim(run(engine,'ps','-a','--filter','name='+h.name,'--format','{{.Names}}').out) == ''\nh.cleanup()"
+          }
         },
         {
-          "id": "16-REQ-7.6",
+          "id": "REQ-7.6",
           "pattern": "ubiquitous",
           "system": "image tests",
           "action": "close the sandbox, remove the container and remove every image the test built during cleanup, whether the test passes or fails",
-          "contract": "after each test, `$CONTAINER ps -a` lists no container named agentkit-imgtest-* from that test, and the derived image reference is absent from `$CONTAINER images`"
+          "contract": "after each test, `$CONTAINER ps -a` lists no container named agentkit-imgtest-* from that test, and the derived image reference is absent from `$CONTAINER images`",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an engine and both image variables set"
+            ],
+            "pseudocode": "h = harness.start(ctx, engine, base); name = h.name; h.cleanup()\nassert exec(h.sb,'true').err != nil\nassert eventually(10s, trim(run(engine,'ps','-a','--filter','name='+name,'--format','{{.Names}}').out) == '')\nref, c = buildDerived(engine, base, overlay); c(); assert run(engine,'image','inspect',ref).code != 0\nassert run(engine,'image','inspect',base).code == 0 && run(engine,'image','inspect',overlay).code == 0"
+          }
         },
         {
-          "id": "16-REQ-7.7",
+          "id": "REQ-7.7",
           "pattern": "state_driven",
           "condition": "the attached agent reports Agent().Landlock.ABI below 2",
           "system": "image tests",
           "action": "log Agent().Landlock.Note and skip only the Landlock check",
-          "contract": "the test does not run the /var/tmp probe, and its outcome depends only on the other assertions"
+          "contract": "the test does not run the /var/tmp probe, and its outcome depends only on the other assertions",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the Landlock check helper in sandbox/images, called with an AgentInfo, a recording command runner that returns scripted exit codes, and a recording logger"
+            ],
+            "pseudocode": "for info in [{ABI:0,Note:'landlock unavailable'},{ABI:1,Note:'abi 1'}]: r, l = rec(), rec(); assert landlockCheck(info, r, l) == nil && r.cmds == [] && has(l.text, info.Note)\nr = rec(exits{'/var/tmp':1, others:0}); assert landlockCheck({ABI:2}, r, l) == nil && r.cmds == ['touch /var/tmp/agentkit-probe', 'touch \"$HOME/p\" /tmp/p /workspace/p']\nr = rec(exits{all:0}); assert has(landlockCheck({ABI:2}, r, l), '/var/tmp')"
+          }
         }
       ]
     },
     {
-      "id": "16-REQ-8",
+      "id": "REQ-8",
       "title": "Offline checks in make check",
       "rationale": "make check must stay offline and engine-free (Goal 6), while one constant pair and a file-reading test keep the Containerfile, the Makefile and the workflow from drifting apart.",
       "criteria": [
         {
-          "id": "16-REQ-8.1",
+          "id": "REQ-8.1",
           "pattern": "ubiquitous",
           "system": "consistency test",
-          "action": "assert that the Containerfile has stages named base and overlay, that the overlay stage starts FROM scratch, that both stages name sandbox.AgentPath as the agent's COPY destination and in ENTRYPOINT, and that it carries `-X <module>/sandbox/internal/buildver.stamp=`, with <module> read from go.mod"
+          "action": "assert that the Containerfile has stages named base and overlay, that the overlay stage starts FROM scratch, that both stages name sandbox.AgentPath as the agent's COPY destination and in ENTRYPOINT, and that it carries `-X <module>/sandbox/internal/buildver.stamp=`, with <module> read from go.mod",
+          "contract": "stages named base and overlay exist, and the overlay stage's FROM line is `FROM scratch`; the base and overlay stages each have a COPY --from=<build stage> whose destination is sandbox.AgentPath, and an ENTRYPOINT in JSON form equal to [sandbox.AgentPath]; the overlay stage's only COPY --from names the stage whose go build sets CGO_ENABLED=0, and the base stage's names the stage whose go build sets CGO_ENABLED=1; the Containerfile contains \"-X \" + <module from go.mod> + \"/sandbox/internal/buildver.stamp=\"",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "sandbox/images/consistency_test.go reads sandbox/images/Containerfile and go.mod from the module root and splits the Containerfile into stages at each FROM line, taking the name after AS (case-insensitive)",
+              "no container engine is used"
+            ],
+            "pseudocode": "st = stages(read('sandbox/images/Containerfile')); mod = moduleLine(read('go.mod'))\nassert 'base' in st && 'overlay' in st && st['overlay'].from == 'scratch'\nfor s in ['base','overlay']: assert copyDest(st[s]) == AgentPath && entrypoint(st[s]) == [AgentPath]\nassert copyFrom(st['overlay']) == stageWith('CGO_ENABLED=0') && copyFrom(st['base']) == stageWith('CGO_ENABLED=1')\nassert contains(text, '-X '+mod+'/sandbox/internal/buildver.stamp=')"
+          }
         },
         {
-          "id": "16-REQ-8.2",
+          "id": "REQ-8.2",
           "pattern": "ubiquitous",
           "system": "consistency test",
-          "action": "assert that the Makefile's default SANDBOX_BASE_IMAGE and SANDBOX_OVERLAY_IMAGE equal sandbox.BaseImageRepo and sandbox.OverlayImageRepo, and that the release workflow names both repositories and sandbox/images/Containerfile"
+          "action": "assert that the Makefile's default SANDBOX_BASE_IMAGE and SANDBOX_OVERLAY_IMAGE equal sandbox.BaseImageRepo and sandbox.OverlayImageRepo, and that the release workflow names both repositories and sandbox/images/Containerfile",
+          "contract": "the default assigned to SANDBOX_BASE_IMAGE in the Makefile equals sandbox.BaseImageRepo, and the default of SANDBOX_OVERLAY_IMAGE equals sandbox.OverlayImageRepo; the workflow contains BaseImageRepo as a whole token, OverlayImageRepo as a whole token, and sandbox/images/Containerfile",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the consistency test reads Makefile and .github/workflows/sandbox-images.yml",
+              "repository names are matched as whole tokens: a match must be followed by a character outside [A-Za-z0-9_.-], because BaseImageRepo is a prefix of OverlayImageRepo"
+            ],
+            "pseudocode": "mk = read('Makefile'); assert defaultOf(mk,'SANDBOX_BASE_IMAGE') == BaseImageRepo && defaultOf(mk,'SANDBOX_OVERLAY_IMAGE') == OverlayImageRepo\nwf = read('.github/workflows/sandbox-images.yml')\nassert hasToken(wf, BaseImageRepo) && hasToken(wf, OverlayImageRepo) && contains(wf, 'sandbox/images/Containerfile')"
+          }
         },
         {
-          "id": "16-REQ-8.3",
+          "id": "REQ-8.3",
           "pattern": "unwanted",
           "condition": "the Containerfile, the Makefile or the release workflow differs from the constants or the stage layout the consistency test asserts",
           "system": "consistency test",
           "action": "fail without needing a container engine",
-          "contract": "the test fails with a message naming the file and the expected value"
+          "contract": "the test fails with a message naming the file and the expected value",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the Containerfile, Makefile and workflow checks are pure functions over file text that return their findings, called here with in-memory copies of the real files",
+              "no container engine is invoked"
+            ],
+            "pseudocode": "assert checkContainerfile(cf, mod) == [] && checkMakefile(mk) == [] && checkWorkflow(wf) == []\nf = checkContainerfile(replace(cf,'FROM scratch','FROM debian:trixie-slim'), mod); assert any(f, has('sandbox/images/Containerfile') && has('FROM scratch'))\nf = checkMakefile(setDefault(mk,'SANDBOX_OVERLAY_IMAGE','ghcr.io/other/x')); assert any(f, has('Makefile') && has(OverlayImageRepo))\nf = checkWorkflow(removeToken(wf, BaseImageRepo)); assert any(f, has('.github/workflows/sandbox-images.yml') && has(BaseImageRepo))"
+          }
         },
         {
-          "id": "16-REQ-8.4",
+          "id": "REQ-8.4",
           "pattern": "ubiquitous",
           "system": "make check",
           "action": "run the buildver, image-reference and consistency tests while building no image and invoking no container engine",
-          "contract": "make check exits 0 on a host with neither podman nor docker on PATH, and TS-09-20 passes"
+          "contract": "make check exits 0 on a host with neither podman nor docker on PATH, and TS-09-20 passes",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the go toolchain; the test skips under -short and when AGENTKIT_IMGTEST_NESTED is set",
+              "stub directory A whose podman and docker stubs append their argv to a marker file and exit 1, prepended to PATH",
+              "AGENTKIT_SANDBOX_BASE_IMAGE, AGENTKIT_SANDBOX_OVERLAY_IMAGE, AGENTKIT_SANDBOX_IMAGE_VERSION and AGENTKIT_CONTAINER removed from the subprocess environment"
+            ],
+            "pseudocode": "if testing.Short() || getenv('AGENTKIT_IMGTEST_NESTED') != '': skip\nenv = without(os.Environ(), AGENTKIT_SANDBOX_*, 'AGENTKIT_CONTAINER') + {PATH: A+':'+PATH, AGENTKIT_IMGTEST_NESTED:'1'}\nout, code = goTest('-count=1','./sandbox/internal/buildver/','./sandbox/','./sandbox/images/', env)\nassert code == 0 && !exists(marker)"
+          }
         },
         {
-          "id": "16-REQ-8.5",
+          "id": "REQ-8.5",
           "pattern": "ubiquitous",
           "system": "sandbox/images package",
           "action": "hold only _test.go files, so that internal/policy's cross-target gate (cgo off, four targets) and host-cgo gate build and vet it",
-          "contract": "TestCrossTargetBuildAndVet and TestHostCgoBuildAndVet pass"
+          "contract": "TestCrossTargetBuildAndVet and TestHostCgoBuildAndVet pass",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the go toolchain; the gate run is skipped under -short, as the gates themselves are"
+            ],
+            "pseudocode": "g, c, t, x = goList('./sandbox/images/'); assert g == 0 && c == 0 && t + x >= 1\nout, code = goTest('-count=1','-v','-run','TestCrossTargetBuildAndVet|TestHostCgoBuildAndVet','./internal/policy/'); assert code == 0 && passed(out,'TestCrossTargetBuildAndVet') && passed(out,'TestHostCgoBuildAndVet')"
+          }
         },
         {
-          "id": "16-REQ-8.6",
+          "id": "REQ-8.6",
           "pattern": "ubiquitous",
           "system": "repository",
           "action": "add no require directive to any go.mod, leave the exported API of the packages agentkit, core, tools and codemode unchanged, and stay within TS-12-14's line budgets",
-          "contract": "the direct-dependency allowlist test and TS-12-14 pass"
+          "contract": "the direct-dependency allowlist test and TS-12-14 pass",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the go toolchain"
+            ],
+            "pseudocode": "assert goTest('-run','TestRemovedDependenciesPruned_TS09_15|TestDirectDependenciesAreApproved_TS09_16','./internal/policy/').code == 0\nassert goTest('-run','TestLineBudgets_TS12_14','./core/').code == 0\nfor m in goListDepsModules('./sandbox/images/','./sandbox/internal/buildver/'): assert m == 'github.com/agent-fox-dev/agentkit-go' || m in approvedAllowlist"
+          }
         }
       ]
     },
     {
-      "id": "16-REQ-9",
+      "id": "REQ-9",
       "title": "The release workflow's images job",
       "rationale": "A tag push publishes both multi-arch images only after the image tests pass on the runner, and a dispatch run is a dry run that never pushes.",
       "criteria": [
         {
-          "id": "16-REQ-9.1",
+          "id": "REQ-9.1",
           "pattern": "ubiquitous",
           "system": "release workflow",
-          "action": "trigger on push of tags matching `v*` and on workflow_dispatch; declare top-level `permissions: contents: read`, with only the publishing job adding `packages: write`; and group concurrency per ref with `cancel-in-progress: false`"
+          "action": "trigger on push of tags matching `v*` and on workflow_dispatch; declare top-level `permissions: contents: read`, with only the publishing job adding `packages: write`; and group concurrency per ref with `cancel-in-progress: false`",
+          "contract": "on: has push with tags containing v* and has workflow_dispatch; top-level permissions has exactly contents: read; `packages: write` occurs exactly once, inside the images job; the verify job adds no packages permission; concurrency has a group expression containing github.ref and cancel-in-progress: false; every uses: value matches ^(actions/checkout|actions/setup-go|docker/setup-qemu-action|docker/setup-buildx-action|docker/login-action)@v[0-9]+$, and docker/metadata-action does not occur",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "sandbox/images/workflow_test.go reads .github/workflows/sandbox-images.yml with a line-oriented reader in the test (indentation-based keys, steps, literal run blocks), with no YAML dependency"
+            ],
+            "pseudocode": "wf = parseWorkflow(read('.github/workflows/sandbox-images.yml'))\nassert 'v*' in wf.on.push.tags && wf.on.has('workflow_dispatch')\nassert wf.permissions == {contents:'read'} && countLines(wf,'packages: write') == 1 && wf.jobs.images.permissions.packages == 'write' && 'packages' not in wf.jobs.verify.permissions\nassert has(wf.concurrency.group,'github.ref') && wf.concurrency['cancel-in-progress'] == 'false'\nfor u in usesLines(wf): assert match('^(actions/checkout|actions/setup-go|docker/setup-qemu-action|docker/setup-buildx-action|docker/login-action)@v[0-9]+$', u)\nassert !has(raw,'docker/metadata-action')"
+          }
         },
         {
-          "id": "16-REQ-9.2",
+          "id": "REQ-9.2",
           "pattern": "unwanted",
           "condition": "on a tag push, GITHUB_REF_NAME does not match `^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$`",
           "system": "images job",
           "action": "fail before building or publishing",
-          "contract": "the version step exits non-zero with a message naming the ref, and no image is pushed"
+          "contract": "the version step exits non-zero with a message naming the ref, and no image is pushed",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "bash on PATH, else the test skips",
+              "the run block of the images job's step with `id: version`, extracted by the workflow reader; it contains no `${{` and reads only environment variables"
+            ],
+            "pseudocode": "s = step(wf.jobs.images, id='version'); assert !has(s.run,'${{')\nfor ref in ['v1.2','1.2.3','v01.2.3','v1.02.3','v1.2.3+build','v1.2.3-','v1.2.3-rc_1','main']:\n  out, code, gout = bash(s.run, env{GITHUB_EVENT_NAME:'push', GITHUB_REF_TYPE:'tag', GITHUB_REF:'refs/tags/'+ref, GITHUB_REF_NAME:ref, GITHUB_OUTPUT:tmp})\n  assert code != 0 && has(out, ref) && outputs(gout).get('tags','') == ''\nassert idx(s) < min(idx of build/login/push steps) && no 'continue-on-error' in wf"
+          }
         },
         {
-          "id": "16-REQ-9.3",
+          "id": "REQ-9.3",
           "pattern": "ubiquitous",
           "system": "images job",
           "action": "for any ref name that matches the version pattern, set the version to the ref name and the image tags to the version without its `v`, plus MAJOR.MINOR when the version has no prerelease part",
-          "contract": "v1.2.3 yields the tags 1.2.3 and 1.2; v1.2.3-rc.1 yields only 1.2.3-rc.1"
+          "contract": "v1.2.3 yields the tags 1.2.3 and 1.2; v1.2.3-rc.1 yields only 1.2.3-rc.1",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "bash on PATH, else the test skips; the version step's run block as in TS-16-31",
+              "math/rand/v2 with a fixed seed and 300 iterations; the step writes version= and space-separated tags= lines to $GITHUB_OUTPUT"
+            ],
+            "pseudocode": "for ref in fixed + [gen(r) for _ in 0..300]:\n  code, o = bash(s.run, env{GITHUB_EVENT_NAME:'push', GITHUB_REF_TYPE:'tag', GITHUB_REF_NAME:ref, GITHUB_OUTPUT:tmp})\n  want = {ref[1:]} | ({maj+'.'+min} if '-' not in ref else {})\n  assert code == 0 && o.version == ref && set(split(o.tags)) == want"
+          }
         },
         {
-          "id": "16-REQ-9.4",
+          "id": "REQ-9.4",
           "pattern": "event_driven",
           "condition": "the images job runs on ubuntu-24.04",
           "system": "images job",
           "action": "check out the repository, set up Go with `go-version-file: go.mod`, and run `make sandbox-images-test CONTAINER=docker SANDBOX_IMAGE_TAG=ci AGENTKIT_VERSION=<version> AGENTKIT_REVISION=$GITHUB_SHA`. This runs with the runner's default docker builder, before any QEMU or buildx setup step",
-          "contract": "the test step appears before every setup-qemu, setup-buildx, login and push step in the job"
+          "contract": "the test step appears before every setup-qemu, setup-buildx, login and push step in the job",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the images job's steps from the workflow reader"
+            ],
+            "pseudocode": "j = wf.jobs.images; assert j['runs-on'] == 'ubuntu-24.04'\nassert idx(uses(j,'actions/checkout')) < idx(uses(j,'actions/setup-go')) && uses(j,'actions/setup-go').with['go-version-file'] == 'go.mod'\nt = stepRunning(j,'make sandbox-images-test'); assert has(t.run,'CONTAINER=docker') && has(t.run,'SANDBOX_IMAGE_TAG=ci') && refsVersionOutput(t) && refsGitHubSHA(t) && t.if == none\nfor s in steps(j) if s.uses in [setup-qemu, setup-buildx, login] or has(s.run,'--push'): assert idx(t) < idx(s) && !matches(s.if,'always\\(\\)|failure\\(\\)|cancelled\\(\\)')\nassert no step has 'continue-on-error'"
+          }
         },
         {
-          "id": "16-REQ-9.5",
+          "id": "REQ-9.5",
           "pattern": "unwanted",
           "condition": "the test step fails",
           "system": "images job",
           "action": "end the job without publishing",
-          "contract": "the job fails, and no login or push step runs"
+          "contract": "the job fails, and no login or push step runs",
+          "check": {
+            "same_as": "REQ-9.4"
+          }
         },
         {
-          "id": "16-REQ-9.6",
-          "pattern": "complex_event",
-          "condition": "the run was triggered by a tag push",
-          "guard": "the test step passed",
+          "id": "REQ-9.6",
+          "pattern": "event_driven",
+          "condition": "the run was triggered by a tag push and the test step passed",
           "system": "images job",
           "action": "set up QEMU and buildx, log in to ghcr.io with GITHUB_TOKEN, and run `docker buildx build --platform linux/amd64,linux/arm64 -f sandbox/images/Containerfile --push` once with `--target base` and once with `--target overlay`. Both builds take the same build arguments and every computed tag on their own repository",
-          "contract": "both repositories carry each computed tag as a manifest list for linux/amd64 and linux/arm64"
+          "contract": "both repositories carry each computed tag as a manifest list for linux/amd64 and linux/arm64",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "bash on PATH, else the test skips",
+              "the images job's publish steps from the workflow reader; the push run block contains no `${{` and reads the version and tags from environment variables declared in its env: block",
+              "a fake docker first on PATH that appends each invocation's argv to a log and exits 0"
+            ],
+            "pseudocode": "j = wf.jobs.images; l = uses(j,'docker/login-action'); assert l.with.registry == 'ghcr.io' && has(l.with.username,'github.actor') && has(l.with.password,'secrets.GITHUB_TOKEN')\nassert idx(uses(j,'docker/setup-qemu-action')) < idx(l) && idx(uses(j,'docker/setup-buildx-action')) < idx(l) < idx(pushStep)\nassert !has(pushStep.run,'${{'); log = bashWithFakeDocker(pushStep.run, envFor(pushStep, version='v1.2.3', tags='1.2.3 1.2'), GITHUB_SHA='abc')\nb = [a for a in log if a[0:2] == ['buildx','build']]; assert len(b) == 2\nfor a in b: assert flag(a,'--platform') == 'linux/amd64,linux/arm64' && flag(a,'-f') == 'sandbox/images/Containerfile' && '--push' in a && buildArgs(a) == {AGENTKIT_VERSION:'v1.2.3', AGENTKIT_REVISION:'abc'}\nassert tags(target(b,'base')) == {BaseImageRepo+':1.2.3', BaseImageRepo+':1.2'} && tags(target(b,'overlay')) == {OverlayImageRepo+':1.2.3', OverlayImageRepo+':1.2'}"
+          }
         },
         {
-          "id": "16-REQ-9.7",
+          "id": "REQ-9.7",
           "pattern": "state_driven",
           "condition": "the run was triggered by workflow_dispatch",
           "system": "release workflow",
           "action": "build and test with an empty version, compute no publishing tags, never log in, never push, and skip the verify job",
-          "contract": "every login and push step and the verify job are conditioned on a tag push"
+          "contract": "every login and push step and the verify job are conditioned on a tag push",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "bash on PATH, else the test skips; the version step's run block as in TS-16-31",
+              "the steps and job conditions from the workflow reader"
+            ],
+            "pseudocode": "for (type, name) in [('branch','main'), ('tag','v1.2.3')]:\n  code, o = bash(s.run, env{GITHUB_EVENT_NAME:'workflow_dispatch', GITHUB_REF_TYPE:type, GITHUB_REF_NAME:name, GITHUB_OUTPUT:tmp}); assert code == 0 && o.version == '' && o.tags == ''\nfor st in publishSteps(wf.jobs.images): assert requiresTagPush(st.if)\nassert requiresTagPush(wf.jobs.verify.if) && !requiresTagPush(testStep.if)"
+          }
         },
         {
-          "id": "16-REQ-9.8",
+          "id": "REQ-9.8",
           "pattern": "ubiquitous",
           "system": "release workflow",
           "action": "use only actions/checkout, actions/setup-go, docker/setup-qemu-action, docker/setup-buildx-action and docker/login-action, each pinned to a major version tag, and compute tags in shell rather than with a third-party action",
-          "contract": "every `uses:` line names one of those five actions followed by `@v<major>`"
+          "contract": "every `uses:` line names one of those five actions followed by `@v<major>`",
+          "check": {
+            "same_as": "REQ-9.1"
+          }
         }
       ]
     },
     {
-      "id": "16-REQ-10",
+      "id": "REQ-10",
       "title": "The release workflow's verify job",
       "rationale": "A package that only maintainers can pull has not been published for embedders, so each release is proven by an anonymous pull on every platform (DD 17).",
+      "system": "verify job",
       "criteria": [
         {
-          "id": "16-REQ-10.1",
-          "pattern": "complex_event",
-          "condition": "the run was triggered by a tag push",
-          "guard": "the images job succeeded",
-          "system": "verify job",
+          "id": "REQ-10.1",
+          "pattern": "event_driven",
+          "condition": "the run was triggered by a tag push and the images job succeeded",
           "action": "set up QEMU without logging in to any registry and, for each repository, computed tag and platform in {linux/amd64, linux/arm64}, run `docker pull --platform <platform> <reference>`",
-          "contract": "the job declares `needs: images`, has no login step, and pulls every repository, tag and platform combination"
+          "contract": "the job declares `needs: images`, has no login step, and pulls every repository, tag and platform combination",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "bash on PATH, else the test skips",
+              "the verify job from the workflow reader; its run block contains no `${{` and reads the version and tags from environment variables mapped in its env: from needs.images.outputs",
+              "a fake docker first on PATH that logs each argv, exits 0 for pull, and prints `agentkit-sandboxd v1.2.3 (protocol 1.0)` for run"
+            ],
+            "pseudocode": "v = wf.jobs.verify; assert v.needs in ['images', ['images']] && uses(v,'docker/setup-qemu-action') && !uses(v,'docker/login-action') && !has(runs(v),'docker login')\nlog, code = bashWithFakeDocker(v.run, envFor(v, version='v1.2.3', tags='1.2.3 1.2')); assert code == 0\ncombos = {(r,t,p) for r in [BaseImageRepo, OverlayImageRepo] for t in ['1.2.3','1.2'] for p in ['linux/amd64','linux/arm64']}\nassert {(ref(a),platform(a)) for a in pulls(log)} == {(r+':'+t, p) for (r,t,p) in combos}\nfor a in runs(log): assert '--rm' in a && flag(a,'--entrypoint') == '/usr/local/libexec/agentkit-sandboxd' && a[-1] == '--version'; assert len(runs(log)) == 8"
+          }
         },
         {
-          "id": "16-REQ-10.2",
+          "id": "REQ-10.2",
           "pattern": "event_driven",
           "condition": "the verify job has pulled a reference",
-          "system": "verify job",
           "action": "run it with `--entrypoint /usr/local/libexec/agentkit-sandboxd` and the argument `--version`",
-          "contract": "the output starts with `agentkit-sandboxd <version> ` for every repository, tag and platform"
+          "contract": "the output starts with `agentkit-sandboxd <version> ` for every repository, tag and platform",
+          "check": {
+            "same_as": "REQ-10.1"
+          }
         },
         {
-          "id": "16-REQ-10.3",
+          "id": "REQ-10.3",
           "pattern": "unwanted",
           "condition": "an anonymous pull fails, as it does while a GHCR package is still private, or the --version output lacks the expected prefix",
-          "system": "verify job",
           "action": "fail without touching the images already published",
-          "contract": "the job exits non-zero naming the reference, and it can be re-run alone without re-running the images job"
+          "contract": "the job exits non-zero naming the reference, and it can be re-run alone without re-running the images job",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "bash on PATH, else the test skips; the verify job's run block and env mapping as in TS-16-36, with version v1.2.3 and tags \"1.2.3 1.2\"",
+              "a fake docker on PATH that logs each argv and is scripted per case"
+            ],
+            "pseudocode": "for case in [pullFails(OverlayImageRepo+':1.2','linux/arm64'), runPrints('agentkit-sandboxd v1.2.2 (protocol 1.0)'), runPrints('agentkit-sandboxd v1.2.30 (protocol 1.0)')]:\n  log, code, out = bashWithFakeDocker(v.run, env, case)\n  assert code != 0 && has(out, case.failingRef)\n  assert no a in log with a[0] in ['push','tag','rmi','login','buildx']\nassert inputsOnlyFrom(v, 'needs.images.outputs') && !uses(v,'actions/download-artifact')"
+          }
         }
       ]
     }
   ],
   "execution_paths": [
     {
-      "id": "16-PATH-1",
+      "id": "PATH-1",
       "title": "A developer builds the images and tests the base image locally",
       "steps": [
         {
@@ -591,10 +959,31 @@
           "actor": "harness",
           "action": "closes the sandbox and removes the container; go test reports PASS and make exits 0"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "Makefile sandbox-images and sandbox-images-test targets",
+          "sandbox/images/Containerfile and .dockerignore",
+          "podman or docker",
+          "golang:1.27-trixie and debian:trixie-slim",
+          "agentkit-sandboxd, cgo and static builds with the buildver stamp",
+          "the sandbox/images harness, stdioconn.New and attach.Dial",
+          "the proxy execute and write_file tools"
+        ],
+        "setup": [
+          "a Linux or macOS host with podman or docker and network access to pull debian:trixie-slim and golang:1.27-trixie",
+          "a checkout of the repository"
+        ],
+        "end_state": [
+          "make exits 0, and quay.io/agentfox/agentkit-sandbox:latest and quay.io/agentfox/agentkit-sandboxd:latest both exist in the engine's image store",
+          "the go test output reports PASS, not SKIP, for the base image test, whose agent answered Hello with Version v0.6.0, Workdir /workspace, OutlineBackend tree-sitter and Git true, and whose Tools call and proxy execute and write_file probes succeeded",
+          "`run --rm --entrypoint /usr/local/libexec/agentkit-sandboxd <image> --version` prints `agentkit-sandboxd v0.6.0 (protocol M.N)` for both :dev images",
+          "`ps -a` lists no container named agentkit-imgtest-*"
+        ]
+      }
     },
     {
-      "id": "16-PATH-2",
+      "id": "PATH-2",
       "title": "An embedder adds the agent to its own image with the overlay COPY line",
       "steps": [
         {
@@ -621,10 +1010,27 @@
           "actor": "harness",
           "action": "closes the sandbox and removes the container and the derived image"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "sandbox.OverlayCopyLine",
+          "podman or docker building from the local base and overlay images",
+          "the static agentkit-sandboxd copied from the overlay image",
+          "the sandbox/images harness, stdioconn.New and attach.Dial",
+          "the proxy execute tool"
+        ],
+        "setup": [
+          "the images from TS-16-51 and the same make sandbox-images-test run, with both image variables set"
+        ],
+        "end_state": [
+          "the go test output reports PASS, not SKIP, for the derived-image part",
+          "the copied agent answered Hello with OutlineBackend none and Version v0.6.0, Tools passed the digest check, and echo ok exited 0",
+          "after the test, the derived image reference is absent from `$CONTAINER images` and no agentkit-imgtest-* container remains"
+        ]
+      }
     },
     {
-      "id": "16-PATH-3",
+      "id": "PATH-3",
       "title": "A maintainer publishes a release by pushing a version tag",
       "steps": [
         {
@@ -647,10 +1053,29 @@
           "actor": "verify job",
           "action": "pulls each repository, tag and platform anonymously and runs `--version`, which prints `agentkit-sandboxd vX.Y.Z (protocol M.N)`"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "GitHub Actions on ubuntu-24.04",
+          ".github/workflows/sandbox-images.yml images and verify jobs",
+          "make sandbox-images-test with docker's default builder",
+          "docker buildx with QEMU",
+          "ghcr.io with GITHUB_TOKEN and anonymous pulls",
+          "sandbox/images/Containerfile"
+        ],
+        "setup": [
+          "the release workflow on the default branch of github.com/agent-fox-dev/agentkit-go",
+          "both GHCR packages public (on the first release, made public after the first verify run fails, then verify re-run alone)"
+        ],
+        "end_state": [
+          "the images job's test step passed on the default docker builder before the QEMU, buildx, login and push steps ran, and the job succeeded",
+          "`docker buildx imagetools inspect` of quay.io/agentfox/agentkit-sandbox and quay.io/agentfox/agentkit-sandboxd at X.Y.Z and X.Y lists linux/amd64 and linux/arm64, the arm64 cgo agent having been cross-compiled on the amd64 runner",
+          "the verify job succeeded without logging in, and an anonymous `docker pull --platform linux/arm64` of each tag followed by `--entrypoint /usr/local/libexec/agentkit-sandboxd … --version` prints `agentkit-sandboxd vX.Y.Z (protocol M.N)`"
+        ]
+      }
     },
     {
-      "id": "16-PATH-4",
+      "id": "PATH-4",
       "title": "An embedder's binary resolves the default image for its agentkit-go version",
       "steps": [
         {
@@ -669,7 +1094,24 @@
           "actor": "sandbox package",
           "action": "returns quay.io/agentfox/agentkit-sandbox:X.Y.Z and quay.io/agentfox/agentkit-sandboxd:X.Y.Z, or an error wrapping ErrNoPublishedImage that names the version, Spec.Image and `make sandbox-images`"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "Go linker -ldflags -X",
+          "sandbox/internal/buildver Version",
+          "sandbox.ImageTag, DefaultImage and OverlayImage",
+          "sandbox/testdata/imageref embedder program"
+        ],
+        "setup": [
+          "the go toolchain; the test skips under -short",
+          "sandbox/testdata/imageref/main.go, which prints DefaultImage() and OverlayImage() on two lines and exits 0, or prints the error to stderr and exits 1"
+        ],
+        "end_state": [
+          "the v1.2.3 binary exits 0 and prints quay.io/agentfox/agentkit-sandbox:1.2.3 then quay.io/agentfox/agentkit-sandboxd:1.2.3",
+          "the unstamped binary exits 1 and its stderr contains \"sandbox: no published image for this agentkit-go version\", \"(devel)\", \"Spec.Image\" and \"make sandbox-images\"",
+          "the pseudo-version binary exits 1 and its stderr contains the same error text and v1.2.4-0.20240102150405-abcdefabcdef"
+        ]
+      }
     }
   ]
 }

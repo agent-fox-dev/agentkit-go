@@ -4,9 +4,8 @@ spec_name: "minimal_driver"
 title: "Streamlined Driver Loop with Prefix Caching Breakpoints, Context Pruning, and Batch Tool Execution"
 status: "active"
 created_at: "2026-10-09T11:40:04.652932Z"
-updated_at: "2026-10-09T11:40:04.652932Z"
 intent_hash: "003f33cd88d55dbef4932cb8bf5591196030407aa3080b5e519914e291bc9649"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/10-cut-agentkit-down-to-the-hands.md"
 ---
 ## Intent
@@ -198,3 +197,11 @@ type MessageService struct {}
 func (s *MessageService) New(ctx context.Context, params MessageNewParams, opts ...option.RequestOption) (*Message, error)
 func (s *MessageService) NewStreaming(ctx context.Context, params MessageNewParams, opts ...option.RequestOption) *ssestream.Stream[MessageStreamEvent]
 ```
+
+## Glossary
+
+- **anchored_token_estimation**: Context token estimation strategy anchoring to the latest assistant usage report and adding 4 characters per token for subsequent messages.
+- **cache_breakpoint**: Prompt caching annotation (cache_control: {type: ephemeral}) placed on the last block of system, tools, prefix, and rolling user messages.
+- **context_pruning**: Replacing old tool result content in outbound model requests with single-line elision notices without modifying durable transcript messages.
+- **nested_caller**: Context-attached helper that permits tools declaring ReachableTools to execute child tools within their resolved reachable set.
+- **synthetic_truncation_result**: A deterministic notice appended as a ToolResultMessage when an assistant message with tool calls hits the output token cap (StopReasonLength).

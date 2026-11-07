@@ -4,9 +4,8 @@ spec_name: "sandbox_landlock_provider"
 title: "Landlock sandbox provider: a confined child process on Linux"
 status: "active"
 created_at: "2026-10-13T15:11:36.496385Z"
-updated_at: "2026-10-13T15:11:36.496385Z"
 intent_hash: "5eb35357693e308e452ee4398c6072f2a80703f7f4c38c096401544d8cbccf87"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/11-run-tools-in-an-isolated-sandbox.md"
 ---
 ## Intent
@@ -450,3 +449,19 @@ Per steering, run `make doc` first, then update:
 - Landlock ABI 4 arrived in Linux 6.7.
 
 **git.** Unverified: `GIT_CONFIG_NOSYSTEM=1` skips the system configuration, and `GIT_TERMINAL_PROMPT=0` makes an authentication request fail instead of prompting.
+
+## Glossary
+
+- **ABI 4 floor**: The provider's minimum Landlock ABI (sandbox.LandlockTCPABI = 4, Linux 6.7), enforced both by the kernel probe in New and on the agent's Hello report after every attach, whatever Spec.RequireLandlock says.
+- **GitRepo slot**: Per-sandbox state allowing exactly one GitRepo Sync, before any other successful Sync and before the first Tools call; mirrors 17's slot rule with its own implementation.
+- **destroy step**: The provider's teardown, passed to attach as Config.Destroy and run once: (1) wait up to 5 s for the agent to exit, then SIGKILL its process group; (2) SIGKILL every non-zombie process whose session id is the agent's pid, rescanning for up to 5 s; (3) remove the sandbox directory without following symlinks, restoring owner rwx on each directory first.
+- **effective spec**: The Spec returned by sandbox.CheckSpec (TTL 0 replaced by 1h) with Workdir set to the host path <Root>/<id>/workspace for the agent's arguments.
+- **init agent**: A second agentkit-sandboxd started for a GitRepo Sync with --network unrestricted, the same workspace and extra roots, and a git-only environment. It runs git through its run_command tool beside the sandbox's own idle agent and is always closed before Sync returns.
+- **marker**: agentkit-sandbox.json (mode 0600) in the sandbox directory: the owner's pid, start time (/proc/<pid>/stat field 22) and boot id, the owner's role (creator or agent), the creation time, TTL, network mode and labels. It never holds Spec.Env.
+- **owner**: The process a marker names: first the creating process (role creator), then, after an atomic replace, the agent (role agent). It counts as alive only when /proc/<pid> exists, its start time equals the recorded one and the current boot id equals the recorded one.
+- **probe seam**: The unexported function New calls once to learn the kernel's Landlock ABI. Its default issues syscall.Syscall(444, 0, 0, 1), the Landlock version query; offline tests substitute a fake returning any ABI or errno.
+- **process table seam**: The unexported /proc reader the destroy step and Reap use to list processes, their session ids, states and start times; offline tests substitute a fake.
+- **resolver directory**: Under NetworkUnrestricted only: the directory of the file /etc/resolv.conf resolves to, when it lies beneath /run or /var/run and is not /run or /var/run itself (for example /run/systemd/resolve). It is passed to the agent as an extra --landlock-ro.
+- **sandbox directory**: <Root>/<id>/, mode 0700, where id is 16 random lowercase hex characters. It holds the marker agentkit-sandbox.json and the 0700 subdirectories workspace/, home/ and tmp/.
+- **session kill**: Action 2 of the destroy step. It reaches background jobs that tools.Run left in their own process groups, because they stay in the agent's session.
+- **starter seam**: The unexported function that starts an agent process and returns its net.Conn, exit status and stderr tail. Offline tests substitute an in-process agent.New served over pipes with a test-chosen Landlock report.

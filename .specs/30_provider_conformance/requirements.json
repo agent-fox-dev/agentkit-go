@@ -1,436 +1,757 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
   "spec_id": "30",
   "spec_name": "provider_conformance",
-  "schema_version": 2,
-  "introduction": "A tests-only provider conformance suite (internal/providerconformance) that runs the same seven logical turns through the anthropic, openrouter and ollama providers via agentkit.New against local vendor fakes and asserts one canonical outcome, plus opt-in live smoke tests per provider and the provider/model/effort selection of the codingagent, customtools and mcp examples.",
-  "glossary": {
-    "event skeleton": "A turn's provider event types with MessageUpdateEvents removed and each run of consecutive delta events of one block collapsed into one.",
-    "live smoke test": "TestLive: an opt-in test gated on AGENTKIT_LIVE=1 that runs one real read_file tool loop per provider against its live service.",
-    "logical turn": "A vendor-neutral script of one model response: an ordered list of text, thinking or tool-call blocks, how it ends (normal stop, tool-call stop, cut off, HTTP error status, in-stream error) and optional usage.",
-    "provider events": "The run's events after a turn's TurnStartEvent, up to and including that turn's first MessageEndEvent.",
-    "request summary": "The vendor-neutral decoding of a recorded request body: model id, effort in vendor form, declared tool names, user texts, assistant messages with text, tool calls and replayed thinking, and tool results.",
-    "selected row": "The catalog.Select(provider, \"STANDARD\", \"\") result that supplies the expected model id, effort and price.",
-    "vendor fake": "An httptest server in a _test.go file that renders logical turns in one vendor's native wire format (Anthropic Messages SSE, OpenRouter Chat Completions SSE, Ollama NDJSON) and records every request."
-  },
+  "schema_version": 3,
   "requirements": [
     {
-      "id": "30-REQ-1",
+      "id": "REQ-1",
       "title": "Conformance suite harness",
       "rationale": "The three providers must look the same to the agent loop, and that must be proven offline on every change through the same path an embedder takes.",
       "criteria": [
         {
-          "id": "30-REQ-1.1",
+          "id": "REQ-1.1",
           "pattern": "ubiquitous",
           "system": "internal/providerconformance package",
           "action": "keep every line of code, the httptest servers included, in _test.go files, with doc.go holding only the package doc comment",
-          "contract": "no non-test file of the root module gains a listening API call, and no package imports internal/providerconformance, so the root line budget is unchanged"
+          "contract": "no non-test file of the root module gains a listening API call, and no package imports internal/providerconformance, so the root line budget is unchanged",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the repository tree with internal/providerconformance/ present"
+            ],
+            "pseudocode": "files = glob('internal/providerconformance/*.go'); nonTest = [f for f in files if !f.endsWith('_test.go')]; assert nonTest == ['doc.go']; ast = parse(doc.go); assert len(ast.Decls)==0 and ast.Doc != nil; assert no importer of the package"
+          }
         },
         {
-          "id": "30-REQ-1.2",
+          "id": "REQ-1.2",
           "pattern": "event_driven",
           "condition": "go test ./internal/providerconformance runs, with or without -short",
           "system": "TestProviderConformance",
           "action": "run each of the cases text, tool_call, tool_call_stop, thinking, cut_off, error_status and error_in_stream against each of anthropic, openrouter and ollama as 21 independent, parallel-safe subtests named <provider>/<case>",
-          "contract": "21 subtests whose paths end in /<provider>/<case>; -run 'TestProviderConformance.*/ollama/thinking' selects exactly one subtest; the suite does not skip under -short and so runs in make check"
+          "contract": "21 subtests whose paths end in /<provider>/<case>; -run 'TestProviderConformance.*/ollama/thinking' selects exactly one subtest; the suite does not skip under -short and so runs in make check",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "go toolchain available to a test subprocess",
+              "the three vendor fakes compiled into the test binary"
+            ],
+            "pseudocode": "out = exec('go test -short -v -json ...'); passes = subtests with action pass; assert len(passes)==21; assert no skip; out2 = exec(... -run pattern); assert [s for s in subtests(out2)] == ['TestProviderConformance/ollama/thinking']"
+          }
         },
         {
-          "id": "30-REQ-1.3",
+          "id": "REQ-1.3",
           "pattern": "ubiquitous",
           "system": "conformance suite",
-          "action": "build each subtest's agent with agentkit.New using Provider set to the provider name, Model \"STANDARD\", a toolset of one internal/testkit.EchoTool named echo, MaxTurns 4, and a map-backed Getenv holding only that provider's variables (ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL, OPENROUTER_API_KEY and OPENROUTER_BASE_URL set to <server>/api/v1, or OLLAMA_HOST) pointed at that subtest's own fake"
+          "action": "build each subtest's agent with agentkit.New using Provider set to the provider name, Model \"STANDARD\", a toolset of one internal/testkit.EchoTool named echo, MaxTurns 4, and a map-backed Getenv holding only that provider's variables (ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL, OPENROUTER_API_KEY and OPENROUTER_BASE_URL set to <server>/api/v1, or OLLAMA_HOST) pointed at that subtest's own fake",
+          "contract": "agentkit.New received Provider equal to the provider name, Model \"STANDARD\", MaxTurns 4 and one tool named echo; the Getenv map holds only ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL, or OPENROUTER_API_KEY and OPENROUTER_BASE_URL (ending /api/v1), or OLLAMA_HOST; every variable requested by the provider resolves to that subtest's own fake address; the fake records at least one request",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a fake per subtest",
+              "a recording Getenv wrapper around the map-backed function"
+            ],
+            "pseudocode": "env = fakeEnv(provider, fake.URL); assert keys(env) subset of providerVars[provider]; agent = agentkit.New(Config{Provider:p, Model:'STANDARD', Getenv: lookup(env), Toolset: [echo], MaxTurns:4}); run; assert len(fake.requests) >= 1"
+          }
         },
         {
-          "id": "30-REQ-1.4",
+          "id": "REQ-1.4",
           "pattern": "ubiquitous",
           "system": "conformance suite",
           "action": "never read the process environment and never connect to any address other than its loopback fakes",
-          "contract": "every subtest has the same outcome when ANTHROPIC_*, OPENROUTER_* or OLLAMA_HOST are exported in the process environment with other values"
+          "contract": "every subtest has the same outcome when ANTHROPIC_*, OPENROUTER_* or OLLAMA_HOST are exported in the process environment with other values",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a decoy loopback listener that counts connections",
+              "ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, OPENROUTER_API_KEY, OPENROUTER_BASE_URL and OLLAMA_HOST exported to values pointing at the decoy"
+            ],
+            "pseudocode": "decoy = listen('127.0.0.1:0'); env = os.Environ + decoy-pointing vars; r = exec(go test -short -json, env); assert pass==21; assert decoy.accepted == 0"
+          }
         },
         {
-          "id": "30-REQ-1.5",
+          "id": "REQ-1.5",
           "pattern": "ubiquitous",
           "system": "conformance suite",
-          "action": "take every expected model id and effort from catalog.Select(provider, \"STANDARD\", \"\") and contain no literal model id"
+          "action": "take every expected model id and effort from catalog.Select(provider, \"STANDARD\", \"\") and contain no literal model id",
+          "contract": "no literal model id appears in the suite; expected model ids in assertions are read from catalog.Select(provider, \"STANDARD\", \"\")",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the catalog's model ids collected from catalog.Select for every provider and tier"
+            ],
+            "pseudocode": "ids = [catalog.Select(p,t,'').Model.ID for p in providers for t in tiers]; for lit in stringLiterals(files): assert not any(id in lit for id in ids)"
+          }
         },
         {
-          "id": "30-REQ-1.6",
+          "id": "REQ-1.6",
           "pattern": "unwanted",
           "condition": "a subtest has not finished within its 30-second context",
           "system": "conformance suite",
           "action": "cancel the run and fail the subtest",
-          "contract": "the subtest reports a failure naming the provider and case instead of hanging; other subtests are unaffected"
+          "contract": "the subtest reports a failure naming the provider and case instead of hanging; other subtests are unaffected",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a fake that blocks without replying",
+              "the case runner invoked with a 200 ms context deadline and a recording testing.TB stand-in",
+              "a second independent subtest using a healthy fake"
+            ],
+            "pseudocode": "tb = recorder(); start = now(); runCase(tb, 'ollama', textCase, timeout=200ms); assert now()-start < 5s; assert tb.failed and 'ollama' in tb.msg and 'text' in tb.msg"
+          }
         }
       ]
     },
     {
-      "id": "30-REQ-2",
+      "id": "REQ-2",
       "title": "Vendor fakes",
       "rationale": "The providers must be checked against their vendors' wire formats rather than against their own code.",
+      "system": "vendor fake",
       "criteria": [
         {
-          "id": "30-REQ-2.1",
+          "id": "REQ-2.1",
           "pattern": "event_driven",
           "condition": "a request arrives at the vendor endpoint (Anthropic POST /v1/messages, OpenRouter POST /api/v1/chat/completions, Ollama POST /api/chat)",
-          "system": "vendor fake",
           "action": "record the request's method, path, headers and body and answer with the next scripted logical turn rendered in that vendor's native wire format, echoing the requested model id",
-          "contract": "one scripted turn is consumed per request, in script order"
+          "contract": "one scripted turn is consumed per request, in script order",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "each of the three fakes scripted with two logical turns of different text"
+            ],
+            "pseudocode": "for f in fakes: r1 = post(f, body1); r2 = post(f, body2); assert f.requests[0].body == body1; assert text(r1)=='A' and text(r2)=='B'; assert model(r1)==requestedModel"
+          }
         },
         {
-          "id": "30-REQ-2.2",
+          "id": "REQ-2.2",
           "pattern": "unwanted",
           "condition": "a request arrives at any other path, or after every scripted turn has been consumed",
-          "system": "vendor fake",
           "action": "fail the subtest and answer with an HTTP error",
-          "contract": "the subtest fails with a message naming the unexpected path or the request number beyond the script"
+          "contract": "the subtest fails with a message naming the unexpected path or the request number beyond the script",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "each fake scripted with one turn",
+              "a recording testing.TB stand-in"
+            ],
+            "pseudocode": "post(f,'/v1/other'); assert status>=400 and '/v1/other' in tb.msgs[0]; post(f,valid); post(f,valid); assert status>=400 and 'request 2' in tb.msgs[1]"
+          }
         },
         {
-          "id": "30-REQ-2.3",
+          "id": "REQ-2.3",
           "pattern": "ubiquitous",
-          "system": "vendor fake",
-          "action": "render text and thinking blocks as two deltas each, tool arguments as two fragments on Anthropic and OpenRouter and whole on Ollama, and usage in the vendor's own fields and netting: Anthropic input net of cache reads, OpenRouter and Ollama prompt totals including cache reads, with a cost reported only by OpenRouter"
+          "action": "render text and thinking blocks as two deltas each, tool arguments as two fragments on Anthropic and OpenRouter and whole on Ollama, and usage in the vendor's own fields and netting: Anthropic input net of cache reads, OpenRouter and Ollama prompt totals including cache reads, with a cost reported only by OpenRouter",
+          "contract": "text and thinking each arrive as two deltas; tool arguments arrive as two fragments on Anthropic and OpenRouter and as one whole object on Ollama; Anthropic reports input_tokens 40 and cache_read_input_tokens 60; OpenRouter reports prompt_tokens 100 with cached_tokens 60 and cost 0.00042; Ollama reports prompt_eval_count 100 and prompt_eval_cached_count 60 and no cost field",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a logical turn with text, thinking and a tool call and usage of 100 prompt tokens, 60 cache reads, 20 output tokens and cost 0.00042"
+            ],
+            "pseudocode": "body = fake.render(turn); assert count(textDeltas)==2; assert fragments(tool)==(2 if p!='ollama' else 1); assert usageFields(p, body) == expected[p]"
+          }
         },
         {
-          "id": "30-REQ-2.4",
+          "id": "REQ-2.4",
           "pattern": "ubiquitous",
-          "system": "vendor fake",
           "action": "render each turn ending in vendor form: the normal stop, the tool-call stop (Anthropic tool_use, OpenRouter tool_calls, Ollama stop), a cut-off body without the final signal (Anthropic message_stop, OpenRouter finish_reason, Ollama done:true), an HTTP error status with the vendor's error body and message, or an in-stream error after the blocks (Anthropic event: error, OpenRouter error chunk with code 502, Ollama {\"error\":…} line)",
-          "contract": "the provider under test receives each ending exactly as its vendor sends it on the wire"
+          "contract": "the provider under test receives each ending exactly as its vendor sends it on the wire",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "each fake and each ending: normal stop, tool-call stop, cut off, HTTP error status, in-stream error"
+            ],
+            "pseudocode": "for p in providers: for end in endings: raw = fakes[p].render(turnWith(end)); assert matchesVendorForm(p, end, raw)"
+          }
         },
         {
-          "id": "30-REQ-2.5",
+          "id": "REQ-2.5",
           "pattern": "event_driven",
           "condition": "a case decodes a recorded request body",
-          "system": "vendor fake",
           "action": "return a request summary holding the model id, the effort in vendor form (Anthropic output_config.effort, OpenRouter reasoning.effort, Ollama think), the declared tool names, the user texts, each assistant message's visible text, tool calls (id, name, arguments) and replayed thinking as text and raw vendor form (Anthropic thinking plus signature, OpenRouter reasoning_details, Ollama thinking), and the tool results with their call ids and texts in order",
-          "contract": "a Go value comparable across providers"
+          "contract": "a Go value comparable across providers",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "for each vendor a hand-written request body carrying model, effort, one tool echo, a user text, an assistant message with text, a tool call and replayed thinking, and a tool result"
+            ],
+            "pseudocode": "s = [decode(p, body[p]) for p in providers]; assert s[0].Model==s[1].Model==s[2].Model; assert s[i].Assistant[0].ToolCalls equal; assert s[0].Assistant[0].RawThinking.signature=='sig-conformance'"
+          }
         },
         {
-          "id": "30-REQ-2.6",
+          "id": "REQ-2.6",
           "pattern": "ubiquitous",
-          "system": "vendor fake",
           "action": "render and decode with the standard library and encoding/json only, importing no vendor SDK and none of the providers' own test helpers",
-          "contract": "the fake source files import no anthropic-sdk-go, OpenRouter SDK or github.com/ollama/ollama package"
+          "contract": "the fake source files import no anthropic-sdk-go, OpenRouter SDK or github.com/ollama/ollama package",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the fake files of internal/providerconformance parsed with go/parser (ImportsOnly)"
+            ],
+            "pseudocode": "for f in fakeFiles: for imp in imports(f): assert isStdlib(imp)"
+          }
         }
       ]
     },
     {
-      "id": "30-REQ-3",
+      "id": "REQ-3",
       "title": "Checks common to every case",
       "rationale": "Event order, payloads and request counts are the cross-provider promises the loop relies on.",
+      "system": "conformance suite",
       "criteria": [
         {
-          "id": "30-REQ-3.1",
+          "id": "REQ-3.1",
           "pattern": "ubiquitous",
-          "system": "conformance suite",
-          "action": "assert that every recorded request carries the selected row's model id and effort in the vendor's form"
+          "action": "assert that every recorded request carries the selected row's model id and effort in the vendor's form",
+          "contract": "every summary's model equals the selected row's model id; every summary's effort equals the selected effort in the form of output_config.effort, reasoning.effort or think",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "catalog.Select(provider, \"STANDARD\", \"\") for each provider",
+              "all seven cases run on all three providers"
+            ],
+            "pseudocode": "sel = catalog.Select(p,'STANDARD',''); for req in fake.requests: s = decode(req); assert s.Model==sel.Model.ID; assert s.Effort==string(sel.Effort)"
+          }
         },
         {
-          "id": "30-REQ-3.2",
+          "id": "REQ-3.2",
           "pattern": "event_driven",
           "condition": "a scripted turn ends with the vendor's normal or tool-call stop",
-          "system": "conformance suite",
-          "action": "assert that the event skeleton of the turn's provider events equals, type by type and in order, the event skeleton provider/faux emits for the same blocks and stop reason"
+          "action": "assert that the event skeleton of the turn's provider events equals, type by type and in order, the event skeleton provider/faux emits for the same blocks and stop reason",
+          "contract": "the event types of both skeletons are equal in order; TextEndEvent.Text and ThinkingEndEvent.Thinking equal the scripted text; ToolCallEndEvent.Block has the scripted id and name and Input JSON-equal to {\"v\":\"conformance\"}",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the text, tool_call and thinking cases on each provider",
+              "a provider/faux reference provider scripted with the same blocks and stop reason",
+              "the three fakes and a generator of logical turns"
+            ],
+            "pseudocode": "got = skeleton(providerEvents(events, turn=0)); want = skeleton(collect(faux.New(turn).Stream(ctx, Request{}))); assert types(got)==types(want); assert textEnd.Text==scripted; assert jsonEqual(toolEnd.Block.Input, args)\nfor turn in gen_turns(): for p in providers: got = skeleton(providerEvents(run(p, turn))); assert types(got)==types(skeleton(faux(turn))); assert payloadsWhole(turn)"
+          }
         },
         {
-          "id": "30-REQ-3.3",
+          "id": "REQ-3.3",
           "pattern": "event_driven",
           "condition": "a scripted turn ends with the vendor's normal or tool-call stop",
-          "system": "conformance suite",
-          "action": "assert that TextEndEvent.Text and ThinkingEndEvent.Thinking hold the full scripted text and that ToolCallEndEvent.Block has the scripted id and name and an Input JSON-equal to the scripted arguments"
+          "action": "assert that TextEndEvent.Text and ThinkingEndEvent.Thinking hold the full scripted text and that ToolCallEndEvent.Block has the scripted id and name and an Input JSON-equal to the scripted arguments",
+          "check": {
+            "same_as": "REQ-3.2"
+          }
         },
         {
-          "id": "30-REQ-3.4",
+          "id": "REQ-3.4",
           "pattern": "event_driven",
           "condition": "a scripted turn fails (cut off, HTTP error status or in-stream error)",
-          "system": "conformance suite",
-          "action": "assert that the last two provider events are a terminal ErrorEvent followed by a MessageEndEvent whose message has StopReasonError"
+          "action": "assert that the last two provider events are a terminal ErrorEvent followed by a MessageEndEvent whose message has StopReasonError",
+          "contract": "the second to last provider event is an ErrorEvent with Terminal true; the last provider event is a MessageEndEvent whose message has StopReasonError",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the cut_off, error_status and error_in_stream cases on each provider"
+            ],
+            "pseudocode": "ev = providerEvents(events, 0); assert ev[-2] is ErrorEvent and ev[-2].Terminal; assert ev[-1] is MessageEndEvent and ev[-1].Message.StopReason==StopReasonError"
+          }
         },
         {
-          "id": "30-REQ-3.5",
+          "id": "REQ-3.5",
           "pattern": "unwanted",
           "condition": "the fake records more or fewer requests than the case scripts, for example from an unexpected retry or an extra turn",
-          "system": "conformance suite",
           "action": "fail the case",
-          "contract": "the failure names the scripted and recorded request counts"
+          "contract": "the failure names the scripted and recorded request counts",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a recording testing.TB stand-in",
+              "a case scripting 2 turns whose agent finishes after 1 request, and a case scripting 1 turn whose fake sees 2 requests"
+            ],
+            "pseudocode": "checkCount(tb, scripted=2, recorded=1); assert tb.failed and '2' in tb.msg and '1' in tb.msg; checkCount(tb2, 1, 2); assert tb2.failed"
+          }
         }
       ]
     },
     {
-      "id": "30-REQ-4",
+      "id": "REQ-4",
       "title": "Cases that end normally",
       "rationale": "Text, tool continuation under either stop reason, thinking replay and usage netting must agree across providers.",
+      "system": "conformance suite",
       "criteria": [
         {
-          "id": "30-REQ-4.1",
+          "id": "REQ-4.1",
           "pattern": "event_driven",
           "condition": "the text case runs one turn of \"Hello from the conformance suite.\" ending with the vendor's normal stop",
-          "system": "conformance suite",
           "action": "assert StopReasonStop on the message, RunStopEndTurn with a nil error, FinalText equal to the scripted text, and exactly one request carrying the user prompt",
-          "contract": "the subtest fails naming the first mismatched field when any assertion does not hold"
+          "contract": "the subtest fails naming the first mismatched field when any assertion does not hold",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "each provider's fake scripted with the text turn \"Hello from the conformance suite.\" ending with the vendor's normal stop"
+            ],
+            "pseudocode": "res = run(prompt); assert msg.StopReason==Stop; assert res.StopReason==RunStopEndTurn and res.Error==nil; assert res.FinalText()==text; assert len(reqs)==1 and prompt in decode(reqs[0]).UserTexts"
+          }
         },
         {
-          "id": "30-REQ-4.2",
+          "id": "REQ-4.2",
           "pattern": "event_driven",
           "condition": "the text case scripts 100 prompt tokens of which 60 are cache reads, 20 output tokens and, on OpenRouter only, a cost of 0.00042",
-          "system": "conformance suite",
-          "action": "assert the turn's usage is InputTokens 40, CacheReadTokens 60, OutputTokens 20, ReasoningTokens at most OutputTokens, with the cost bit set and CostUSD equal to the reported cost on OpenRouter and to provider.ComputeCost at the selected row otherwise, and that the run's usage is not flagged unpriced"
+          "action": "assert the turn's usage is InputTokens 40, CacheReadTokens 60, OutputTokens 20, ReasoningTokens at most OutputTokens, with the cost bit set and CostUSD equal to the reported cost on OpenRouter and to provider.ComputeCost at the selected row otherwise, and that the run's usage is not flagged unpriced",
+          "contract": "InputTokens is 40, CacheReadTokens 60, OutputTokens 20, ReasoningTokens at most OutputTokens; the cost bit is set; CostUSD equals 0.00042 on OpenRouter and provider.ComputeCost(row, usage) on anthropic and ollama; the run's usage is not flagged Unpriced",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the text case with 100 prompt tokens of which 60 are cache reads, 20 output tokens and, on OpenRouter only, cost 0.00042",
+              "the selected STANDARD row for each provider"
+            ],
+            "pseudocode": "u = turnEnd.Usage; assert u.InputTokens==40 and u.CacheReadTokens==60 and u.OutputTokens==20 and u.ReasoningTokens<=u.OutputTokens; assert u.Has(UsageCostUSD); assert u.CostUSD == (0.00042 if p=='openrouter' else ComputeCost(&row, u)); assert !res.Usage.Unpriced"
+          }
         },
         {
-          "id": "30-REQ-4.3",
+          "id": "REQ-4.3",
           "pattern": "event_driven",
           "condition": "the tool_call case scripts turn 1 as tool call call_conformance_1 to echo with {\"v\":\"conformance\"} ending with the vendor's tool-call stop, and turn 2 as text \"All done.\"",
-          "system": "conformance suite",
           "action": "assert echo ran once with the scripted arguments, the first request declares echo, the second request carries that call (id, name, arguments) on the assistant message followed by a tool result for call_conformance_1 whose text contains \"echoed\", and the run ends RunStopEndTurn with a nil error, TurnCount 2 and FinalText \"All done.\"",
-          "contract": "the subtest fails naming the first mismatched field when any assertion does not hold"
+          "contract": "the subtest fails naming the first mismatched field when any assertion does not hold",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "turn 1: tool call call_conformance_1 to echo with {\"v\":\"conformance\"} ending with the vendor's tool-call stop (Anthropic tool_use, OpenRouter tool_calls, Ollama stop)",
+              "turn 2: text \"All done.\""
+            ],
+            "pseudocode": "assert calls.Load()==1; assert 'echo' in decode(reqs[0]).Tools; s = decode(reqs[1]); assert s.Assistant[0].ToolCalls[0]=={id,'echo',args}; assert s.Results[0].CallID=='call_conformance_1' and 'echoed' in s.Results[0].Text; assert res.TurnCount==2"
+          }
         },
         {
-          "id": "30-REQ-4.4",
+          "id": "REQ-4.4",
           "pattern": "event_driven",
           "condition": "the tool_call_stop case scripts the tool_call turns with turn 1 ending in the vendor's plain stop (Anthropic end_turn, OpenRouter stop, Ollama stop)",
-          "system": "conformance suite",
           "action": "assert the same outcome as the tool_call case",
-          "contract": "the loop continues on the tool call whatever the stop reason"
+          "contract": "the loop continues on the tool call whatever the stop reason",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the tool_call turns with turn 1 ending in the vendor's plain stop (Anthropic end_turn, OpenRouter stop, Ollama stop)"
+            ],
+            "pseudocode": "same assertions as tool_call with turn1.end = plainStop[p]"
+          }
         },
         {
-          "id": "30-REQ-4.5",
+          "id": "REQ-4.5",
           "pattern": "event_driven",
           "condition": "the thinking case scripts turn 1 as thinking \"Plan: call echo once.\" (signature sig-conformance on Anthropic, two reasoning.text fragments of reasoning_details on OpenRouter) followed by the tool_call call, and turn 2 as text",
-          "system": "conformance suite",
-          "action": "assert turn 1 emits thinking events, no text event carries any of the thinking, and the first assistant message in the transcript is a ThinkingBlock holding the full thinking followed by the tool use, with no text block containing the thinking"
+          "action": "assert turn 1 emits thinking events, no text event carries any of the thinking, and the first assistant message in the transcript is a ThinkingBlock holding the full thinking followed by the tool use, with no text block containing the thinking",
+          "contract": "turn 1 emits ThinkingStart, ThinkingDelta and ThinkingEnd events; no TextStart, TextDelta or TextEnd event contains any part of the thinking; the first assistant message is a ThinkingBlock holding the full thinking followed by the tool use block; no text block of that message contains the thinking",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "turn 1: thinking \"Plan: call echo once.\" (signature sig-conformance on Anthropic, two reasoning.text fragments on OpenRouter) then the tool_call call",
+              "turn 2: text"
+            ],
+            "pseudocode": "assert any ThinkingEnd in turn1; for e in text events: assert 'Plan' not in e.text; m = res.Messages[1]; assert m.Content[0] is ThinkingBlock and .Thinking==thinking; assert m.Content[1] is ToolUseBlock; assert no TextBlock contains thinking"
+          }
         },
         {
-          "id": "30-REQ-4.6",
+          "id": "REQ-4.6",
           "pattern": "event_driven",
           "condition": "the thinking case's second request is decoded",
-          "system": "conformance suite",
-          "action": "assert the thinking is replayed in raw vendor form exactly as received (Anthropic thinking text and signature sig-conformance, OpenRouter reasoning_details JSON-equal to the sent fragments, Ollama thinking equal to the text) and does not appear in that assistant message's visible content"
+          "action": "assert the thinking is replayed in raw vendor form exactly as received (Anthropic thinking text and signature sig-conformance, OpenRouter reasoning_details JSON-equal to the sent fragments, Ollama thinking equal to the text) and does not appear in that assistant message's visible content",
+          "contract": "Anthropic: thinking text equals the plan and the signature equals sig-conformance; OpenRouter: reasoning_details is JSON-equal to the two fragments sent; Ollama: thinking equals the thinking text; the thinking does not appear in that assistant message's visible content",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the thinking case recorded requests on each provider"
+            ],
+            "pseudocode": "s = decode(reqs[1]).Assistant[0]; switch p: anthropic: assert s.RawThinking=={text, 'sig-conformance'}; openrouter: assert jsonEqual(s.RawThinking, sentFragments); ollama: assert s.RawThinking==text; assert thinking not in s.Text"
+          }
         }
       ]
     },
     {
-      "id": "30-REQ-5",
+      "id": "REQ-5",
       "title": "Cases that fail",
       "rationale": "A cut-off stream, an HTTP error status and an in-stream error are distinct code paths in every provider and must all stop the loop without executing tools.",
+      "system": "conformance suite",
       "criteria": [
         {
-          "id": "30-REQ-5.1",
+          "id": "REQ-5.1",
           "pattern": "event_driven",
           "condition": "the cut_off case scripts text \"Partial answer\" then a tool call (arguments cut mid-way on Anthropic and OpenRouter, a whole tool-call chunk on Ollama) and ends the body without the final signal",
-          "system": "conformance suite",
           "action": "assert the terminal ErrorEvent.Err matches the provider's ErrStreamTruncated by errors.Is and the run ends RunStopError with a non-nil error after exactly one request",
-          "contract": "the subtest fails naming the expected and observed error or stop reason when any assertion does not hold"
+          "contract": "the subtest fails naming the expected and observed error or stop reason when any assertion does not hold",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "text \"Partial answer\" then a tool call with arguments cut mid-way (Anthropic, OpenRouter) or a whole tool-call chunk (Ollama), and the body ends without message_stop, finish_reason or done:true"
+            ],
+            "pseudocode": "assert errors.Is(terminal.Err, truncatedSentinel[p]); assert res.StopReason==RunStopError and res.Error!=nil; assert len(reqs)==1"
+          }
         },
         {
-          "id": "30-REQ-5.2",
+          "id": "REQ-5.2",
           "pattern": "event_driven",
           "condition": "the cut_off case has run",
-          "system": "conformance suite",
           "action": "assert echo never ran, no ToolExecutionStartEvent was emitted, and the last assistant message has StopReasonError with text containing \"Partial answer\"",
-          "contract": "the assertion holds whether the provider keeps salvaged tool-use blocks in the failed message or drops them"
+          "contract": "the assertion holds whether the provider keeps salvaged tool-use blocks in the failed message or drops them",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the cut_off case on each provider, whether or not the provider keeps salvaged tool-use blocks"
+            ],
+            "pseudocode": "assert calls.Load()==0; assert no ToolExecutionStartEvent in events; m = lastAssistant(res.Messages); assert m.StopReason==Error and 'Partial answer' in text(m)"
+          }
         },
         {
-          "id": "30-REQ-5.3",
+          "id": "REQ-5.3",
           "pattern": "event_driven",
           "condition": "the error_status case answers HTTP 400 with the vendor's error body and message conformance-bad-request",
-          "system": "conformance suite",
-          "action": "assert the terminal ErrorEvent.Err is the provider's *StatusError with Code 400 by errors.As, its text starts \"<provider>: HTTP 400\" and contains conformance-bad-request, the run ends RunStopError, exactly one request was made and no tool ran"
+          "action": "assert the terminal ErrorEvent.Err is the provider's *StatusError with Code 400 by errors.As, its text starts \"<provider>: HTTP 400\" and contains conformance-bad-request, the run ends RunStopError, exactly one request was made and no tool ran",
+          "contract": "the terminal ErrorEvent.Err is the provider's *StatusError with Code 400 by errors.As; its text starts \"<provider>: HTTP 400\" and contains conformance-bad-request; the run ends RunStopError; exactly one request was made and the echo tool never ran",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "each fake answering HTTP 400 with the vendor's error body and message conformance-bad-request"
+            ],
+            "pseudocode": "var se *pkg.StatusError; assert errors.As(terminal.Err,&se) and se.Code==400; assert hasPrefix(terminal.Message, p+': HTTP 400') and contains(..., 'conformance-bad-request'); assert len(reqs)==1 and calls==0"
+          }
         },
         {
-          "id": "30-REQ-5.4",
+          "id": "REQ-5.4",
           "pattern": "event_driven",
           "condition": "the error_in_stream case scripts text \"Working on it\" then the vendor's in-stream error with message conformance-upstream-failure",
-          "system": "conformance suite",
-          "action": "assert the terminal ErrorEvent text contains conformance-upstream-failure, the run ends RunStopError, the last assistant message keeps \"Working on it\", exactly one request was made and no tool ran"
+          "action": "assert the terminal ErrorEvent text contains conformance-upstream-failure, the run ends RunStopError, the last assistant message keeps \"Working on it\", exactly one request was made and no tool ran",
+          "contract": "the terminal ErrorEvent text contains conformance-upstream-failure; the run ends RunStopError; the last assistant message keeps \"Working on it\"; exactly one request was made and no tool ran",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "text \"Working on it\" then the vendor's in-stream error with message conformance-upstream-failure"
+            ],
+            "pseudocode": "assert 'conformance-upstream-failure' in terminal.Err.Error(); assert res.StopReason==RunStopError; assert 'Working on it' in text(lastAssistant); assert len(reqs)==1 and calls==0"
+          }
         }
       ]
     },
     {
-      "id": "30-REQ-6",
+      "id": "REQ-6",
       "title": "Live smoke test gates",
       "rationale": "Developer machines often export keys or run ollama serve, so live tests must need an explicit opt-in as well as each provider's prerequisites.",
       "criteria": [
         {
-          "id": "30-REQ-6.1",
+          "id": "REQ-6.1",
           "pattern": "unwanted",
           "condition": "TestLive runs under -short",
           "system": "TestLive",
           "action": "skip the whole test before contacting any service",
-          "contract": "the test reports SKIP; make check and plain go test -short make no live request"
+          "contract": "the test reports SKIP; make check and plain go test -short make no live request",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "AGENTKIT_LIVE=1 and OPENROUTER_API_KEY, OPENROUTER_BASE_URL and OLLAMA_HOST pointing at a recording loopback server"
+            ],
+            "pseudocode": "r = exec('go test -short -v -run TestLive ./internal/providerconformance', env=live+decoy); assert 'SKIP' in r.out and decoy.requests==0"
+          }
         },
         {
-          "id": "30-REQ-6.2",
+          "id": "REQ-6.2",
           "pattern": "unwanted",
           "condition": "AGENTKIT_LIVE is not exactly \"1\"",
           "system": "TestLive",
           "action": "skip the whole test before contacting any service",
-          "contract": "the skip message names AGENTKIT_LIVE and make provider-live-test"
+          "contract": "the skip message names AGENTKIT_LIVE and make provider-live-test",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "no -short flag",
+              "a recording loopback server wired through the provider variables"
+            ],
+            "pseudocode": "for v in [unset,'0','true']: r = exec(go test -v -run TestLive, env); assert 'SKIP' in r.out and 'AGENTKIT_LIVE' in r.out and 'make provider-live-test' in r.out"
+          }
         },
         {
-          "id": "30-REQ-6.3",
+          "id": "REQ-6.3",
           "pattern": "unwanted",
           "condition": "anthropic.Resolve(anthropic.OSEnv{}) returns an error in the anthropic subtest",
           "system": "TestLive",
           "action": "skip the anthropic subtest",
-          "contract": "the skip message includes the Resolve error text"
+          "contract": "the skip message includes the Resolve error text",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "AGENTKIT_LIVE=1, no ANTHROPIC_*, Vertex or Bedrock variables in the subprocess environment"
+            ],
+            "pseudocode": "_, _, err = anthropic.Resolve(OSEnv{}) with empty env; r = exec(...); assert 'SKIP' in r.out['TestLive/anthropic'] and err.Error() in r.out"
+          }
         },
         {
-          "id": "30-REQ-6.4",
+          "id": "REQ-6.4",
           "pattern": "unwanted",
           "condition": "OPENROUTER_API_KEY is empty in the openrouter subtest",
           "system": "TestLive",
           "action": "skip the openrouter subtest",
-          "contract": "the skip message names OPENROUTER_API_KEY"
+          "contract": "the skip message names OPENROUTER_API_KEY",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "AGENTKIT_LIVE=1 and OPENROUTER_API_KEY empty or unset"
+            ],
+            "pseudocode": "r = exec(env without key); assert 'SKIP' in out and 'OPENROUTER_API_KEY' in out"
+          }
         },
         {
-          "id": "30-REQ-6.5",
+          "id": "REQ-6.5",
           "pattern": "unwanted",
           "condition": "in the ollama subtest, ollama.New(row, ollama.Options{}) fails, or GET <Host()>/api/tags with a 2-second timeout is unreachable or answers a non-200 status",
           "system": "TestLive",
           "action": "skip the ollama subtest",
-          "contract": "the skip message names the New error, or the host and ollama serve"
+          "contract": "the skip message names the New error, or the host and ollama serve",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "AGENTKIT_LIVE=1",
+              "three environments: an OLLAMA_HOST that makes ollama.New fail, a closed loopback port, and a loopback server answering /api/tags with 500"
+            ],
+            "pseudocode": "for env in [badHost, closedPort, status500]: r = exec(...); assert 'SKIP' in r.out; assert ('ollama serve' in r.out and host in r.out) or newErr in r.out"
+          }
         },
         {
-          "id": "30-REQ-6.6",
+          "id": "REQ-6.6",
           "pattern": "unwanted",
           "condition": "the ollama /api/tags response does not list the STANDARD tier's model",
           "system": "TestLive",
           "action": "skip the ollama subtest",
-          "contract": "the skip message names ollama pull <model>"
+          "contract": "the skip message names ollama pull <model>",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "AGENTKIT_LIVE=1 and OLLAMA_HOST pointing at a loopback server whose /api/tags lists only another model"
+            ],
+            "pseudocode": "serve tags {'models':[{'name':'other:1b'}]}; r = exec(...); assert 'ollama pull '+sel.Model.ID in r.out; assert no chat request"
+          }
         },
         {
-          "id": "30-REQ-6.7",
+          "id": "REQ-6.7",
           "pattern": "event_driven",
           "condition": "an operator runs make provider-live-test",
           "system": "Makefile",
           "action": "run AGENTKIT_LIVE=1 go test -count=1 -v -timeout 30m -run TestLive ./internal/providerconformance, a target that neither check nor check-release depends on",
-          "contract": "the go test exit status of the live run is the make target's exit status; make check and make check-release never run TestLive"
+          "contract": "the go test exit status of the live run is the make target's exit status; make check and make check-release never run TestLive",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the repository Makefile"
+            ],
+            "pseudocode": "out = exec('make -n provider-live-test'); assert contains(out, expectedCommand); assert 'provider-live-test' not in transitivePrereqs('check') and not in transitivePrereqs('check-release')"
+          }
         }
       ]
     },
     {
-      "id": "30-REQ-7",
+      "id": "REQ-7",
       "title": "Live smoke test run",
       "rationale": "A real read-a-file-and-answer loop with a random word proves each provider works against its live service within a bounded cost.",
+      "system": "TestLive",
       "criteria": [
         {
-          "id": "30-REQ-7.1",
+          "id": "REQ-7.1",
           "pattern": "event_driven",
           "condition": "a TestLive subtest's gates and prerequisites are satisfied",
-          "system": "TestLive",
           "action": "write secret.txt holding a fresh random word into a temporary workspace, build the agent with agentkit.New using Provider set to the name, Model \"STANDARD\", the process environment (no Getenv), only the built-in read_file tool (tools.For then core.Named), MaxTurns 6, MaxCostUSD 0.50 and Timeout 10 minutes, and ask the model to read the file and reply with the word",
-          "contract": "the run is bounded at 6 turns, $0.50 and 10 minutes; exceeding a bound ends the run with a non-end-turn stop and the subtest fails"
+          "contract": "the run is bounded at 6 turns, $0.50 and 10 minutes; exceeding a bound ends the run with a non-end-turn stop and the subtest fails",
+          "check": {
+            "same_as": "PATH-2"
+          }
         },
         {
-          "id": "30-REQ-7.2",
+          "id": "REQ-7.2",
           "pattern": "event_driven",
           "condition": "a live run finishes",
-          "system": "TestLive",
           "action": "assert the run ended RunStopEndTurn with a nil error, at least one read_file call succeeded, and the final text contains the random word",
-          "contract": "the subtest fails naming the stop reason, the run error or the missing word when any assertion does not hold"
+          "contract": "the subtest fails naming the stop reason, the run error or the missing word when any assertion does not hold",
+          "check": {
+            "same_as": "PATH-2"
+          }
         },
         {
-          "id": "30-REQ-7.3",
+          "id": "REQ-7.3",
           "pattern": "event_driven",
           "condition": "a live run finishes",
-          "system": "TestLive",
-          "action": "assert Agent.Resolution() reports the provider name, tier STANDARD, and the model id and effort that catalog.Select gives"
+          "action": "assert Agent.Resolution() reports the provider name, tier STANDARD, and the model id and effort that catalog.Select gives",
+          "contract": "Resolution reports the provider name, tier STANDARD and the model id and effort catalog.Select gives; input and output tokens are positive; the run's usage is not flagged Unpriced; cost is positive on anthropic and openrouter and exactly zero on ollama; model, effort, turns, tokens and cost are logged with t.Logf",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "AGENTKIT_LIVE=1, a ready provider, and a finished live run"
+            ],
+            "pseudocode": "r = agent.Resolution(); sel = catalog.Select(p,'STANDARD',''); assert r.Provider==p and r.Tier==STANDARD and r.Model.ID==sel.Model.ID and r.Effort==sel.Effort; u = res.Usage; assert u.InputTokens>0 and u.OutputTokens>0 and !u.Unpriced; assert (u.CostUSD>0) == (p!='ollama'); t.Logf(...)"
+          }
         },
         {
-          "id": "30-REQ-7.4",
+          "id": "REQ-7.4",
           "pattern": "event_driven",
           "condition": "a live run finishes",
-          "system": "TestLive",
-          "action": "assert input and output tokens are positive, the run's usage is not flagged unpriced, and the cost is positive on anthropic and openrouter and zero on ollama, then log the model, effort, turns, tokens and cost"
+          "action": "assert input and output tokens are positive, the run's usage is not flagged unpriced, and the cost is positive on anthropic and openrouter and zero on ollama, then log the model, effort, turns, tokens and cost",
+          "check": {
+            "same_as": "REQ-7.3"
+          }
         }
       ]
     },
     {
-      "id": "30-REQ-8",
+      "id": "REQ-8",
       "title": "Examples choose provider, model and effort",
       "rationale": "The model-calling examples should select what runs a model the same way an embedder does.",
       "criteria": [
         {
-          "id": "30-REQ-8.1",
+          "id": "REQ-8.1",
           "pattern": "ubiquitous",
           "system": "examples codingagent, customtools and mcp",
-          "action": "read AGENTKIT_PROVIDER, AGENTKIT_MODEL and AGENTKIT_EFFORT from the process environment with their own few lines (no shared helper) and pass them unchanged to agentkit.Config Provider, Model and Effort, with defaults empty, \"STANDARD\" and empty"
+          "action": "read AGENTKIT_PROVIDER, AGENTKIT_MODEL and AGENTKIT_EFFORT from the process environment with their own few lines (no shared helper) and pass them unchanged to agentkit.Config Provider, Model and Effort, with defaults empty, \"STANDARD\" and empty",
+          "contract": "each file reads AGENTKIT_PROVIDER, AGENTKIT_MODEL and AGENTKIT_EFFORT from the process environment; AGENTKIT_MODEL defaults to \"STANDARD\", the other two to empty; the values reach Config.Provider, Config.Model and Config.Effort with no other transformation; no example imports a shared helper package for this",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the main.go of examples/codingagent, examples/customtools and examples/mcp parsed with go/parser",
+              "an Ollama-shaped server answering one text turn",
+              "subprocess environment with AGENTKIT_PROVIDER=ollama and OLLAMA_HOST only, AGENTKIT_MODEL and AGENTKIT_EFFORT unset"
+            ],
+            "pseudocode": "for ex in examples: assert getenvNames(ex) ⊇ {PROVIDER, MODEL, EFFORT}; assert defaultOf(MODEL)=='STANDARD'; assert Config literal fields Provider, Model, Effort set from those\nfor ex in examples: out = run(ex, {AGENTKIT_PROVIDER:'ollama', OLLAMA_HOST:srv.URL}); sel = catalog.Select('ollama','STANDARD',''); assert req.model==sel.Model.ID and req.think==string(sel.Effort); assert summary contains provider, model, effort"
+          }
         },
         {
-          "id": "30-REQ-8.2",
+          "id": "REQ-8.2",
           "pattern": "ubiquitous",
           "system": "examples codingagent, customtools and mcp",
-          "action": "not call catalog.Lookup or anthropic.Resolve and not import anthropic-sdk-go"
+          "action": "not call catalog.Lookup or anthropic.Resolve and not import anthropic-sdk-go",
+          "contract": "no import path contains anthropic-sdk-go; no selector expression is catalog.Lookup or anthropic.Resolve",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the main.go files of codingagent, customtools and mcp parsed with go/parser"
+            ],
+            "pseudocode": "for ex in examples: assert not any('anthropic-sdk-go' in i for i in imports(ex)); assert 'catalog.Lookup' not in selectors(ex) and 'anthropic.Resolve' not in selectors(ex)"
+          }
         },
         {
-          "id": "30-REQ-8.3",
+          "id": "REQ-8.3",
           "pattern": "unwanted",
           "condition": "agentkit.New returns an error, for example for an unknown provider, an unknown effort or a missing OPENROUTER_API_KEY",
           "system": "examples codingagent, customtools and mcp",
           "action": "print error: followed by the error text and exit before sending any model request",
-          "contract": "exit status 1; no request reaches any provider endpoint"
+          "contract": "exit status 1; no request reaches any provider endpoint",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an Ollama-shaped recording server",
+              "environments: AGENTKIT_EFFORT=bogus with AGENTKIT_PROVIDER=ollama and OLLAMA_HOST set; AGENTKIT_PROVIDER=openrouter with OPENROUTER_API_KEY removed from the environment"
+            ],
+            "pseudocode": "for ex in examples: for env in cases: r = run(ex, env); assert r.exit==1 and 'error: ' in r.out; assert len(srv.requests)==0"
+          }
         },
         {
-          "id": "30-REQ-8.4",
+          "id": "REQ-8.4",
           "pattern": "event_driven",
           "condition": "a run finishes",
           "system": "examples codingagent, customtools and mcp",
-          "action": "print a summary line naming the provider, model id and effort from Agent.Resolution() alongside turns, tokens and cost"
+          "action": "print a summary line naming the provider, model id and effort from Agent.Resolution() alongside turns, tokens and cost",
+          "check": {
+            "same_as": "REQ-8.1"
+          }
         },
         {
-          "id": "30-REQ-8.5",
+          "id": "REQ-8.5",
           "pattern": "state_driven",
           "condition": "the run's usage is flagged unpriced",
           "system": "examples codingagent, customtools and mcp",
-          "action": "show cost unknown in the summary line instead of a dollar figure"
+          "action": "show cost unknown in the summary line instead of a dollar figure",
+          "contract": "the unpriced summary contains \"cost unknown\" and no \"$\"; the priced summary contains \"$0.0123\" and not \"cost unknown\"; both name the provider, model id and effort",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "each example's summary formatting function (package main internal test) and a core.Usage with Unpriced true and CostUSD 0, and another with Unpriced false and CostUSD 0.0123"
+            ],
+            "pseudocode": "s = summary(res, Usage{Unpriced:true}); assert 'cost unknown' in s and '$' not in s; s2 = summary(res, Usage{CostUSD:0.0123,...}); assert '$0.0123' in s2"
+          }
         },
         {
-          "id": "30-REQ-8.6",
+          "id": "REQ-8.6",
           "pattern": "ubiquitous",
           "system": "examples agentdemo, codemode, sandbox, gateway and harness",
-          "action": "stay on provider/faux and read none of AGENTKIT_PROVIDER, AGENTKIT_MODEL and AGENTKIT_EFFORT"
+          "action": "stay on provider/faux and read none of AGENTKIT_PROVIDER, AGENTKIT_MODEL and AGENTKIT_EFFORT",
+          "contract": "none of the three variable names appears in any of those files; each example that builds a model client imports provider/faux",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the Go source files of examples/agentdemo, codemode, sandbox, gateway and harness"
+            ],
+            "pseudocode": "for ex in offlineExamples: for f in goFiles(ex): assert none(v in text(f) for v in vars); assert importsFaux(ex)"
+          }
         }
       ]
     },
     {
-      "id": "30-REQ-9",
+      "id": "REQ-9",
       "title": "Example tests",
       "rationale": "Each model-calling example must be shown to honour the selection variables offline, without a credential.",
       "criteria": [
         {
-          "id": "30-REQ-9.1",
+          "id": "REQ-9.1",
           "pattern": "ubiquitous",
           "system": "example main_test.go of codingagent, customtools and mcp",
-          "action": "start an Ollama-shaped httptest server that answers one text turn as NDJSON at POST /api/chat and records requests, and run the example with go run . in a subprocess whose environment is the test's environment plus the case's variables"
+          "action": "start an Ollama-shaped httptest server that answers one text turn as NDJSON at POST /api/chat and records requests, and run the example with go run . in a subprocess whose environment is the test's environment plus the case's variables",
+          "contract": "exit status 0; stdout carries the server's text; the summary line names ollama, qwen3.8:27b and high; the recorded request has model qwen3.8:27b and think \"high\"",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an Ollama-shaped httptest server answering one text turn as NDJSON at POST /api/chat and recording requests",
+              "go run . subprocess whose environment is the test's environment plus AGENTKIT_PROVIDER=ollama, OLLAMA_HOST=<server>, AGENTKIT_MODEL=SIMPLE, AGENTKIT_EFFORT=high",
+              "the same Ollama-shaped server and subprocess environment as for codingagent"
+            ],
+            "pseudocode": "r = goRun('.', env); assert r.exit==0 and text in r.stdout; assert all(s in r.summary for s in ['ollama','qwen3.8:27b','high']); req = srv.requests[0]; assert req.model=='qwen3.8:27b' and req.think=='high'\nsame as codingagent override test against examples/customtools\nsame as codingagent override test against examples/mcp"
+          }
         },
         {
-          "id": "30-REQ-9.2",
+          "id": "REQ-9.2",
           "pattern": "event_driven",
           "condition": "the example runs with AGENTKIT_PROVIDER=ollama, OLLAMA_HOST=<server>, AGENTKIT_MODEL=SIMPLE and AGENTKIT_EFFORT=high",
           "system": "example main_test.go of codingagent, customtools and mcp",
-          "action": "assert the example exits 0, stdout carries the server's text, the summary line names ollama, qwen3.8:27b and high, and the recorded request has model qwen3.8:27b and think \"high\""
+          "action": "assert the example exits 0, stdout carries the server's text, the summary line names ollama, qwen3.8:27b and high, and the recorded request has model qwen3.8:27b and think \"high\"",
+          "check": {
+            "same_as": "REQ-9.1"
+          }
         },
         {
-          "id": "30-REQ-9.3",
+          "id": "REQ-9.3",
           "pattern": "unwanted",
           "condition": "the example runs with AGENTKIT_PROVIDER=openai",
           "system": "example main_test.go of codingagent, customtools and mcp",
           "action": "assert the example fails before any request",
-          "contract": "non-zero exit; the output names openai and the three known providers anthropic, openrouter and ollama; the server records no request"
+          "contract": "non-zero exit; the output names openai and the three known providers anthropic, openrouter and ollama; the server records no request",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an Ollama-shaped recording server",
+              "subprocess environment with AGENTKIT_PROVIDER=openai and OLLAMA_HOST=<server>",
+              "subprocess environment with AGENTKIT_PROVIDER=openai"
+            ],
+            "pseudocode": "r = goRun('.', env); assert r.exit != 0; for n in ['openai','anthropic','openrouter','ollama']: assert n in r.out; assert len(srv.requests)==0\nsame as codingagent unknown-provider test\nsame as codingagent unknown-provider test"
+          }
         },
         {
-          "id": "30-REQ-9.4",
+          "id": "REQ-9.4",
           "pattern": "ubiquitous",
           "system": "examples codingagent, customtools and mcp",
           "action": "consult only Ollama variables on the ollama path",
-          "contract": "the override-precedence outcome is unchanged when OPENROUTER_* or ANTHROPIC_* values are present in the developer's environment"
+          "contract": "the override-precedence outcome is unchanged when OPENROUTER_* or ANTHROPIC_* values are present in the developer's environment",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the override-precedence environment plus OPENROUTER_API_KEY, OPENROUTER_BASE_URL, ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL set to values pointing at a decoy listener"
+            ],
+            "pseudocode": "for ex in examples: r = goRun(ex, overrideEnv + decoyVars); assert r.exit==0 and req.model=='qwen3.8:27b' and req.think=='high' and decoy.accepted==0"
+          }
         }
       ]
     }
   ],
   "execution_paths": [
     {
-      "id": "30-PATH-1",
+      "id": "PATH-1",
       "title": "A developer runs the conformance suite and one case passes through resolution, provider, fake and loop",
       "steps": [
         {
@@ -457,10 +778,34 @@
           "actor": "conformance suite",
           "action": "compares the event skeleton with provider/faux, decodes the recorded requests, and asserts RunStopEndTurn, TurnCount 2 and FinalText \"All done.\""
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "go test subprocess",
+          "agentkit.New",
+          "catalog.Select",
+          "provider/openrouter",
+          "agent loop",
+          "internal/testkit.EchoTool",
+          "provider/faux reference",
+          "OpenRouter vendor fake httptest server"
+        ],
+        "setup": [
+          "the OpenRouter vendor fake scripted with a tool-call turn and a text turn",
+          "a Getenv holding only OPENROUTER_API_KEY and OPENROUTER_BASE_URL pointing at <fake>/api/v1"
+        ],
+        "end_state": [
+          "exactly the one subtest openrouter/tool_call runs and passes",
+          "agentkit.New selected the STANDARD row and built the openrouter client",
+          "the fake recorded two POST /api/v1/chat/completions requests",
+          "echo ran once and the second request carried the tool call and its result",
+          "the event skeleton equals provider/faux's",
+          "the run ends RunStopEndTurn with TurnCount 2 and FinalText \"All done.\""
+        ]
+      }
     },
     {
-      "id": "30-PATH-2",
+      "id": "PATH-2",
       "title": "An operator runs the live smoke tests",
       "steps": [
         {
@@ -487,10 +832,31 @@
           "actor": "TestLive",
           "action": "asserts the word, the resolution, the tokens and the cost, and logs model, effort, turns, tokens and cost"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "Makefile provider-live-test target",
+          "TestLive",
+          "agentkit.New",
+          "agent loop",
+          "tools.For read_file",
+          "live provider service"
+        ],
+        "setup": [
+          "AGENTKIT_LIVE=1 and at least one provider's prerequisites present (OPENROUTER_API_KEY, a reachable Ollama host with the tier model, or Anthropic credentials)",
+          "a temporary workspace containing secret.txt with a fresh random word"
+        ],
+        "end_state": [
+          "providers without prerequisites skip with a message naming what is missing",
+          "each ready provider's agent is built with agentkit.New: Provider name, Model STANDARD, process environment, only read_file, MaxTurns 6, MaxCostUSD 0.50, Timeout 10 minutes",
+          "the run ends RunStopEndTurn with a nil error",
+          "at least one read_file call succeeded",
+          "the final text contains the random word"
+        ]
+      }
     },
     {
-      "id": "30-PATH-3",
+      "id": "PATH-3",
       "title": "A user runs an example on Ollama with an explicit tier and effort",
       "steps": [
         {
@@ -513,10 +879,31 @@
           "actor": "example",
           "action": "prints the reply and a summary line naming ollama, qwen3.8:27b and high, then exits 0"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "go run subprocess",
+          "examples/customtools main",
+          "agentkit.New",
+          "catalog.Select",
+          "provider/ollama",
+          "agent loop",
+          "Ollama-shaped httptest server"
+        ],
+        "setup": [
+          "an Ollama-shaped httptest server answering NDJSON",
+          "AGENTKIT_PROVIDER=ollama, AGENTKIT_MODEL=SIMPLE, AGENTKIT_EFFORT=high and OLLAMA_HOST=<server>"
+        ],
+        "end_state": [
+          "the server receives POST /api/chat with model qwen3.8:27b and think \"high\"",
+          "the example prints the reply",
+          "the summary line names ollama, qwen3.8:27b and high",
+          "the exit status is 0"
+        ]
+      }
     },
     {
-      "id": "30-PATH-4",
+      "id": "PATH-4",
       "title": "A user runs an example with an unknown provider",
       "steps": [
         {
@@ -531,7 +918,25 @@
           "actor": "example",
           "action": "prints error: with that text and exits 1 without sending any request"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "go run subprocess",
+          "examples/codingagent main",
+          "agentkit.New",
+          "Ollama-shaped recording httptest server"
+        ],
+        "setup": [
+          "an Ollama-shaped recording server",
+          "AGENTKIT_PROVIDER=openai"
+        ],
+        "end_state": [
+          "agentkit.New's error names openai and the three known providers",
+          "the example prints a line starting \"error: \" with that text",
+          "the exit status is 1",
+          "the server recorded no request"
+        ]
+      }
     }
   ],
   "external_apis": [

@@ -4,9 +4,8 @@ spec_name: "provider_selection"
 title: "Choose the provider, model and effort from agentkit.Config"
 status: "active"
 created_at: "2026-10-21T11:03:27.256894Z"
-updated_at: "2026-10-21T11:03:27.256894Z"
 intent_hash: "d23c21c627d835260e383677a1310a4f581564d491226e9865e6f8444c9727de"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/14-run-the-agent-on-anthropic-openrouter-or-ollama.md"
 ---
 ## Intent
@@ -313,3 +312,13 @@ This spec calls no third-party package directly. The SDKs are reached only throu
   - `ollama.API` (expected to equal `core.APIOllamaChat`, `"ollama-chat"`).
 
   If `ollama.New` returns no error, `Resolve` treats it as infallible.
+
+## Glossary
+
+- **Listed**: True when the resolved model id has its own catalog row, false when the provider's fallback row was used.
+- **Resolution**: The value returned by agentkit.Resolve and Agent.Resolution: canonical provider name, tier, catalog model row, normalized effort, Listed flag and the core.ProviderClient a run calls.
+- **cost bit**: The core.UsageCostUSD bit in Usage.Set, which marks CostUSD as present.
+- **lookup order**: How a credential or endpoint variable is read: a non-empty Config.Env value first, then Config.Getenv when set (no process fallback), otherwise the process environment. An empty value counts as unset.
+- **recording server**: An httptest server in a test that answers one canned text turn in a provider's wire format and records every request's path, headers and body.
+- **tier**: A catalog tier name such as STANDARD that maps, per provider, to a model id and a default effort (spec 26).
+- **unpriced**: A usage covering at least one request whose cost neither the vendor reported nor the catalog priced, so CostUSD counts it as zero; carried as core.Usage.Unpriced.

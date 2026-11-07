@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "18",
   "spec_name": "sandbox_landlock_provider",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -33,26 +33,16 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Create sandbox/landlock with Options, ErrNoLandlock and New's platform and kernel-probe checks, plus the ABI-4 test gate and the import policy tests",
       "criteria": [
-        "18-REQ-1.1",
-        "18-REQ-1.2",
-        "18-REQ-1.3",
-        "18-REQ-1.4",
-        "18-REQ-1.5",
-        "18-REQ-10.1",
-        "18-REQ-10.2",
-        "18-REQ-10.4"
-      ],
-      "tests": [
-        "TS-18-1",
-        "TS-18-3",
-        "TS-18-5",
-        "TS-18-6",
-        "TS-18-62",
-        "TS-18-63",
-        "TS-18-65"
+        "REQ-1.1",
+        "REQ-1.2",
+        "REQ-1.3",
+        "REQ-1.4",
+        "REQ-1.5",
+        "REQ-10.1",
+        "REQ-10.2",
+        "REQ-10.4"
       ],
       "steps": [
         "Before adding any code, run `go mod edit -json` in sandbox/ and write its non-indirect Require entries as sorted `path@version` lines to internal/policy/testdata/sandbox-direct-requires.18.txt",
@@ -77,29 +67,15 @@
         "sandbox/landlock/gate_test.go",
         "internal/policy/landlock_provider_test.go",
         "internal/policy/testdata/sandbox-direct-requires.18.txt"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Complete New: resolve Root, check ExtraRO/ExtraRW against it, resolve the agent binary and check its --version protocol",
       "criteria": [
-        "18-REQ-1.1",
-        "18-REQ-1.3",
-        "18-REQ-2"
-      ],
-      "tests": [
-        "TS-18-2",
-        "TS-18-4",
-        "TS-18-8",
-        "TS-18-9",
-        "TS-18-10",
-        "TS-18-11",
-        "TS-18-12",
-        "TS-18-13",
-        "TS-18-14",
-        "TS-18-15"
+        "REQ-1.1",
+        "REQ-1.3",
+        "REQ-2"
       ],
       "steps": [
         "Add sandbox/landlock/main_test.go with TestMain that, on Linux, builds agentkit-sandboxd with CGO_ENABLED=0 (`go build -o <tmp>/agentkit-sandboxd ./cmd/agentkit-sandboxd` from the sandbox module root) into a package variable agentBin, removing the temporary directory after m.Run",
@@ -123,27 +99,18 @@
       ],
       "depends_on": [
         1
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Report Capabilities and build the agent's argument list, environment and resolver directory as pure functions",
       "criteria": [
-        "18-REQ-3.1",
-        "18-REQ-3.2",
-        "18-REQ-4.4",
-        "18-REQ-5.1",
-        "18-REQ-5.2",
-        "18-REQ-5.3"
-      ],
-      "tests": [
-        "TS-18-16",
-        "TS-18-17",
-        "TS-18-25",
-        "TS-18-28",
-        "TS-18-30"
+        "REQ-3.1",
+        "REQ-3.2",
+        "REQ-4.4",
+        "REQ-5.1",
+        "REQ-5.2",
+        "REQ-5.3"
       ],
       "steps": [
         "Add sandbox/landlock/helpers_test.go with newTestProvider(t, Options, ...func(*seams)) building a provider through newProvider with goos \"linux\", a probe returning 4, a temporary Root and a runVersion fake printing 'agentkit-sandboxd v0.0.0-test (protocol 1.2)' against a placeholder executable file, so it works on every platform; later tasks extend it with starter and process-table fakes",
@@ -166,26 +133,18 @@
       ],
       "depends_on": [
         2
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Implement the process table seam, the agent process handle, session kill, symlink-safe tree removal and the destroy step",
       "criteria": [
-        "18-REQ-5.4",
-        "18-REQ-7.1",
-        "18-REQ-7.2",
-        "18-REQ-7.3",
-        "18-REQ-7.4",
-        "18-REQ-7.5"
-      ],
-      "tests": [
-        "TS-18-43",
-        "TS-18-44",
-        "TS-18-45",
-        "TS-18-46"
+        "REQ-5.4",
+        "REQ-7.1",
+        "REQ-7.2",
+        "REQ-7.3",
+        "REQ-7.4",
+        "REQ-7.5"
       ],
       "steps": [
         "Write TS-18-44 (destroy_test.go, fake process table), TS-18-45 and TS-18-46 (remove_unix_test.go; the property test uses a seeded math/rand generator over at least 100 trees) and TS-18-43 (process_linux_test.go, real children); confirm they fail",
@@ -214,37 +173,23 @@
       ],
       "depends_on": [
         1
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Implement Create's success path: refusals, sandbox directory and marker, starter seam, attach and report checks, and the forwarding wrapper",
       "criteria": [
-        "18-REQ-1.6",
-        "18-REQ-3.3",
-        "18-REQ-3.4",
-        "18-REQ-3.5",
-        "18-REQ-3.6",
-        "18-REQ-4.1",
-        "18-REQ-4.2",
-        "18-REQ-4.3",
-        "18-REQ-5.2",
-        "18-REQ-5.4",
-        "18-REQ-5.5"
-      ],
-      "tests": [
-        "TS-18-7",
-        "TS-18-18",
-        "TS-18-19",
-        "TS-18-20",
-        "TS-18-21",
-        "TS-18-22",
-        "TS-18-23",
-        "TS-18-24",
-        "TS-18-29",
-        "TS-18-33"
+        "REQ-1.6",
+        "REQ-3.3",
+        "REQ-3.4",
+        "REQ-3.5",
+        "REQ-3.6",
+        "REQ-4.1",
+        "REQ-4.2",
+        "REQ-4.3",
+        "REQ-5.2",
+        "REQ-5.4",
+        "REQ-5.5"
       ],
       "steps": [
         "Extend helpers_test.go with an in-process starter: for each start it records argv and env, creates agent.New(agent.Config{Workdir: <the --workdir argument>, Env: env, TTL, Landlock: report(dir)}) served over two os.Pipe pairs adapted with stdioconn.New, returns an agentProc with a fake pid whose done closes when Serve ends, and registers that pid (start time, session) in a fake procTable; the report function defaults to ABI 4, TCP true and the resolved workspace/, home/ and tmp/ as Writable",
@@ -271,27 +216,17 @@
       "depends_on": [
         3,
         4
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Classify Create failures, enforce the ABI 4 floor and Root containment on the report, and run the destroy step exactly once",
       "criteria": [
-        "18-REQ-4.5",
-        "18-REQ-5.6",
-        "18-REQ-5.7",
-        "18-REQ-5.8",
-        "18-REQ-7.1"
-      ],
-      "tests": [
-        "TS-18-27",
-        "TS-18-32",
-        "TS-18-34",
-        "TS-18-35",
-        "TS-18-36",
-        "TS-18-42"
+        "REQ-4.5",
+        "REQ-5.6",
+        "REQ-5.7",
+        "REQ-5.8",
+        "REQ-7.1"
       ],
       "steps": [
         "Extend helpers_test.go with a fakeagent-based starter (sandbox/internal/fakeagent with Hello protocol major 2, or blocking Hello), a failing starter, a destroy-counting wrapper seam around newDestroy, an order-recording agent handle/procTable/remove seam, and failing wait and scan variants",
@@ -313,33 +248,20 @@
       ],
       "depends_on": [
         5
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Prove confinement, cleanup, TTL and an unconfined host against real agentkit-sandboxd processes on a Landlock ABI 4 kernel",
       "criteria": [
-        "18-REQ-4.4",
-        "18-REQ-5.4",
-        "18-REQ-5.6",
-        "18-REQ-6",
-        "18-REQ-7.6",
-        "18-REQ-7.7",
-        "18-REQ-7.8",
-        "18-REQ-10.3"
-      ],
-      "tests": [
-        "TS-18-26",
-        "TS-18-31",
-        "TS-18-37",
-        "TS-18-38",
-        "TS-18-39",
-        "TS-18-40",
-        "TS-18-41",
-        "TS-18-47",
-        "TS-18-64"
+        "REQ-4.4",
+        "REQ-5.4",
+        "REQ-5.6",
+        "REQ-6",
+        "REQ-7.6",
+        "REQ-7.7",
+        "REQ-7.8",
+        "REQ-10.3"
       ],
       "steps": [
         "Extend TestMain to also build sandbox/cmd/agentkit-sandboxd/testdata/dialtcp with CGO_ENABLED=0, and to dispatch re-executed children when AGENTKIT_LANDLOCK_CHILD is set (used by TS-18-64 here and TS-18-70 in task 11)",
@@ -365,26 +287,13 @@
       ],
       "depends_on": [
         6
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Add the GitRepo slot to the wrapper and run a GitRepo Sync through a confined init agent",
       "criteria": [
-        "18-REQ-8"
-      ],
-      "tests": [
-        "TS-18-48",
-        "TS-18-49",
-        "TS-18-50",
-        "TS-18-51",
-        "TS-18-52",
-        "TS-18-53",
-        "TS-18-54",
-        "TS-18-55",
-        "TS-18-56"
+        "REQ-8"
       ],
       "steps": [
         "Extend helpers_test.go: the in-process starter tells the sandbox's agent from the init agent (second start for the same directory) and lets a test choose the init report; a fake executable `git` in a temporary directory placed on Spec.Env PATH so Hello.Git is true; an `initCommand func(repo sandbox.GitRepo, ws string) []string` seam returning helper argv (shell scripts or the re-executed test binary) that block, succeed, write files or exit with a chosen status",
@@ -408,22 +317,13 @@
       ],
       "depends_on": [
         6
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 9,
-      "kind": "implement",
       "title": "Implement Reap with a pure owner-liveness decision, session kill for dead agents and sorted results",
       "criteria": [
-        "18-REQ-9"
-      ],
-      "tests": [
-        "TS-18-57",
-        "TS-18-58",
-        "TS-18-59",
-        "TS-18-60",
-        "TS-18-61"
+        "REQ-9"
       ],
       "steps": [
         "Extend the fake procTable in helpers_test.go with pid presence, start times, a configurable boot id, sessions and recorded kills, and add a `remove func(string) error` seam (default removeTree) so a test can inject a removal failure",
@@ -443,20 +343,15 @@
       "depends_on": [
         4,
         5
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 10,
-      "kind": "implement",
       "title": "Add the sandbox-landlock-test make target, the --landlock example run and the documentation",
       "criteria": [
-        "18-REQ-10.5",
-        "18-REQ-10.6",
-        "18-REQ-10.7"
-      ],
-      "tests": [
-        "TS-18-66"
+        "REQ-10.5",
+        "REQ-10.6",
+        "REQ-10.7"
       ],
       "steps": [
         "Write TS-18-66 in sandbox/landlock/makefile_test.go running `make -n sandbox-landlock-test` (with and without AGENTKIT_SANDBOX_GIT_URL=https://example.invalid/r) and `make -n check` from the repository root, skipping when make is not on PATH; confirm it fails",
@@ -481,49 +376,7 @@
         7,
         8,
         9
-      ],
-      "state": "done"
-    },
-    {
-      "id": 11,
-      "kind": "integration",
-      "title": "Verify the confine, GitRepo, reap, TTL and example paths end to end against real agents",
-      "tests": [
-        "TS-18-67",
-        "TS-18-68",
-        "TS-18-69",
-        "TS-18-70",
-        "TS-18-71",
-        "TS-18-72"
-      ],
-      "steps": [
-        "Write TS-18-67, TS-18-70 and TS-18-71 in sandbox/landlock/smoke_linux_test.go (needABI4, TestMain-built agentkit-sandboxd and dialtcp; TS-18-70 uses the AGENTKIT_LANDLOCK_CHILD re-exec child killed with SIGKILL) and confirm they pass on an ABI 4 host",
-        "Write TS-18-68 with the init-command seam replaced by a helper built in TestMain and placed beneath an ExtraRO directory, and TS-18-69 skipped unless AGENTKIT_SANDBOX_GIT_URL is set; run TS-18-69 through `make sandbox-landlock-test` on a networked ABI 4 host",
-        "Write TS-18-72 in examples/sandbox/landlock_smoke_test.go: build agentkit-sandboxd from ../../sandbox into a temporary directory, run `go run . --landlock --agent <path>`, expect exit 0 and the completion line on Linux ABI 4 and ErrNoLandlock's message elsewhere; confirm main_test.go is byte-for-byte unchanged",
-        "Trace 18-PATH-1 through the code: New → defaultProbe (syscall 444) → Root → extra paths → resolveAgent → runVersion; Create → CheckSpec → Provider/Env refusals → directory and creator marker → default starter (Setsid) → replaceMarker → attach.Dial with newDestroy → report checks → landlockSandbox; Close → attach → stopAgent, sessionKill, removeTree",
-        "Trace 18-PATH-2: landlockSandbox.Sync(GitRepo) → attach.Live, gitclone.Check, slot, Agent().Git → init agent start with initEnv → init report check → run_command with the default initCommand (git + gitclone.Args) → init Close → slot taken",
-        "Trace 18-PATH-3 and 18-PATH-4: a dead embedder leaves an agent-role marker → Reap → decide → sessionKill → removeTree; attach's host TTL timer calls the destroy step passed in attach.Config.Destroy; and 18-PATH-5: examples/sandbox main → landlock.New → runWith",
-        "Confirm each contract result is consumed in production code: ErrNoLandlock wrapped by New and the report checks and tested with errors.Is by the example; resolverDir called with /etc/resolv.conf from Create and GitRepo; agentArgs/agentEnv/initEnv feed the real starter; the default procTable, starter, initCommand and runVersion are what defaultSeams returns",
-        "Grep every file in the tasks' touches (sandbox/landlock/*.go, Makefile, examples/sandbox/main.go) for `panic(\"not implemented\")`, TODO, `NotImplementedError` and bare `return nil` on non-trivial paths; confirm the Capabilities, Create and Reap placeholders from task 1 are gone",
-        "Confirm the entry points from spec 17 (sandbox.GitRepo, gitclone.Check, gitclone.Args, attach.Live) are called from sandbox/landlock production code and that the package still imports neither go-landlock nor sandbox/internal/confine",
-        "Run `make check` and confirm it passes without network access, with the Linux tests skipping below ABI 4 and naming the ABI found"
-      ],
-      "touches": [
-        "sandbox/landlock/smoke_linux_test.go",
-        "sandbox/landlock/main_test.go",
-        "examples/sandbox/landlock_smoke_test.go"
-      ],
-      "depends_on": [
-        7,
-        8,
-        9,
-        10
-      ],
-      "done_when": [
-        "`make sandbox-landlock-test` passes on a Linux host with Landlock ABI 4, git beneath a system directory and network access",
-        "`make check` passes offline on Linux and macOS"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

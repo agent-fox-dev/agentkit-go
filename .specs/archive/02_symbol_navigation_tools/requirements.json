@@ -1,546 +1,920 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
   "spec_id": "02",
   "spec_name": "symbol_navigation_tools",
-  "schema_version": 2,
-  "introduction": "Two read-only built-in tools in the `tools` package, `file_outline` (declarations of one file with line ranges) and `find_symbol` (ranked workspace-wide declaration lookup). They are built on the `outline` package and `tools.Walk` from spec 01_outline_and_walk, and use an in-memory symbol table that is built lazily, bounded by file count and wall time, and refreshed after AgentKit's own write and shell tools run.",
-  "glossary": {
-    "CtagsRunner": "The function from spec 01 that runs universal-ctags and returns ErrCtagsUnavailable when it is absent.",
-    "backend": "The outline strategy that produced a file's declarations: go/ast, ctags, heuristic or none. Reported in Data and in the Text header of every result.",
-    "dirty path": "A workspace-relative path marked by write_file or edit_file because the file may have changed since it was indexed.",
-    "generation counter": "A counter advanced by every mark. A pass clears only marks that predate its start.",
-    "partial": "A find_symbol answer produced after a build or refresh pass stopped at the MaxFiles or MaxDuration bound. It carries partial: true and partial_reason `files` or `time`.",
-    "racy window": "The 2 s period after a file was indexed during which an unchanged size and mtime do not prove the file is unchanged, so revalidation always re-outlines it.",
-    "revalidation": "A walk of the scope that compares size and mtime for each file, re-outlines changed or new files and drops files not seen in a completed walk.",
-    "smart-case": "Matching rule where an all-lowercase query matches case-insensitively and any uppercase rune makes it case-sensitive.",
-    "symbol table": "The in-memory per-file store of outline.File, size, modification time and index time behind find_symbol. It is created empty with the tool set, built on the first find_symbol call and discarded with the tool set.",
-    "test file": "A file classified as a test by the fixed rule in 02-REQ-4.2; test files rank after non-test files.",
-    "whole-table mark": "A flag set after execute, run_command or powershell returns. It means every indexed file must be revalidated before the next answer."
-  },
+  "schema_version": 3,
   "requirements": [
     {
-      "id": "02-REQ-1",
+      "id": "REQ-1",
       "title": "file_outline: arguments, source of truth and errors",
       "rationale": "A model that can outline one file from disk can read only the range it needs, and it must get the same file access that read_file gives it.",
+      "system": "file_outline",
       "criteria": [
         {
-          "id": "02-REQ-1.1",
+          "id": "REQ-1.1",
           "pattern": "event_driven",
           "condition": "file_outline is called with a path that resolves through Workspace.Resolve to a regular file",
-          "system": "file_outline",
           "action": "read and outline the file from disk on every call by calling outline.Outline with Root set to the workspace root and the same runner configuration the symbol table uses, and never consult the symbol table",
-          "contract": "A successful ToolResult with Text and Data; two calls separated by an on-disk edit return different declarations without any refresh step"
+          "contract": "A successful ToolResult with Text and Data; two calls separated by an on-disk edit return different declarations without any refresh step",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a workspace with a Go file declaring func Alpha",
+              "a fake Runner counting calls and a table that has never been built"
+            ],
+            "pseudocode": "r1=outlineTool.Execute({path:'a.go'}); write('a.go', beta); r2=...; assert r1.OK && contains(r1.Text,'Alpha'); assert contains(r2.Text,'Beta'); assert walkCalls==0"
+          }
         },
         {
-          "id": "02-REQ-1.2",
+          "id": "REQ-1.2",
           "pattern": "unwanted",
           "condition": "the arguments cannot be parsed or the path is empty",
-          "system": "file_outline",
           "action": "return an error result without touching the filesystem",
-          "contract": "ToolResult with OK false and error code invalid_arguments"
+          "contract": "ToolResult with OK false and error code invalid_arguments",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a workspace and a tool set with a counting filesystem hook"
+            ],
+            "pseudocode": "for args in [ '{', '{\"path\":\"\"}', '{\"path\":3}' ]: r=exec(args); assert !r.OK && r.Error=='invalid_arguments'"
+          }
         },
         {
-          "id": "02-REQ-1.3",
+          "id": "REQ-1.3",
           "pattern": "unwanted",
           "condition": "the path resolves outside the workspace root",
-          "system": "file_outline",
           "action": "refuse the call and outline nothing",
-          "contract": "ToolResult with OK false and error code path_not_allowed"
+          "contract": "ToolResult with OK false and error code path_not_allowed",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a workspace and a file outside its root, plus a symlink inside the root pointing outside"
+            ]
+          }
         },
         {
-          "id": "02-REQ-1.4",
+          "id": "REQ-1.4",
           "pattern": "unwanted",
           "condition": "os.Stat of the resolved path fails",
-          "system": "file_outline",
           "action": "return an error result",
-          "contract": "ToolResult with OK false and error code read_failed"
+          "contract": "ToolResult with OK false and error code read_failed",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a workspace with no file named missing.go"
+            ],
+            "pseudocode": "r=exec({path:'missing.go'}); assert !r.OK && r.Error=='read_failed'"
+          }
         },
         {
-          "id": "02-REQ-1.5",
+          "id": "REQ-1.5",
           "pattern": "unwanted",
           "condition": "the resolved path is a directory or another non-regular file",
-          "system": "file_outline",
           "action": "return the message produced by notAFile, which for a directory says to use list_files",
-          "contract": "ToolResult with OK false and error code not_a_file"
+          "contract": "ToolResult with OK false and error code not_a_file",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a workspace with directory pkg/ and a named pipe or other non-regular file where the platform allows"
+            ]
+          }
         },
         {
-          "id": "02-REQ-1.6",
+          "id": "REQ-1.6",
           "pattern": "unwanted",
           "condition": "outline.Outline returns an error, for example because the file is unreadable",
-          "system": "file_outline",
           "action": "return an error result carrying the underlying detail",
-          "contract": "ToolResult with OK false and error code outline_failed"
+          "contract": "ToolResult with OK false and error code outline_failed",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a regular Go file with mode 0000 (test skipped when running as root or on a platform without permission bits)"
+            ]
+          }
         },
         {
-          "id": "02-REQ-1.7",
+          "id": "REQ-1.7",
           "pattern": "unwanted",
           "condition": "the call context is cancelled",
-          "system": "file_outline",
           "action": "stop and return an error result",
-          "contract": "ToolResult with OK false, error code aborted and detail \"Operation aborted\""
+          "contract": "ToolResult with OK false, error code aborted and detail \"Operation aborted\"",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a context that is already cancelled"
+            ]
+          }
         },
         {
-          "id": "02-REQ-1.8",
+          "id": "REQ-1.8",
           "pattern": "ubiquitous",
-          "system": "file_outline",
-          "action": "for any regular file inside the workspace that read_file can read, outline it without applying the ignore engine or the hidden-entry rule, including files that are gitignored or under dot-prefixed directories"
+          "action": "for any regular file inside the workspace that read_file can read, outline it without applying the ignore engine or the hidden-entry rule, including files that are gitignored or under dot-prefixed directories",
+          "contract": "file_outline returns OK true for it; the header names the file's workspace-relative slash path",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a workspace whose .gitignore ignores a generated set of paths, with files also under dot-prefixed directories"
+            ],
+            "pseudocode": "for f in gen_files(ignored|hidden|plain): assert read_file(f).OK => file_outline(f).OK"
+          }
         }
       ]
     },
     {
-      "id": "02-REQ-2",
+      "id": "REQ-2",
       "title": "file_outline: rendering and data",
       "rationale": "Compact text with line ranges lets the model follow the outline with read_file offset and limit without spending tokens on the whole file.",
+      "system": "file_outline",
       "criteria": [
         {
-          "id": "02-REQ-2.1",
+          "id": "REQ-2.1",
           "pattern": "ubiquitous",
-          "system": "file_outline",
-          "action": "render Text as a header line of the form `<workspace-relative slash path>  (<backend>, <N> declarations[, <M> unexported not listed])` followed by one line per listed declaration in source order, where the unexported clause appears only when M is greater than 0"
+          "action": "render Text as a header line of the form `<workspace-relative slash path>  (<backend>, <N> declarations[, <M> unexported not listed])` followed by one line per listed declaration in source order, where the unexported clause appears only when M is greater than 0",
+          "contract": "the first line is `<path>  (go/ast, N declarations, 2 unexported not listed)`; multi-line declarations render `L93-107    <signature>` style; a declaration whose EndLine is 0 or equals StartLine renders `L<start>` alone; declarations appear in source order",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Go file with a multi-line interface, a multi-line method, a one-line const and a declaration with EndLine 0 (via fake Runner), 2 unexported declarations",
+              "a Go file with 3 exported and 2 unexported declarations"
+            ],
+            "pseudocode": "assert lines[0]=='x.go  (go/ast, 5 declarations, 2 unexported not listed)'; assert regex(lines[1],'^  L\\\\d+-\\\\d+ +type Observer interface$')"
+          }
         },
         {
-          "id": "02-REQ-2.2",
+          "id": "REQ-2.2",
           "pattern": "state_driven",
           "condition": "include_private is false or omitted",
-          "system": "file_outline",
-          "action": "count unexported declarations in the total but omit them from the listed lines, and list them when include_private is true"
+          "action": "count unexported declarations in the total but omit them from the listed lines, and list them when include_private is true",
+          "check": {
+            "same_as": "REQ-2.1"
+          }
         },
         {
-          "id": "02-REQ-2.3",
+          "id": "REQ-2.3",
           "pattern": "ubiquitous",
-          "system": "file_outline",
-          "action": "render each declaration line as `L<start>-<end>` followed by the declaration's Signature, and render `L<start>` alone when EndLine is 0 or equals StartLine"
+          "action": "render each declaration line as `L<start>-<end>` followed by the declaration's Signature, and render `L<start>` alone when EndLine is 0 or equals StartLine",
+          "check": {
+            "same_as": "REQ-2.1"
+          }
         },
         {
-          "id": "02-REQ-2.4",
+          "id": "REQ-2.4",
           "pattern": "event_driven",
           "condition": "a listed declaration has a non-empty Container",
-          "system": "file_outline",
-          "action": "indent its line two further spaces unless its Signature already contains the container's name, as a Go method receiver does"
+          "action": "indent its line two further spaces unless its Signature already contains the container's name, as a Go method receiver does",
+          "contract": "the Python method line carries two more leading spaces than a top-level line; the Go method line is not indented further",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Python class with a method (signature lacks class name) and a Go method whose receiver contains the type name"
+            ]
+          }
         },
         {
-          "id": "02-REQ-2.5",
+          "id": "REQ-2.5",
           "pattern": "event_driven",
           "condition": "the file has no declarations",
-          "system": "file_outline",
-          "action": "render the header and one line stating that no declarations were found, with no listed declaration lines"
+          "action": "render the header and one line stating that no declarations were found, with no listed declaration lines",
+          "contract": "the Go file renders the header and one 'no declarations found' line and no declaration lines; each none-backend file's line names its reason (language not recognised, file too large, binary) in neutral wording; the none-backend lines suggest read_file or search_files; the oversized file is not an error",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an empty Go file, an unknown-extension file, an oversized file beyond MaxFileBytes and a binary file"
+            ]
+          }
         },
         {
-          "id": "02-REQ-2.6",
+          "id": "REQ-2.6",
           "pattern": "event_driven",
           "condition": "the file has no declarations and the backend is none",
-          "system": "file_outline",
-          "action": "make the line state the reason in neutral wording (language not recognised, file too large, or binary) and suggest read_file or search_files"
+          "action": "make the line state the reason in neutral wording (language not recognised, file too large, or binary) and suggest read_file or search_files",
+          "check": {
+            "same_as": "REQ-2.5"
+          }
         },
         {
-          "id": "02-REQ-2.7",
+          "id": "REQ-2.7",
           "pattern": "ubiquitous",
-          "system": "file_outline",
-          "action": "carry in Data the keys file (the outline.File), backend, declarations (total count) and listed (count of lines rendered)"
+          "action": "carry in Data the keys file (the outline.File), backend, declarations (total count) and listed (count of lines rendered)",
+          "contract": "Data has keys file (an outline.File), backend, declarations=4 and listed=3",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Go file with 4 declarations, 1 unexported"
+            ],
+            "pseudocode": "d=r.Data; assert d.declarations==4 && d.listed==3 && d.backend=='go/ast' && d.file.Decls.len==4"
+          }
         }
       ]
     },
     {
-      "id": "02-REQ-3",
+      "id": "REQ-3",
       "title": "find_symbol: input validation and name matching",
       "rationale": "Bad input must be rejected before any walk starts, and matching rules must be predictable so a model can find methods by bare or qualified name.",
+      "system": "find_symbol",
       "criteria": [
         {
-          "id": "02-REQ-3.1",
+          "id": "REQ-3.1",
           "pattern": "unwanted",
           "condition": "name is empty after trimming whitespace or is longer than 256 bytes",
-          "system": "find_symbol",
           "action": "reject the call before any walk, subprocess or file read",
-          "contract": "ToolResult with OK false and error code invalid_arguments; a 256-byte name is accepted and a 257-byte name is rejected"
+          "contract": "ToolResult with OK false and error code invalid_arguments; a 256-byte name is accepted and a 257-byte name is rejected",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a tool set with counting Walk, Runner and read hooks"
+            ]
+          }
         },
         {
-          "id": "02-REQ-3.2",
+          "id": "REQ-3.2",
           "pattern": "unwanted",
           "condition": "kind, after trimming and lower-casing, is not one of func, method, type, class, interface, enum, trait, const, var, module, macro",
-          "system": "find_symbol",
           "action": "reject the call before any walk",
-          "contract": "ToolResult with OK false, error code invalid_arguments and a detail listing the eleven allowed values"
+          "contract": "ToolResult with OK false, error code invalid_arguments and a detail listing the eleven allowed values",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a tool set with a counting Walk hook"
+            ]
+          }
         },
         {
-          "id": "02-REQ-3.3",
+          "id": "REQ-3.3",
           "pattern": "unwanted",
           "condition": "path resolves outside the workspace root",
-          "system": "find_symbol",
           "action": "refuse the call before any walk",
-          "contract": "ToolResult with OK false and error code path_not_allowed; tools.Walk is not called"
+          "contract": "ToolResult with OK false and error code path_not_allowed; tools.Walk is not called",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a tool set with a counting Walk and Runner"
+            ]
+          }
         },
         {
-          "id": "02-REQ-3.4",
+          "id": "REQ-3.4",
           "pattern": "unwanted",
           "condition": "path does not exist",
-          "system": "find_symbol",
           "action": "return an error result before any walk",
-          "contract": "ToolResult with OK false and error code read_failed"
+          "contract": "ToolResult with OK false and error code read_failed",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a workspace without directory nope/"
+            ]
+          }
         },
         {
-          "id": "02-REQ-3.5",
+          "id": "REQ-3.5",
           "pattern": "unwanted",
           "condition": "path names a regular file",
-          "system": "find_symbol",
           "action": "reject the call with a detail saying to use file_outline",
-          "contract": "ToolResult with OK false and error code invalid_arguments"
+          "contract": "ToolResult with OK false and error code invalid_arguments",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a workspace with file a.go"
+            ]
+          }
         },
         {
-          "id": "02-REQ-3.6",
+          "id": "REQ-3.6",
           "pattern": "state_driven",
           "condition": "exact is false or omitted",
-          "system": "find_symbol",
-          "action": "match Decl.Name by prefix with smart-case, so an all-lowercase name matches case-insensitively and a name containing any uppercase rune matches case-sensitively"
+          "action": "match Decl.Name by prefix with smart-case, so an all-lowercase name matches case-insensitively and a name containing any uppercase rune matches case-sensitively",
+          "contract": "\"run\" matches Run, runner, RunAll, Runtime and rUN (case-insensitive prefix); \"Run\" matches Run, RunAll and Runtime only (case-sensitive prefix); Other never matches",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "declarations Run, runner, RunAll, Runtime, rUN and Other in a fixture tree"
+            ],
+            "pseudocode": "assert names(find('run'))=={'Run','runner','RunAll','Runtime','rUN'}; assert names(find('Run'))=={'Run','RunAll','Runtime'}"
+          }
         },
         {
-          "id": "02-REQ-3.7",
+          "id": "REQ-3.7",
           "pattern": "state_driven",
           "condition": "exact is true",
-          "system": "find_symbol",
-          "action": "match only declarations whose compared string equals name exactly and case-sensitively"
+          "action": "match only declarations whose compared string equals name exactly and case-sensitively",
+          "contract": "the first returns only Run; the second returns only run",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "declarations Run, run, RunAll"
+            ]
+          }
         },
         {
-          "id": "02-REQ-3.8",
+          "id": "REQ-3.8",
           "pattern": "event_driven",
           "condition": "name contains a dot",
-          "system": "find_symbol",
-          "action": "compare name against Container + \".\" + Name of each declaration that has a container under the same prefix, smart-case and exact rules, and compare a name without a dot against Decl.Name alone, so `Runner.Run` and `Run` both find method Run on Runner"
+          "action": "compare name against Container + \".\" + Name of each declaration that has a container under the same prefix, smart-case and exact rules, and compare a name without a dot against Decl.Name alone, so `Runner.Run` and `Run` both find method Run on Runner",
+          "contract": "Runner.Run finds only Runner's method; runner.ru finds it by case-insensitive prefix on the qualified string; a dotted name never matches the container-less func; Run finds methods Run on both receivers and the func",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "method Run on Runner, method Run on Other, top-level func Run (no container), and Runner.Stop"
+            ]
+          }
         }
       ]
     },
     {
-      "id": "02-REQ-4",
+      "id": "REQ-4",
       "title": "find_symbol: filters, ranking, limits and result shape",
       "rationale": "A bounded, deterministic, best-first list with a working truncation marker lets the model act on the first answer instead of paging blindly.",
+      "system": "find_symbol",
       "criteria": [
         {
-          "id": "02-REQ-4.1",
+          "id": "REQ-4.1",
           "pattern": "ubiquitous",
-          "system": "find_symbol",
-          "action": "for any query over an unchanged tree, order matches by exact before prefix (an exact match under smart-case counts as exact), exported before unexported, non-test before test files, shorter path first, then path, then StartLine, and return the identical order on every repeated call"
+          "action": "for any query over an unchanged tree, order matches by exact before prefix (an exact match under smart-case counts as exact), exported before unexported, non-test before test files, shorter path first, then path, then StartLine, and return the identical order on every repeated call",
+          "contract": "every adjacent pair satisfies the ordering (exact, exported, non-test, shorter path, path, StartLine); all calls return an identical symbols sequence",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a generated fixture tree of declarations across exported/unexported, test/non-test, and path-length variations",
+              "fixtures differing in exactly one tier at a time: exact vs prefix, exported vs unexported, non-test vs test file, short vs long path, path ordering, StartLine ordering, plus a combined set where a higher tier overrides all lower ones"
+            ],
+            "pseudocode": "for q in gen_queries(): a=find(q); b=find(q); assert a==b; assert all(key(a[i])<=key(a[i+1]))"
+          }
         },
         {
-          "id": "02-REQ-4.2",
+          "id": "REQ-4.2",
           "pattern": "ubiquitous",
-          "system": "find_symbol",
-          "action": "classify a file as a test file only by this rule: Go `_test.go`; Python `test_*.py` and `*_test.py`; JS/TS `*.test.*` and `*.spec.*`; Java, Kotlin, C# and Ruby files whose base name ends in `Test`, `Tests` or `_spec`; and any file under a directory named test, tests, __tests__ or spec"
+          "action": "classify a file as a test file only by this rule: Go `_test.go`; Python `test_*.py` and `*_test.py`; JS/TS `*.test.*` and `*.spec.*`; Java, Kotlin, C# and Ruby files whose base name ends in `Test`, `Tests` or `_spec`; and any file under a directory named test, tests, __tests__ or spec",
+          "contract": "all positives are test files; all negatives are not test files",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "table of paths: a_test.go, test_x.py, x_test.py, a.test.ts, a.spec.js, FooTest.java, FooTests.kt, FooTest.cs, foo_spec.rb, tests/x.go, __tests__/a.js, spec/a.rb, test/a.c; and negatives: testing.go, contest.py, latest.go, Test.java-like names without suffix rule, src/attestation/a.go, a_test.txt"
+            ]
+          }
         },
         {
-          "id": "02-REQ-4.3",
+          "id": "REQ-4.3",
           "pattern": "event_driven",
           "condition": "max_results is omitted, zero, negative or above 50",
-          "system": "find_symbol",
           "action": "apply clampLimit with default 20 and cap SymbolResultCap of 50, returning at most that many matches",
-          "contract": "max_results=200 returns at most 50 symbols; omitted returns at most 20"
+          "contract": "max_results=200 returns at most 50 symbols; omitted returns at most 20",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a fixture with 80 matching declarations"
+            ]
+          }
         },
         {
-          "id": "02-REQ-4.4",
+          "id": "REQ-4.4",
           "pattern": "event_driven",
           "condition": "more matches exist than the effective max_results",
-          "system": "find_symbol",
           "action": "return only the first max_results matches, append the marker built by SymbolMarker(limit) using capMarker(\"results\", \"max_results\", limit, SymbolResultCap, ...), set Data truncated and note, and set ToolMetadata.Truncated with TruncatedByLines",
-          "contract": "Below the cap the marker names max_results=<next>; at the cap it says 50 is the maximum and advises narrowing with path, kind or exact"
+          "contract": "Below the cap the marker names max_results=<next>; at the cap it says 50 is the maximum and advises narrowing with path, kind or exact",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "80 matching declarations"
+            ]
+          }
         },
         {
-          "id": "02-REQ-4.5",
+          "id": "REQ-4.5",
           "pattern": "ubiquitous",
-          "system": "find_symbol",
-          "action": "carry in Data the keys symbols (SymbolMatch entries with JSON keys path, backend, kind, name, container, signature, exported, start_line, end_line), truncated, backends (backend name to count of indexed files within the queried scope), files_indexed, and note and partial when they apply"
+          "action": "carry in Data the keys symbols (SymbolMatch entries with JSON keys path, backend, kind, name, container, signature, exported, start_line, end_line), truncated, backends (backend name to count of indexed files within the queried scope), files_indexed, and note and partial when they apply",
+          "contract": "symbols entries have keys path, backend, kind, name, container, signature, exported, start_line, end_line; truncated, backends (name to file count) and files_indexed are present; note and partial are absent when they do not apply",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a fixture with Go and heuristic-backend files and a non-truncated result"
+            ]
+          }
         },
         {
-          "id": "02-REQ-4.6",
+          "id": "REQ-4.6",
           "pattern": "ubiquitous",
-          "system": "find_symbol",
-          "action": "render Text as a header `<N> symbols matching \"<name>\"  (index: <F> files; <backend> <count>, ...)`, then one line per match of the form `<path>:<start>-<end>  <kind>  <signature>`, then any marker or partial note, replacing control characters in printed paths with `?` while Data keeps the real path and never printing a signature longer than outline produced"
+          "action": "render Text as a header `<N> symbols matching \"<name>\"  (index: <F> files; <backend> <count>, ...)`, then one line per match of the form `<path>:<start>-<end>  <kind>  <signature>`, then any marker or partial note, replacing control characters in printed paths with `?` while Data keeps the real path and never printing a signature longer than outline produced",
+          "contract": "the header is `<N> symbols matching \"<name>\"  (index: <F> files; go/ast 2, ...)`; each line is `<path>:<start>-<end>  <kind>  <signature>`; control characters in the printed path are `?` while Data.symbols[].path keeps the real path; printed signature length is at most the outline signature length",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a file whose name contains a control character, and a declaration with a 200-byte signature"
+            ]
+          }
         },
         {
-          "id": "02-REQ-4.7",
+          "id": "REQ-4.7",
           "pattern": "event_driven",
           "condition": "no declaration matches",
-          "system": "find_symbol",
           "action": "return a successful result whose Text states that nothing matched and still shows the index line",
-          "contract": "ToolResult with OK true and an empty symbols slice"
+          "contract": "ToolResult with OK true and an empty symbols slice",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a built fixture tree"
+            ]
+          }
         },
         {
-          "id": "02-REQ-4.8",
+          "id": "REQ-4.8",
           "pattern": "optional",
           "condition": "kind or path is supplied",
-          "system": "find_symbol",
-          "action": "keep only declarations of that kind and only files under that directory, and count only those files in backends and files_indexed"
+          "action": "keep only declarations of that kind and only files under that directory, and count only those files in backends and files_indexed",
+          "contract": "only methods are returned for kind; only files under pkg/a are returned for path; backends and files_indexed count only files within the queried scope",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a fixture with matching declarations of different kinds in pkg/a and pkg/b"
+            ]
+          }
         }
       ]
     },
     {
-      "id": "02-REQ-5",
+      "id": "REQ-5",
       "title": "Symbol table: lazy build, scope and bounds",
       "rationale": "The table must agree with search_files about which files exist, cost nothing until first used, and never hang or error when a tree is huge or ctags is stuck.",
       "criteria": [
         {
-          "id": "02-REQ-5.1",
+          "id": "REQ-5.1",
           "pattern": "ubiquitous",
           "system": "tool set",
-          "action": "create the symbol table empty with fileTools and perform no walk, subprocess or file read at All() time or when only file_outline is used"
+          "action": "create the symbol table empty with fileTools and perform no walk, subprocess or file read at All() time or when only file_outline is used",
+          "contract": "no walk, subprocess or file read occurs at All() time; file_outline causes no walk; CtagsRunner(opts.Env) is constructed only on first use by either tool, not at All()",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "Options with a Runner-counting seam, a Walk counting hook, and a default CtagsRunner constructor counter"
+            ]
+          }
         },
         {
-          "id": "02-REQ-5.2",
+          "id": "REQ-5.2",
           "pattern": "event_driven",
           "condition": "find_symbol is called and the table has never been built",
           "system": "symbol table",
-          "action": "build it over the workspace root from the regular files tools.Walk yields with IncludeHidden false and Options.Ignore, so the indexed set equals the set search_files selects and contains nothing under dot-prefixed directories or through symlinks"
+          "action": "build it over the workspace root from the regular files tools.Walk yields with IncludeHidden false and Options.Ignore, so the indexed set equals the set search_files selects and contains nothing under dot-prefixed directories or through symlinks",
+          "contract": "the sets are equal; nothing under the dot-prefixed directory is indexed; nothing through the symlinks is indexed",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a tree with nested .gitignore files, a nested repository, a hidden directory, a symlinked file and directory, binary and unknown-language files"
+            ]
+          }
         },
         {
-          "id": "02-REQ-5.3",
+          "id": "REQ-5.3",
           "pattern": "ubiquitous",
           "system": "symbol table",
-          "action": "obtain declarations from outline.OutlineMany in batches of at most 100 files and keep per file its outline.File, size, modification time and index time"
+          "action": "obtain declarations from outline.OutlineMany in batches of at most 100 files and keep per file its outline.File, size, modification time and index time",
+          "contract": "every batch has at most 100 sources and the total is 250; each table entry has its outline.File, size, mtime and index time",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a tree of 250 small Go files and a fake Runner recording OutlineMany batch sizes (via Source counts)"
+            ]
+          }
         },
         {
-          "id": "02-REQ-5.4",
+          "id": "REQ-5.4",
           "pattern": "event_driven",
           "condition": "a pass has seen SymbolOptions.MaxFiles regular files of any language and the walk yields another",
           "system": "symbol table",
           "action": "stop the pass at the first file past the limit, keep the table built so far, and use 50 000 when MaxFiles is zero or negative",
-          "contract": "The result carries partial: true and partial_reason `files`"
+          "contract": "The result carries partial: true and partial_reason `files`",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a tree of 60 files with MaxFiles 25 (always runs), and a synthetic 60 000-file tree with MaxFiles 0 (skipped under -short)"
+            ]
+          }
         },
         {
-          "id": "02-REQ-5.5",
+          "id": "REQ-5.5",
           "pattern": "event_driven",
           "condition": "the SymbolOptions.MaxDuration deadline passes during the walk or outlining",
           "system": "symbol table",
           "action": "cancel a derived context passed to OutlineMany so a stuck ctags process is killed, leave the interrupted batch unindexed, keep the table built so far, and use 2 s when MaxDuration is zero or negative",
-          "contract": "The result is OK with partial: true and partial_reason `time`, returned within the deadline plus a small margin, never an error"
+          "contract": "The result is OK with partial: true and partial_reason `time`, returned within the deadline plus a small margin, never an error",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a Runner that blocks until its context is cancelled and MaxDuration 200ms; a second tool set with MaxDuration 0"
+            ]
+          }
         },
         {
-          "id": "02-REQ-5.6",
+          "id": "REQ-5.6",
           "pattern": "event_driven",
           "condition": "a pass stopped at a bound",
           "system": "find_symbol",
           "action": "add a note produced by SymbolPartialMarker telling the model to narrow with path or fall back to search_files",
-          "contract": "Data has partial true, partial_reason and note; Text ends with the same note"
+          "contract": "Data has partial true, partial_reason and note; Text ends with the same note",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a tree that stops at MaxFiles 5"
+            ]
+          }
         },
         {
-          "id": "02-REQ-5.7",
+          "id": "REQ-5.7",
           "pattern": "event_driven",
           "condition": "find_symbol is called while the table is partial",
           "system": "symbol table",
-          "action": "run another pass that skips files whose size and mtime are unchanged and indexes files not yet seen, so each call indexes more files until the table is complete"
+          "action": "run another pass that skips files whose size and mtime are unchanged and indexes files not yet seen, so each call indexes more files until the table is complete",
+          "contract": "files_indexed grows on each call until the table is complete and partial disappears; already-indexed unchanged files are not re-outlined; the files outlined in total equal 40, none twice",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a 40-file tree and MaxFiles 15 with a counting Runner"
+            ]
+          }
         },
         {
-          "id": "02-REQ-5.8",
-          "pattern": "complex_event",
-          "condition": "path is given",
-          "guard": "the table is not yet complete",
+          "id": "REQ-5.8",
+          "pattern": "event_driven",
+          "condition": "path is given and the table is not yet complete",
           "system": "symbol table",
-          "action": "walk from the workspace root and return SkipDir for every directory that is neither an ancestor of nor inside path, so ignore layers above path still apply"
+          "action": "walk from the workspace root and return SkipDir for every directory that is neither an ancestor of nor inside path, so ignore layers above path still apply",
+          "contract": "the walk starts at the workspace root; directories that are neither ancestors of nor inside pkg/a return SkipDir (no entries seen under pkg/b or other); *.gen files in pkg/a are excluded by the root .gitignore; only files under pkg/a are indexed",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a tree with a root .gitignore ignoring *.gen, directories pkg/a, pkg/b, other/, and a Walk recorder"
+            ]
+          }
         }
       ]
     },
     {
-      "id": "02-REQ-6",
+      "id": "REQ-6",
       "title": "Symbol table: freshness after AgentKit's own tools",
       "rationale": "A model must never be answered from stale data about a file it just changed through write_file, edit_file or a shell tool.",
       "criteria": [
         {
-          "id": "02-REQ-6.1",
+          "id": "REQ-6.1",
           "pattern": "state_driven",
           "condition": "the table is complete and nothing is marked",
           "system": "find_symbol",
-          "action": "answer from memory without calling tools.Walk or outline.OutlineMany"
+          "action": "answer from memory without calling tools.Walk or outline.OutlineMany",
+          "contract": "both results are correct; Walk and OutlineMany call counts remain 0",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a built complete table with Walk and Runner counters reset"
+            ]
+          }
         },
         {
-          "id": "02-REQ-6.2",
+          "id": "REQ-6.2",
           "pattern": "event_driven",
           "condition": "write_file or edit_file finishes its write attempt, whether it succeeded or failed",
           "system": "write_file and edit_file",
-          "action": "mark the file's workspace-relative path dirty while still holding the per-path lock, before releasing it"
+          "action": "mark the file's workspace-relative path dirty while still holding the per-path lock, before releasing it",
+          "contract": "the workspace-relative path is marked after each write attempt, on success and failure; the lock is still held when the mark is made; the mark happens before the lock is released",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a tool set whose table mark hook records whether the per-path lock is held at mark time"
+            ]
+          }
         },
         {
-          "id": "02-REQ-6.3",
+          "id": "REQ-6.3",
           "pattern": "event_driven",
           "condition": "execute, run_command or powershell returns with any outcome, including timeout and non-zero exit",
           "system": "All()",
-          "action": "mark the whole table for revalidation by wrapping the three tools' Execute, leaving the standalone constructors and their tests unchanged"
+          "action": "mark the whole table for revalidation by wrapping the three tools' Execute, leaving the standalone constructors and their tests unchanged",
+          "contract": "the whole-table mark is set after every call; results pass through unchanged; standalone constructors called directly do not touch any table",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "All() tools with stub shell outcomes: success, non-zero exit, timeout, error"
+            ]
+          }
         },
         {
-          "id": "02-REQ-6.4",
+          "id": "REQ-6.4",
           "pattern": "event_driven",
           "condition": "find_symbol runs and a dirty path is already in the table",
           "system": "symbol table",
-          "action": "stat the path and re-outline it if it is still a regular file, or drop its entry if it is gone or no longer regular"
+          "action": "stat the path and re-outline it if it is still a regular file, or drop its entry if it is gone or no longer regular",
+          "contract": "a.go's new declaration is found; b.go and c.go entries are dropped; no whole-workspace Walk happened and only a.go was re-outlined",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a built table; file a.go edited via edit_file; file b.go removed on disk with its path marked dirty; file c.go replaced by a directory"
+            ]
+          }
         },
         {
-          "id": "02-REQ-6.5",
+          "id": "REQ-6.5",
           "pattern": "event_driven",
           "condition": "find_symbol runs and a dirty path is not in the table or has base name .gitignore",
           "system": "symbol table",
-          "action": "escalate to whole-table revalidation, because only the walk's ignore engine can say whether a new file is visible"
+          "action": "escalate to whole-table revalidation, because only the walk's ignore engine can say whether a new file is visible",
+          "contract": "a Walk runs for each; the new declaration is found; declarations in newly ignored files vanish and newly unignored files appear",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a built table; new.go created through write_file; separately sub/.gitignore changed through write_file to ignore sub/hidden.go and to unignore sub/shown.go"
+            ]
+          }
         },
         {
-          "id": "02-REQ-6.6",
+          "id": "REQ-6.6",
           "pattern": "event_driven",
           "condition": "revalidation runs over the whole workspace or the part under path",
           "system": "symbol table",
-          "action": "compare size and mtime of every walked file, re-outline only files that changed, are new, or have an mtime within 2 s of their index time, and drop entries not seen in a completed walk"
+          "action": "compare size and mtime of every walked file, re-outline only files that changed, are new, or have an mtime within 2 s of their index time, and drop entries not seen in a completed walk",
+          "contract": "changed, new and racy-window files are re-outlined; the long-unchanged file is not re-outlined; the deleted file's entry is dropped; the same-size edit inside the racy window is visible",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a built table with files indexed over 2 s ago, one changed size, one new, one deleted, one unchanged and one same-size edit with mtime within 2 s of index time"
+            ]
+          }
         },
         {
-          "id": "02-REQ-6.7",
-          "pattern": "complex_event",
-          "condition": "a revalidation pass finishes",
-          "guard": "it covered the whole workspace and completed within MaxFiles and MaxDuration",
+          "id": "REQ-6.7",
+          "pattern": "event_driven",
+          "condition": "a revalidation pass finishes and it covered the whole workspace and completed within MaxFiles and MaxDuration",
           "system": "symbol table",
-          "action": "clear the whole-table mark, and leave the mark set after a pass scoped by path or stopped at a bound"
+          "action": "clear the whole-table mark, and leave the mark set after a pass scoped by path or stopped at a bound",
+          "contract": "the mark stays set after the path-scoped pass; the mark stays set after the bounded pass; the mark is cleared after the full pass and the next call runs no walk",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a marked table"
+            ]
+          }
         },
         {
-          "id": "02-REQ-6.8",
+          "id": "REQ-6.8",
           "pattern": "ubiquitous",
           "system": "symbol table",
-          "action": "for any mark made while a build or refresh pass is running, advance a generation counter on the mark and have the pass clear only marks that predate its start, so the mark is still set after the pass"
+          "action": "for any mark made while a build or refresh pass is running, advance a generation counter on the mark and have the pass clear only marks that predate its start, so the mark is still set after the pass",
+          "contract": "each mark advances the generation counter; the pass clears only marks that predate its start; after the pass the mark is still set and the next find_symbol sees the written content",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a blocking fake Runner that holds a build open and a concurrent write_file"
+            ],
+            "pseudocode": "for schedule in gen_schedules(): start_pass(blocking); mark(); release(); pass_end(); assert marked() && find().sees(write)"
+          }
         }
       ]
     },
     {
-      "id": "02-REQ-7",
+      "id": "REQ-7",
       "title": "Concurrency, cancellation and failure containment",
       "rationale": "Parallel tool calls share one table, and a model call blocked behind a slow build must still be cancellable.",
       "criteria": [
         {
-          "id": "02-REQ-7.1",
+          "id": "REQ-7.1",
           "pattern": "unwanted",
           "condition": "a find_symbol call is waiting for the table lock behind a running build and its context is cancelled",
           "system": "find_symbol",
           "action": "abandon the wait immediately instead of waiting for the build to finish",
-          "contract": "ToolResult with OK false, error code aborted and detail \"Operation aborted\", returned before the build completes"
+          "contract": "ToolResult with OK false, error code aborted and detail \"Operation aborted\", returned before the build completes",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a blocking fake Runner holding the first find_symbol build"
+            ]
+          }
         },
         {
-          "id": "02-REQ-7.2",
+          "id": "REQ-7.2",
           "pattern": "ubiquitous",
           "system": "symbol table",
-          "action": "guard all table state with one context-abandonable lock, serialize builds and refreshes, read the table to answer a query under the same lock, and for any set of concurrent find_symbol, write_file and edit_file calls produce no data race under `go test -race`"
+          "action": "guard all table state with one context-abandonable lock, serialize builds and refreshes, read the table to answer a query under the same lock, and for any set of concurrent find_symbol, write_file and edit_file calls produce no data race under `go test -race`",
+          "contract": "no data race is reported; every find_symbol returns OK true with a well-formed result; a find_symbol started after a write returned reflects that write",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a tool set and a fixture tree, tests run under go test -race"
+            ]
+          }
         },
         {
-          "id": "02-REQ-7.3",
+          "id": "REQ-7.3",
           "pattern": "event_driven",
           "condition": "write_file, edit_file or a shell tool marks the table while a build is in progress",
           "system": "symbol table",
-          "action": "set the mark without waiting for the build, blocking no longer than it takes to set a flag"
+          "action": "set the mark without waiting for the build, blocking no longer than it takes to set a flag",
+          "contract": "each tool call returns promptly without waiting for the build; the marks are set",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a blocking fake Runner holding a build open"
+            ]
+          }
         },
         {
-          "id": "02-REQ-7.4",
+          "id": "REQ-7.4",
           "pattern": "unwanted",
           "condition": "the find_symbol call context is cancelled during a build or refresh",
           "system": "find_symbol",
           "action": "return aborted and not a partial answer",
-          "contract": "ToolResult with OK false, error code aborted and detail \"Operation aborted\"; partial is reserved for MaxFiles and MaxDuration"
+          "contract": "ToolResult with OK false, error code aborted and detail \"Operation aborted\"; partial is reserved for MaxFiles and MaxDuration",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a blocking fake Runner and a call context cancelled mid-build"
+            ]
+          }
         },
         {
-          "id": "02-REQ-7.5",
+          "id": "REQ-7.5",
           "pattern": "unwanted",
           "condition": "ctags fails, is unavailable, or the Runner returns an error",
           "system": "file_outline and find_symbol",
           "action": "fall back to another backend for the affected files instead of failing the call",
-          "contract": "ToolResult with OK true whose backend field and header name the backend actually used"
+          "contract": "ToolResult with OK true whose backend field and header name the backend actually used",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a Runner returning an error and a Runner returning ErrCtagsUnavailable, with Python and Go files"
+            ]
+          }
         },
         {
-          "id": "02-REQ-7.6",
+          "id": "REQ-7.6",
           "pattern": "ubiquitous",
           "system": "file_outline and find_symbol",
-          "action": "run no shell and invoke ctags only through outline and CtagsRunner, and return errors in the ToolResult instead of terminating the process"
+          "action": "run no shell and invoke ctags only through outline and CtagsRunner, and return errors in the ToolResult instead of terminating the process",
+          "contract": "os/exec is not imported by the symbol tool files and no sh -c is built; ctags is reached only through outline and CtagsRunner; every error path returns a ToolResult and no panic or os.Exit occurs",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a source scan of tools/outline_tool and tools/symbol files, and calls with failing inputs"
+            ]
+          }
         }
       ]
     },
     {
-      "id": "02-REQ-8",
+      "id": "REQ-8",
       "title": "Tool wiring, options and defaults",
       "rationale": "The tools must appear in the default set and the prompt consistently, and tests need a deterministic backend seam, without adding a dependency.",
       "criteria": [
         {
-          "id": "02-REQ-8.1",
+          "id": "REQ-8.1",
           "pattern": "ubiquitous",
           "system": "tools.Options",
-          "action": "gain a field Symbols of type SymbolOptions with MaxFiles int, MaxDuration time.Duration, DisableCtags bool and Runner func(ctx context.Context, args []string) ([]byte, error), where a zero or negative MaxFiles or MaxDuration means the default"
+          "action": "gain a field Symbols of type SymbolOptions with MaxFiles int, MaxDuration time.Duration, DisableCtags bool and Runner func(ctx context.Context, args []string) ([]byte, error), where a zero or negative MaxFiles or MaxDuration means the default",
+          "contract": "Options.Symbols exposes MaxFiles int, MaxDuration time.Duration, DisableCtags bool and Runner of the documented func type; with DisableCtags the runner passed to outline is nil and CtagsRunner is not constructed; a non-nil Runner is used by both tools; with both set the runner is nil",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "Options with Symbols.DisableCtags true; Options with a fake Runner; Options with both set"
+            ]
+          }
         },
         {
-          "id": "02-REQ-8.2",
+          "id": "REQ-8.2",
           "pattern": "ubiquitous",
           "system": "tools",
-          "action": "by default construct CtagsRunner(opts.Env) lazily on first use by either tool, so All() spawns nothing and universal-ctags is used where installed and heuristics where it is not"
+          "action": "by default construct CtagsRunner(opts.Env) lazily on first use by either tool, so All() spawns nothing and universal-ctags is used where installed and heuristics where it is not",
+          "check": {
+            "same_as": "REQ-5.1"
+          }
         },
         {
-          "id": "02-REQ-8.3",
+          "id": "REQ-8.3",
           "pattern": "event_driven",
           "condition": "Symbols.DisableCtags is true or Symbols.Runner is non-nil",
           "system": "tools",
-          "action": "force the runner nil when DisableCtags is true, and use a non-nil Runner in place of the default, identically for file_outline and find_symbol"
+          "action": "force the runner nil when DisableCtags is true, and use a non-nil Runner in place of the default, identically for file_outline and find_symbol",
+          "check": {
+            "same_as": "REQ-8.1"
+          }
         },
         {
-          "id": "02-REQ-8.4",
+          "id": "REQ-8.4",
           "pattern": "ubiquitous",
           "system": "All()",
-          "action": "return exactly read_file, write_file, edit_file, list_files, find_files, search_files, file_outline, find_symbol, execute, run_command, powershell in that order, and FileNavigationTools() return exactly list_files, find_files, search_files, file_outline, find_symbol"
+          "action": "return exactly read_file, write_file, edit_file, list_files, find_files, search_files, file_outline, find_symbol, execute, run_command, powershell in that order, and FileNavigationTools() return exactly list_files, find_files, search_files, file_outline, find_symbol",
+          "contract": "All names are read_file, write_file, edit_file, list_files, find_files, search_files, file_outline, find_symbol, execute, run_command, powershell in that order; FileNavigationTools returns list_files, find_files, search_files, file_outline, find_symbol; TestTheDefaultToolSetIsPlatformStable expects the eleven names",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "default Options"
+            ]
+          }
         },
         {
-          "id": "02-REQ-8.5",
-          "pattern": "complex_event",
-          "condition": "execute is in the active tool set",
-          "guard": "none of list_files, find_files, search_files, file_outline, find_symbol is present",
+          "id": "REQ-8.5",
+          "pattern": "event_driven",
+          "condition": "execute is in the active tool set and none of list_files, find_files, search_files, file_outline, find_symbol is present",
           "system": "prompt builder",
-          "action": "emit ExecuteFallbackGuideline, and suppress it when only file_outline is present"
+          "action": "emit ExecuteFallbackGuideline, and suppress it when only file_outline is present",
+          "contract": "ExecuteFallbackGuideline appears only for execute alone; it is suppressed when only file_outline is present; system_prompt_default.txt gains the two new guidelines in tool order; system_prompt_no_navigation.txt is unchanged and TestGoldenPromptWithoutFileNavigationTools filters the two new names",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the real prompt builder and tool sets: execute alone, execute with file_outline only, execute with find_symbol only, execute with all navigation tools"
+            ]
+          }
         },
         {
-          "id": "02-REQ-8.6",
+          "id": "REQ-8.6",
           "pattern": "ubiquitous",
           "system": "file_outline and find_symbol",
-          "action": "be Builtin and Parallel with no write capability, not Sequential and absent from guard.ShellToolNames, with PromptGuidelines \"Before reading a large file, outline it and read only the range you need.\" and \"Use find_symbol to locate a declaration; search_files for usages and text.\" respectively"
+          "action": "be Builtin and Parallel with no write capability, not Sequential and absent from guard.ShellToolNames, with PromptGuidelines \"Before reading a large file, outline it and read only the range you need.\" and \"Use find_symbol to locate a declaration; search_files for usages and text.\" respectively",
+          "contract": "both are Builtin and Parallel, not Sequential, with no write capability; PromptGuidelines equal \"Before reading a large file, outline it and read only the range you need.\" and \"Use find_symbol to locate a declaration; search_files for usages and text.\"; neither name is in guard.ShellToolNames; the schemas have the required name/path and optional fields from the PRD",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the tools from All()"
+            ]
+          }
         },
         {
-          "id": "02-REQ-8.7",
+          "id": "REQ-8.7",
           "pattern": "ubiquitous",
           "system": "symbol table",
-          "action": "use the memoized Options.Ignore held in fileTools for every walk"
+          "action": "use the memoized Options.Ignore held in fileTools for every walk",
+          "contract": "every Walk receives the fileTools memoized IgnoreOptions; the ignore configuration is loaded once",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "Options.Ignore with a counting global-excludes loader or hook"
+            ]
+          }
         },
         {
-          "id": "02-REQ-8.8",
+          "id": "REQ-8.8",
           "pattern": "ubiquitous",
           "system": "root module",
-          "action": "remain standard-library-only and cgo-free, add no go.mod entry and no internal/policy allowedModules entry, and leave every existing tool's description, schema, result shape and marker text unchanged"
+          "action": "remain standard-library-only and cgo-free, add no go.mod entry and no internal/policy allowedModules entry, and leave every existing tool's description, schema, result shape and marker text unchanged",
+          "contract": "internal/policy tests pass unmodified with no new allowedModules entry; go.mod has no new requirement; CGO_ENABLED=0 builds; existing tool descriptions, schemas and marker texts are unchanged",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "go.mod, internal/policy tests and the existing tool golden and marker tests"
+            ]
+          }
         }
       ]
     },
     {
-      "id": "02-REQ-9",
+      "id": "REQ-9",
       "title": "Documentation",
       "rationale": "The project's steering treats outdated docs as regressions.",
       "criteria": [
         {
-          "id": "02-REQ-9.1",
+          "id": "REQ-9.1",
           "pattern": "ubiquitous",
           "system": "README.md",
-          "action": "list file_outline and find_symbol in the tool list and state in \"What is not built\" that references and callers remain unbuilt"
+          "action": "list file_outline and find_symbol in the tool list and state in \"What is not built\" that references and callers remain unbuilt",
+          "contract": "README.md lists file_outline and find_symbol in the tool list; README.md's \"What is not built\" section says references and callers remain unbuilt; docs/architecture.md describes the symbol table and its place under tools",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the repository documentation"
+            ]
+          }
         },
         {
-          "id": "02-REQ-9.2",
+          "id": "REQ-9.2",
           "pattern": "ubiquitous",
           "system": "docs/architecture.md",
-          "action": "describe the symbol table and its place under the tools package"
+          "action": "describe the symbol table and its place under the tools package",
+          "check": {
+            "same_as": "REQ-9.1"
+          }
         },
         {
-          "id": "02-REQ-9.3",
+          "id": "REQ-9.3",
           "pattern": "ubiquitous",
           "system": "docs/configuration.md",
-          "action": "add a Symbols row to the tools.Options table, add the two tool names to the tools.All sentence, and state the limits: find_symbol default 20 and cap 50 results, 50 000 files and 2 s"
+          "action": "add a Symbols row to the tools.Options table, add the two tool names to the tools.All sentence, and state the limits: find_symbol default 20 and cap 50 results, 50 000 files and 2 s",
+          "contract": "docs/configuration.md has a Symbols row in the tools.Options table, both tool names in the tools.All sentence, and the limits 20, 50, 50 000 files and 2 s; docs/GAPS.md records references and callers with a pointer to this spec's Non-goals; docs/api.md has no diff",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the repository documentation and git diff"
+            ]
+          }
         },
         {
-          "id": "02-REQ-9.4",
+          "id": "REQ-9.4",
           "pattern": "ubiquitous",
           "system": "docs/GAPS.md",
-          "action": "record that references and callers remain unbuilt with a pointer to this spec's Non-goals, and leave docs/api.md unmodified"
+          "action": "record that references and callers remain unbuilt with a pointer to this spec's Non-goals, and leave docs/api.md unmodified",
+          "check": {
+            "same_as": "REQ-9.3"
+          }
         }
       ]
     }
   ],
   "execution_paths": [
     {
-      "id": "02-PATH-1",
+      "id": "PATH-1",
       "title": "A model outlines a file and reads only the range it needs",
       "steps": [
         {
@@ -563,10 +937,26 @@
           "actor": "model",
           "action": "calls read_file with offset and limit taken from a listed range and receives only that declaration"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "file_outline",
+          "outline package",
+          "Workspace.Resolve",
+          "read_file"
+        ],
+        "setup": [
+          "a real workspace with internal/agentrun/phase.go-like Go file of 300 lines",
+          "real tools from All() with DisableCtags"
+        ],
+        "end_state": [
+          "file_outline returns the header with go/ast backend and L<start>-<end> lines",
+          "read_file returns exactly the lines of that declaration"
+        ]
+      }
     },
     {
-      "id": "02-PATH-2",
+      "id": "PATH-2",
       "title": "Cold find_symbol builds the table and returns a ranked answer",
       "steps": [
         {
@@ -589,10 +979,28 @@
           "actor": "find_symbol",
           "action": "filters, ranks and truncates matches, then returns Text with the index header and Data with symbols and backends"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "find_symbol",
+          "symbol table",
+          "tools.Walk",
+          "outline.OutlineMany",
+          "ignore engine"
+        ],
+        "setup": [
+          "a real fixture tree with Go, Python and test files and nested .gitignore",
+          "real tools from All() with DisableCtags"
+        ],
+        "end_state": [
+          "the table is built via Walk and OutlineMany",
+          "the result lists matches ranked exact, exported, non-test first",
+          "Text carries the index header and Data carries symbols and backends"
+        ]
+      }
     },
     {
-      "id": "02-PATH-3",
+      "id": "PATH-3",
       "title": "An edit through edit_file is visible to the next find_symbol",
       "steps": [
         {
@@ -615,10 +1023,25 @@
           "actor": "find_symbol",
           "action": "returns the new declaration with its line range"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "edit_file",
+          "per-path lock",
+          "symbol table",
+          "outline package"
+        ],
+        "setup": [
+          "a built table over a real Go fixture"
+        ],
+        "end_state": [
+          "NewThing is returned with its correct line range",
+          "no whole-workspace walk was needed"
+        ]
+      }
     },
     {
-      "id": "02-PATH-4",
+      "id": "PATH-4",
       "title": "A new file or a .gitignore change escalates to revalidation",
       "steps": [
         {
@@ -645,10 +1068,27 @@
           "actor": "find_symbol",
           "action": "returns matches consistent with the walk's ignore rules"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "write_file",
+          "symbol table",
+          "tools.Walk",
+          "ignore engine",
+          "find_symbol"
+        ],
+        "setup": [
+          "a built table over a real fixture with an unignored file other.go"
+        ],
+        "end_state": [
+          "Fresh is found",
+          "after the .gitignore change other.go's symbol is gone",
+          "the whole-table mark is cleared after each revalidation"
+        ]
+      }
     },
     {
-      "id": "02-PATH-5",
+      "id": "PATH-5",
       "title": "A shell command deletes a file and the symbol disappears",
       "steps": [
         {
@@ -671,10 +1111,27 @@
           "actor": "find_symbol",
           "action": "returns a successful no-match result that still shows the index line"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "execute",
+          "All() wrapper",
+          "symbol table",
+          "tools.Walk",
+          "find_symbol"
+        ],
+        "setup": [
+          "a built table over a real fixture and a real shell available through execute"
+        ],
+        "end_state": [
+          "find_symbol returns OK true with no match",
+          "the text still shows the index line",
+          "the file count dropped by one"
+        ]
+      }
     },
     {
-      "id": "02-PATH-6",
+      "id": "PATH-6",
       "title": "A bound stops the build and later calls finish it",
       "steps": [
         {
@@ -697,10 +1154,26 @@
           "actor": "symbol table",
           "action": "skips unchanged files and indexes files not yet seen, so the table grows with each call"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "find_symbol",
+          "symbol table",
+          "tools.Walk",
+          "outline.OutlineMany"
+        ],
+        "setup": [
+          "a real fixture tree larger than MaxFiles and a blocking-then-working Runner for the time-bound variant"
+        ],
+        "end_state": [
+          "the first call is OK with partial true, partial_reason and the note",
+          "later calls index more files",
+          "the final call is complete with no partial key"
+        ]
+      }
     },
     {
-      "id": "02-PATH-7",
+      "id": "PATH-7",
       "title": "A call blocked behind a long build is abandoned",
       "steps": [
         {
@@ -719,7 +1192,21 @@
           "actor": "find_symbol",
           "action": "returns aborted with detail \"Operation aborted\" before the build completes, while the build continues"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "find_symbol",
+          "symbol table",
+          "abandonable lock"
+        ],
+        "setup": [
+          "a first find_symbol build held open by a blocking Runner"
+        ],
+        "end_state": [
+          "the second returns aborted with detail \"Operation aborted\" before the build completes",
+          "the first build completes and returns a complete result"
+        ]
+      }
     }
   ],
   "external_apis": [

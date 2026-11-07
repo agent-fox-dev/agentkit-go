@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "17",
   "spec_name": "sandbox_podman",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make vet && make lint",
@@ -37,23 +37,14 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Add sandbox.GitRepo, sandbox.ErrNoAgent and the gitclone validation and clone-argv helpers",
       "criteria": [
-        "17-REQ-1.1",
-        "17-REQ-1.2",
-        "17-REQ-1.3",
-        "17-REQ-1.4",
-        "17-REQ-1.5",
-        "17-REQ-1.6"
-      ],
-      "tests": [
-        "TS-17-1",
-        "TS-17-2",
-        "TS-17-3",
-        "TS-17-4",
-        "TS-17-5",
-        "TS-17-6"
+        "REQ-1.1",
+        "REQ-1.2",
+        "REQ-1.3",
+        "REQ-1.4",
+        "REQ-1.5",
+        "REQ-1.6"
       ],
       "steps": [
         "Write TS-17-1 in sandbox/gitrepo_test.go (package sandbox_test), TS-17-2 to TS-17-5 in sandbox/internal/gitclone/gitclone_test.go and the TS-17-6 property in sandbox/internal/gitclone/gitclone_property_test.go (seeded math/rand/v2 or testing/quick generator, no new module dependency); confirm they fail",
@@ -72,21 +63,14 @@
         "sandbox/internal/gitclone/gitclone.go",
         "sandbox/internal/gitclone/gitclone_test.go",
         "sandbox/internal/gitclone/gitclone_property_test.go"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Refuse GitRepo in attach's Sync and add the attach.Live state accessor",
       "criteria": [
-        "17-REQ-1.7",
-        "17-REQ-1.8"
-      ],
-      "tests": [
-        "TS-17-7",
-        "TS-17-8",
-        "TS-17-9"
+        "REQ-1.7",
+        "REQ-1.8"
       ],
       "steps": [
         "Write TS-17-7 and TS-17-9 in sandbox/internal/attach/gitrepo_test.go using sandbox/internal/fakeagent over a net.Pipe and attach.Dial with Config{Provider: \"test-provider\"}, counting the fake agent's RPCs after Hello; write TS-17-8 in sandbox/local/gitrepo_test.go (a test file only; package local's code is not changed); confirm they fail",
@@ -104,23 +88,13 @@
       ],
       "depends_on": [
         1
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Create package sandbox/podman with Options, New, engine detection, the runner seam and Capabilities",
       "criteria": [
-        "17-REQ-2"
-      ],
-      "tests": [
-        "TS-17-10",
-        "TS-17-11",
-        "TS-17-12",
-        "TS-17-13",
-        "TS-17-14",
-        "TS-17-15"
+        "REQ-2"
       ],
       "steps": [
         "Write TS-17-10, TS-17-11, TS-17-13 and TS-17-14 in sandbox/podman/new_test.go, TS-17-12 in sandbox/podman/version_test.go and TS-17-15 in sandbox/podman/capabilities_test.go, with a recording fake runner in sandbox/podman/fake_test.go (records argv, timeout and ctx deadline of every short command, answers by scripted rules); confirm they fail",
@@ -147,25 +121,14 @@
       ],
       "depends_on": [
         1
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Build the pure Args and InitArgs container command lines",
       "criteria": [
-        "17-REQ-4",
-        "17-REQ-7.6"
-      ],
-      "tests": [
-        "TS-17-24",
-        "TS-17-25",
-        "TS-17-26",
-        "TS-17-27",
-        "TS-17-28",
-        "TS-17-29",
-        "TS-17-47"
+        "REQ-4",
+        "REQ-7.6"
       ],
       "steps": [
         "Write the goldens TS-17-24 to TS-17-28 and TS-17-47 in sandbox/podman/args_test.go with a shared assertNoForbidden helper (no -v, --volume, type=bind, --privileged, --cap-add, --security-opt seccomp=, `--env` value without '=', or element containing the test's working or home directory), and the TS-17-29 property in sandbox/podman/args_property_test.go; confirm they fail",
@@ -186,35 +149,23 @@
       "depends_on": [
         1,
         3
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Implement Create, the long-lived engine process, the destroy step and Close",
       "criteria": [
-        "17-REQ-3.1",
-        "17-REQ-3.7",
-        "17-REQ-3.8",
-        "17-REQ-5.1",
-        "17-REQ-5.2",
-        "17-REQ-6.1",
-        "17-REQ-6.2",
-        "17-REQ-6.3",
-        "17-REQ-6.4",
-        "17-REQ-6.5",
-        "17-REQ-6.7"
-      ],
-      "tests": [
-        "TS-17-16",
-        "TS-17-22",
-        "TS-17-23",
-        "TS-17-30",
-        "TS-17-31",
-        "TS-17-37",
-        "TS-17-38",
-        "TS-17-39"
+        "REQ-3.1",
+        "REQ-3.7",
+        "REQ-3.8",
+        "REQ-5.1",
+        "REQ-5.2",
+        "REQ-6.1",
+        "REQ-6.2",
+        "REQ-6.3",
+        "REQ-6.4",
+        "REQ-6.5",
+        "REQ-6.7"
       ],
       "steps": [
         "Extend sandbox/podman/fake_test.go so the fake's start serves an in-process agent.New(agent.Config{Workdir: t.TempDir(), Env: ...}) over pipes as sandbox/local does, records argv, exits 0 when its stdin closes (or ignores EOF, or exits with a scripted code and stderr), and answers rm/volume rm by script; write TS-17-16, TS-17-22, TS-17-23, TS-17-30 in create_test.go, TS-17-37 to TS-17-39 in destroy_test.go, and TS-17-31 in runner_test.go with a TestMain helper-process fake engine selected by AGENTKIT_FAKE_ENGINE (skipped on Windows); confirm they fail",
@@ -245,31 +196,20 @@
       "depends_on": [
         2,
         4
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Classify Create failures, diagnose a missing agent, and leave nothing behind",
       "criteria": [
-        "17-REQ-5.3",
-        "17-REQ-5.4",
-        "17-REQ-5.5",
-        "17-REQ-5.6",
-        "17-REQ-5.7",
-        "17-REQ-5.8",
-        "17-REQ-6.6",
-        "17-REQ-6.8"
-      ],
-      "tests": [
-        "TS-17-32",
-        "TS-17-33",
-        "TS-17-34",
-        "TS-17-35",
-        "TS-17-36",
-        "TS-17-40",
-        "TS-17-41"
+        "REQ-5.3",
+        "REQ-5.4",
+        "REQ-5.5",
+        "REQ-5.6",
+        "REQ-5.7",
+        "REQ-5.8",
+        "REQ-6.6",
+        "REQ-6.8"
       ],
       "steps": [
         "Extend the fake so the engine process can serve a fake agent reporting ProtocolMajor 99 (sandbox/internal/fakeagent or a minimal sandboxpb server), an agent.New with Landlock ABI 0, a process that never answers Hello, scripted exit codes and stderr, and scripted diagnostic answers; write TS-17-32 to TS-17-36 in create_fail_test.go and TS-17-40, TS-17-41 in ttl_test.go; confirm they fail",
@@ -292,26 +232,17 @@
       ],
       "depends_on": [
         5
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Refuse specs the container cannot honour before any engine command",
       "criteria": [
-        "17-REQ-3.2",
-        "17-REQ-3.3",
-        "17-REQ-3.4",
-        "17-REQ-3.5",
-        "17-REQ-3.6"
-      ],
-      "tests": [
-        "TS-17-17",
-        "TS-17-18",
-        "TS-17-19",
-        "TS-17-20",
-        "TS-17-21"
+        "REQ-3.2",
+        "REQ-3.3",
+        "REQ-3.4",
+        "REQ-3.5",
+        "REQ-3.6"
       ],
       "steps": [
         "Write TS-17-17 to TS-17-21 in sandbox/podman/check_test.go, each asserting the fake runner recorded no command; confirm they fail",
@@ -330,30 +261,19 @@
       ],
       "depends_on": [
         6
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Sync a GitRepo through the init container under the GitRepo slot rules",
       "criteria": [
-        "17-REQ-7.1",
-        "17-REQ-7.2",
-        "17-REQ-7.3",
-        "17-REQ-7.4",
-        "17-REQ-7.5",
-        "17-REQ-7.7",
-        "17-REQ-7.8"
-      ],
-      "tests": [
-        "TS-17-42",
-        "TS-17-43",
-        "TS-17-44",
-        "TS-17-45",
-        "TS-17-46",
-        "TS-17-48",
-        "TS-17-49"
+        "REQ-7.1",
+        "REQ-7.2",
+        "REQ-7.3",
+        "REQ-7.4",
+        "REQ-7.5",
+        "REQ-7.7",
+        "REQ-7.8"
       ],
       "steps": [
         "Extend the fake so the init command (argv containing `--entrypoint git`) can write files into the fake agent's workdir, block until released or until its ctx is done, fail to start, or exit with a scripted status and output, recording its ctx deadline; give the fake agent's Env a PATH holding a stub git (or none); write TS-17-42 to TS-17-46, TS-17-48 and TS-17-49 in sandbox/podman/gitrepo_test.go; confirm they fail",
@@ -375,20 +295,13 @@
       "depends_on": [
         2,
         6
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 9,
-      "kind": "implement",
       "title": "Implement Reap by the expiry label",
       "criteria": [
-        "17-REQ-8"
-      ],
-      "tests": [
-        "TS-17-50",
-        "TS-17-51",
-        "TS-17-52"
+        "REQ-8"
       ],
       "steps": [
         "Write TS-17-50 and TS-17-51 in sandbox/podman/reap_test.go and the TS-17-52 property in sandbox/podman/reap_property_test.go, fixing the provider's clock and scripting the fake's listings and inspect output; confirm they fail",
@@ -407,25 +320,14 @@
       ],
       "depends_on": [
         5
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 10,
-      "kind": "implement",
       "title": "Add the opt-in real-engine integration tests and make sandbox-podman-test",
       "criteria": [
-        "17-REQ-9",
-        "17-REQ-10.5"
-      ],
-      "tests": [
-        "TS-17-53",
-        "TS-17-54",
-        "TS-17-55",
-        "TS-17-56",
-        "TS-17-57",
-        "TS-17-58",
-        "TS-17-63"
+        "REQ-9",
+        "REQ-10.5"
       ],
       "steps": [
         "In sandbox/podman/integration_test.go write the prerequisite helper `prereq(short bool, getenv func(string) string, lookPath func(string) (string, error))` returning engine, base image and skip reason: skip under -short, choose AGENTKIT_CONTAINER then podman then docker (as sandbox/images/harness_test.go does), skip naming a missing engine or AGENTKIT_SANDBOX_BASE_IMAGE; write TS-17-53 against it with injected values",
@@ -451,26 +353,17 @@
       "done_when": [
         "`go test -short ./podman/` in sandbox/ exits 0 with every real-engine test skipped",
         "`make sandbox-podman-test` passes on a host with podman or docker"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 11,
-      "kind": "implement",
       "title": "Pin the offline and policy guarantees, write the AllowAll guidance and docs, and add --podman to the example",
       "criteria": [
-        "17-REQ-10.1",
-        "17-REQ-10.2",
-        "17-REQ-10.3",
-        "17-REQ-10.4",
-        "17-REQ-10.6"
-      ],
-      "tests": [
-        "TS-17-59",
-        "TS-17-60",
-        "TS-17-61",
-        "TS-17-62",
-        "TS-17-64"
+        "REQ-10.1",
+        "REQ-10.2",
+        "REQ-10.3",
+        "REQ-10.4",
+        "REQ-10.6"
       ],
       "steps": [
         "Write TS-17-59 in sandbox/podman/offline_test.go (t.Setenv PATH to an empty temp dir; Create, Sync, Tools, execute, Reap and Close through the fake runner seam and the test constructor that looks nothing up)",
@@ -504,41 +397,7 @@
       "done_when": [
         "`make check` passes with no container engine on PATH",
         "internal/policy/testdata/exported-api.golden is byte-for-byte unchanged"
-      ],
-      "state": "done"
-    },
-    {
-      "id": 12,
-      "kind": "integration",
-      "title": "Verify the five podman execution paths end to end against a real engine",
-      "tests": [
-        "TS-17-65",
-        "TS-17-66",
-        "TS-17-67",
-        "TS-17-68",
-        "TS-17-69"
-      ],
-      "steps": [
-        "Write TS-17-65 to TS-17-69 in sandbox/podman/smoke_test.go using task 10's prereq and engineLabelled helpers (TS-17-67 builds the derived FROM <base> / USER root / RUN rm <AgentPath> image and removes it in t.Cleanup; TS-17-69 creates the two labelled volumes directly with the engine); run `make sandbox-podman-test` on a host with podman or docker and confirm they pass, and that they SKIP under `make check`",
-        "Trace 17-PATH-1 through the real code: podman.New → lookPath → parseVersion → Create → sandbox.CheckSpec → checkSpec → volume create → runner.start(Args) → attach.Dial over stdioconn → wrapper Sync/Tools/Export → Close → attach teardown → destroy step; confirm each step calls the next",
-        "Trace 17-PATH-2: wrapper.Sync(GitRepo) → attach.Live → gitclone.Check → slot rule → Agent().Git → runner.run(InitArgs) → slot taken; and 17-PATH-3: attach.Dial failure → attach destroy → classification → diagArgs run → error wrapping sandbox.ErrNoAgent with sandbox.OverlayCopyLine",
-        "Trace 17-PATH-4 (attach's TTL timer → teardown → destroy closure; agent --ttl from sandbox.AgentArgs inside Args with --rm) and 17-PATH-5 (Reap → ps -a/volume ls → inspect JSON → expiry rule → rm -f then volume rm)",
-        "For every criterion with a contract confirm the producer is consumed in production code, not only tests: gitclone.Check and gitclone.Args by the podman GitRepo sync and InitArgs; attach.Live by the podman wrapper; attach's GitRepo refusal reached by local's Sync; Args by Create; InitArgs by the GitRepo sync; diagArgs and sandbox.ErrNoAgent by Create's classification; the destroy step passed as attach.Config.Destroy; shortOptions by every short command; parseVersion by New",
-        "Search every file in the tasks' touches (sandbox/sandbox.go, sandbox/errors.go, sandbox/internal/gitclone/, sandbox/internal/attach/transfer.go and state.go, sandbox/podman/, guard/guard.go, examples/sandbox/main.go, Makefile) for `panic(\"not implemented\")`, `TODO`, `not yet implemented` (task 3's temporary Create/Reap), `NotImplementedError` and bare `return nil` on non-trivial paths, and remove any that remain",
-        "Confirm entry points owned by other specs are called from production code: attach.Dial and stdioconn.New (13) from podman Create, sandbox.AgentArgs (15) from Args, sandbox.DefaultImage, sandbox.OverlayImage and sandbox.OverlayCopyLine (16) from Create, rsync LocalDir Sync/Export (14) through the forwarded wrapper methods, and podman.New from examples/sandbox --podman",
-        "Run `make check` with no container engine on PATH and confirm it stays offline and green"
-      ],
-      "touches": [
-        "sandbox/podman/smoke_test.go"
-      ],
-      "depends_on": [
-        11
-      ],
-      "done_when": [
-        "`make sandbox-podman-test` passes on a host with podman or docker, including TS-17-65 to TS-17-69",
-        "No stub marker remains in any touched file"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

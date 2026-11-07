@@ -4,9 +4,8 @@ spec_name: "sandbox_podman"
 title: "Podman and Docker sandbox provider, GitRepo init step and guard guidance"
 status: "active"
 created_at: "2026-10-13T14:39:00.122631Z"
-updated_at: "2026-10-13T14:39:00.122631Z"
 intent_hash: "3ccd295ee950e00ece28e21a76680275745634f010eee51037625a7bf8aefefe"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/11-run-tools-in-an-isolated-sandbox.md"
 ---
 ## Intent
@@ -467,3 +466,16 @@ Per steering, run `make doc`, then update:
 **git.** **Unverified**:
 - `git -c protocol.allow=never -c protocol.https.allow=always clone [--depth N] [--branch REF] -- URL DIR` into an existing empty directory;
 - `GIT_TERMINAL_PROMPT=0` makes an authentication request fail instead of prompting.
+
+## Glossary
+
+- **GitRepo slot**: Per-sandbox state that allows exactly one GitRepo Sync, before anything else has written to the workspace and before the first Tools call.
+- **destroy step**: The provider's teardown, handed to attach as Config.Destroy: wait for (or kill) the engine process, remove the containers, then remove the volume. attach runs it under a fresh 30-second context.
+- **diagnostic run**: After a failed handshake, `<engine> run --rm … --entrypoint <AgentPath> <image> --version` without --init or a volume. Its exit status 126 or 127 identifies an image with no executable agent.
+- **effective spec**: The Spec returned by sandbox.CheckSpec, with TTL 0 replaced by 1h and an empty Workdir replaced by /workspace, and with Image set to the image actually run.
+- **engine**: The container command line the provider drives: podman, or docker (including a docker shim that runs podman, which counts as podman). It is resolved from Options.Binary and identified by Options.Engine or by `<Binary> --version`.
+- **engine process**: The long-lived `<engine> run --rm -i …` child whose stdin and stdout carry the gRPC connection to the agent inside the container.
+- **init step**: A short-lived `<engine> run --rm --init --name agentkit-<id>-init … --entrypoint git` container. It shares only the sandbox's volume and runs on the engine's default network, cloning a GitRepo into the workspace while the agent container sits idle beside it.
+- **reserved labels**: `agentkit.sandbox=<id>` and `agentkit.sandbox.expires=<created+TTL in RFC 3339, UTC, whole seconds>`. They are written on the sandbox's container, init container and volume. The key prefix `agentkit.sandbox.` is reserved by this provider.
+- **runner seam**: The provider's unexported command runner, with one method for short engine commands and one for starting the engine process. Offline tests replace it with a fake that records argv and serves an in-process agent over pipes.
+- **short engine command**: Any other engine invocation (volume create, rm, volume rm, ps, volume ls, inspect, the diagnostic run, the init step). Each runs through tools.RunArgv with Options.EngineEnv.

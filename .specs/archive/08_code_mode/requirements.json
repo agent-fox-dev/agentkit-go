@@ -1,444 +1,756 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
   "spec_id": "08",
   "spec_name": "code_mode",
-  "schema_version": 2,
-  "introduction": "Provides a sandboxed Starlark script runner tool (code_mode) that executes multi-step tool workflows, concurrency fan-outs, and intermediate data filtering inside a single tool invocation with strict sandboxing, resource budgets, and telemetry ledger tracking.",
-  "glossary": {
-    "Starlark": "A deterministic, hermetic Python-dialect configuration and scripting language executed in Go via go.starlark.net with no ambient host access.",
-    "ToolError": "A dedicated Starlark value returned by bound tool functions on failure, allowing script-level error inspection without raising exceptions.",
-    "call descriptor": "A structured Starlark representation produced by call(tool, **kwargs) specifying a tool and arguments for parallel dispatch.",
-    "code mode": "A sandboxed tool execution paradigm where an LLM writes scripts in a restricted language (Starlark) to orchestrate multi-step tool workflows and data filtering in a single turn.",
-    "middle truncation": "An output reduction strategy that preserves the beginning and end of text output while eliding the middle with an informational marker.",
-    "telemetry ledger": "An in-memory audit record tracking the status, arguments, and outcomes of all nested tool calls executed within a script."
-  },
+  "schema_version": 3,
   "requirements": [
     {
-      "id": "08-REQ-1",
+      "id": "REQ-1",
       "title": "Code mode tool construction and reachability validation",
       "rationale": "Validating tool names and preventing recursive code mode nesting at construction ensures safe reachability declarations and prevents infinite execution recursion.",
+      "system": "codemode constructor",
       "criteria": [
         {
-          "id": "08-REQ-1.1",
+          "id": "REQ-1.1",
           "pattern": "event_driven",
           "condition": "codemode.New is called with a slice of tools and codemode.Options",
-          "system": "codemode constructor",
-          "action": "construct a core.Tool whose Name matches opts.Name (defaulting to 'code_mode'), ReachableTools matches the input tools, and Execute dispatches to the script runner"
+          "action": "construct a core.Tool whose Name matches opts.Name (defaulting to 'code_mode'), ReachableTools matches the input tools, and Execute dispatches to the script runner",
+          "contract": "tool.Name matches opts.Name (defaulting to 'code_mode' if empty); tool.ReachableTools matches the supplied tools slice; tool.Execute dispatches execution to the script runner",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a slice of core.Tool instances and codemode.Options with custom Name"
+            ],
+            "pseudocode": "t, _, err := codemode.New([]core.Tool{dummyTool}, codemode.Options{Name: \"custom_mode\"})\nassert err == nil\nassert t.Name == \"custom_mode\"\nassert len(t.ReachableTools) == 1\nassert t.Execute != nil"
+          }
         },
         {
-          "id": "08-REQ-1.2",
+          "id": "REQ-1.2",
           "pattern": "ubiquitous",
-          "system": "codemode constructor",
-          "action": "define InputSchema requiring a string property 'script' and OutputSchema specifying output string, return_value any, and calls_completed array"
+          "action": "define InputSchema requiring a string property 'script' and OutputSchema specifying output string, return_value any, and calls_completed array",
+          "contract": "InputSchema requires a string property 'script' with execution description; OutputSchema specifies output string, return_value any, and calls_completed array",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a valid tool slice"
+            ],
+            "pseudocode": "t, _, err := codemode.New(tools, codemode.Options{})\nassert err == nil\nassert t.InputSchema != nil\nassert t.InputSchema.Properties[\"script\"].Type == \"string\"\nassert t.InputSchema.IsRequired(\"script\")\nassert t.OutputSchema != nil\nassert t.OutputSchema.Properties[\"output\"].Type == \"string\"\nassert t.OutputSchema.Properties[\"calls_completed\"].Type == \"array\""
+          }
         },
         {
-          "id": "08-REQ-1.3",
+          "id": "REQ-1.3",
           "pattern": "unwanted",
           "condition": "codemode.New is called where any tool in tools matches opts.Name or is an existing code-mode tool",
-          "system": "codemode constructor",
           "action": "reject construction and return an error preventing code-mode self-nesting",
-          "contract": "returns an error containing 'codemode: cannot bind code_mode tool inside code_mode'"
+          "contract": "returns an error containing 'codemode: cannot bind code_mode tool inside code_mode'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a tool slice containing a tool named 'code_mode' or an existing code-mode tool instance"
+            ],
+            "pseudocode": "_, _, err := codemode.New([]core.Tool{{Name: \"code_mode\"}}, codemode.Options{Name: \"code_mode\"})\nassert err != nil\nassert strings.Contains(err.Error(), \"codemode: cannot bind code_mode tool inside code_mode\")"
+          }
         },
         {
-          "id": "08-REQ-1.4",
+          "id": "REQ-1.4",
           "pattern": "unwanted",
           "condition": "codemode.New is called with duplicate tool names in the tools slice",
-          "system": "codemode constructor",
           "action": "reject construction and return an error naming the duplicated tool name",
-          "contract": "returns an error containing 'codemode: duplicate tool name: <name>'"
+          "contract": "returns an error containing 'codemode: duplicate tool name: <name>'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a tool slice containing two tools with identical names"
+            ],
+            "pseudocode": "tools := []core.Tool{{Name: \"lookup\"}, {Name: \"lookup\"}}\n_, _, err := codemode.New(tools, codemode.Options{})\nassert err != nil\nassert strings.Contains(err.Error(), \"codemode: duplicate tool name: lookup\")"
+          }
         },
         {
-          "id": "08-REQ-1.5",
+          "id": "REQ-1.5",
           "pattern": "optional",
           "condition": "opts.Guidelines is provided in Options",
-          "system": "codemode constructor",
-          "action": "assign the custom guidelines to core.Tool.PromptGuidelines, or populate default code-mode guidance when omitted"
+          "action": "assign the custom guidelines to core.Tool.PromptGuidelines, or populate default code-mode guidance when omitted",
+          "contract": "the custom guidelines slice is assigned to tool.PromptGuidelines when provided; default code-mode guidance is populated when Guidelines is omitted",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "options configured with custom PromptGuidelines, and options omitting Guidelines"
+            ],
+            "pseudocode": "t1, _, _ := codemode.New(tools, codemode.Options{Guidelines: []string{\"custom guide\"}})\nassert len(t1.PromptGuidelines) == 1 && t1.PromptGuidelines[0] == \"custom guide\"\nt2, _, _ := codemode.New(tools, codemode.Options{})\nassert len(t2.PromptGuidelines) > 0"
+          }
         },
         {
-          "id": "08-REQ-1.6",
+          "id": "REQ-1.6",
           "pattern": "ubiquitous",
-          "system": "codemode constructor",
-          "action": "for any valid tool slice and options passed to codemode.New, return a BuildInfo reporting DescriptionBytes, DescriptionChars, and BoundToolsCount matching the bound tools count and description text"
+          "action": "for any valid tool slice and options passed to codemode.New, return a BuildInfo reporting DescriptionBytes, DescriptionChars, and BoundToolsCount matching the bound tools count and description text",
+          "contract": "BuildInfo.BoundToolsCount equals len(tools); BuildInfo.DescriptionBytes equals len([]byte(tool.Description)); BuildInfo.DescriptionChars equals utf8.RuneCountInString(tool.Description)",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a generator of arbitrary valid core.Tool slices and options"
+            ],
+            "pseudocode": "for tools, opts in gen_valid_tools_and_opts():\n    t, info, err := codemode.New(tools, opts)\n    assert err == nil\n    assert info.BoundToolsCount == len(tools)\n    assert info.DescriptionBytes == len([]byte(t.Description))\n    assert info.DescriptionChars == utf8.RuneCountInString(t.Description)"
+          }
         }
       ]
     },
     {
-      "id": "08-REQ-2",
+      "id": "REQ-2",
       "title": "Dynamic description and typed schema generation",
       "rationale": "Generating dynamic Starlark signatures from tool input and output schemas informs the model of available functions and parameter types without manual documentation drift.",
       "criteria": [
         {
-          "id": "08-REQ-2.1",
-          "pattern": "complex_event",
-          "condition": "codemode.New constructs a tool description",
-          "guard": "opts.Description is not empty",
+          "id": "REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "codemode.New constructs a tool description and opts.Description is not empty",
           "system": "description generator",
-          "action": "use opts.Description directly as the tool description without dynamic rendering"
+          "action": "use opts.Description directly as the tool description without dynamic rendering",
+          "contract": "tool.Description equals opts.Description exactly; dynamic template rendering is bypassed",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "options specifying an explicit Description string override"
+            ],
+            "pseudocode": "desc := \"Explicit override description\"\nt, _, err := codemode.New(tools, codemode.Options{Description: desc})\nassert err == nil\nassert t.Description == desc"
+          }
         },
         {
-          "id": "08-REQ-2.2",
-          "pattern": "complex_event",
-          "condition": "codemode.New constructs a tool description",
-          "guard": "opts.Description is empty",
+          "id": "REQ-2.2",
+          "pattern": "event_driven",
+          "condition": "codemode.New constructs a tool description and opts.Description is empty",
           "system": "description generator",
-          "action": "render the description by combining the runtime instructions template with typed Starlark function signatures derived from bound tools"
+          "action": "render the description by combining the runtime instructions template with typed Starlark function signatures derived from bound tools",
+          "contract": "description documents runtime constraints including keyword-only arguments, error return conventions, parallel execution, and no ambient I/O; description includes typed Starlark function signatures for each bound tool",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "options with empty Description and a list of bound tools"
+            ],
+            "pseudocode": "t, _, err := codemode.New([]core.Tool{toolA, toolB}, codemode.Options{})\nassert err == nil\nassert strings.Contains(t.Description, \"Starlark\")\nassert strings.Contains(t.Description, \"keyword arguments\")\nassert strings.Contains(t.Description, \"parallel\")\nassert strings.Contains(t.Description, \"is_error\")\nassert strings.Contains(t.Description, toolA.Name)\nassert strings.Contains(t.Description, toolB.Name)"
+          }
         },
         {
-          "id": "08-REQ-2.3",
+          "id": "REQ-2.3",
           "pattern": "optional",
           "condition": "opts.DescriptionTemplate is configured in Options",
           "system": "description generator",
-          "action": "render the instructions section using the caller-supplied Go text/template string in place of the default template"
+          "action": "render the instructions section using the caller-supplied Go text/template string in place of the default template",
+          "contract": "the rendered instructions section uses the custom template output in place of the default",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "options specifying a custom DescriptionTemplate string"
+            ],
+            "pseudocode": "tmpl := \"Custom header: {{.ToolCount}} tools.\"\nt, _, err := codemode.New([]core.Tool{toolA}, codemode.Options{DescriptionTemplate: tmpl})\nassert err == nil\nassert strings.Contains(t.Description, \"Custom header: 1 tools.\")"
+          }
         },
         {
-          "id": "08-REQ-2.4",
+          "id": "REQ-2.4",
           "pattern": "ubiquitous",
           "system": "schema generator",
-          "action": "for any bound tool with an InputSchema, generate a Starlark signature mapping JSON Schema property types to str, int, float, bool, list, or dict, marking optional fields with '= None'"
+          "action": "for any bound tool with an InputSchema, generate a Starlark signature mapping JSON Schema property types to str, int, float, bool, list, or dict, marking optional fields with '= None'",
+          "contract": "property types map to str, int, float, bool, list, or dict respectively; optional properties are marked with default '= None'",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a generator of tool schemas containing diverse property types and required flags"
+            ],
+            "pseudocode": "for tool in gen_tools_with_schemas():\n    sig := codemode.RenderSignature(tool)\n    for prop, field in tool.InputSchema.Properties:\n        assert strings.Contains(sig, prop)\n        if !tool.InputSchema.IsRequired(prop):\n            assert strings.Contains(sig, prop+\"=None\") || strings.Contains(sig, prop+\" = None\")"
+          }
         },
         {
-          "id": "08-REQ-2.5",
+          "id": "REQ-2.5",
           "pattern": "event_driven",
           "condition": "the schema generator inspects a bound tool with a non-nil OutputSchema",
           "system": "schema generator",
-          "action": "render the documented return type using the OutputSchema field names and types, defaulting to 'Any' when OutputSchema is nil"
+          "action": "render the documented return type using the OutputSchema field names and types, defaulting to 'Any' when OutputSchema is nil",
+          "contract": "tool with non-nil OutputSchema renders documented return type using OutputSchema field names and types; tool with nil OutputSchema documents return type as 'Any'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a tool with structured OutputSchema and a tool with nil OutputSchema"
+            ],
+            "pseudocode": "sig1 := codemode.RenderSignature(toolWithOutputSchema)\nassert strings.Contains(sig1, \"status: str\")\nsig2 := codemode.RenderSignature(toolWithoutOutputSchema)\nassert strings.Contains(sig2, \"Any\")"
+          }
         },
         {
-          "id": "08-REQ-2.6",
+          "id": "REQ-2.6",
           "pattern": "ubiquitous",
           "system": "description generator",
-          "action": "document runtime constraints in the instructions section including keyword-only arguments, error return conventions, parallel execution, and lack of ambient I/O"
+          "action": "document runtime constraints in the instructions section including keyword-only arguments, error return conventions, parallel execution, and lack of ambient I/O",
+          "check": {
+            "same_as": "REQ-2.2"
+          }
         }
       ]
     },
     {
-      "id": "08-REQ-3",
+      "id": "REQ-3",
       "title": "Sandboxed Starlark runtime isolation",
       "rationale": "Restricting Starlark globals and module loaders ensures model scripts cannot access the host filesystem, network, environment variables, or execution clock.",
+      "system": "sandboxed runtime",
       "criteria": [
         {
-          "id": "08-REQ-3.1",
+          "id": "REQ-3.1",
           "pattern": "event_driven",
           "condition": "a code-mode script invocation begins execution",
-          "system": "sandboxed runtime",
-          "action": "create an isolated starlark.Thread populated with safe language builtins, bound tool callables, and helpers parallel, call, and is_error"
+          "action": "create an isolated starlark.Thread populated with safe language builtins, bound tool callables, and helpers parallel, call, and is_error",
+          "contract": "starlark.Thread globals contain safe builtins (len, range, print, type, etc.); globals include bound tool callables, parallel, call, and is_error",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a script executing in code mode"
+            ],
+            "pseudocode": "res := runScript(ctx, \"def main():\\n return (len([1,2]), hasattr(parallel, '__call__'), hasattr(is_error, '__call__'))\")\nassert res.OK\nassert res.Data[\"return_value\"] == []any{2, true, true}"
+          }
         },
         {
-          "id": "08-REQ-3.2",
+          "id": "REQ-3.2",
           "pattern": "unwanted",
           "condition": "a script attempts to execute a load statement",
-          "system": "sandboxed runtime",
           "action": "refuse dynamic module loading and fail the thread",
-          "contract": "returns an error stating 'load is not permitted in code_mode scripts'"
+          "contract": "returns an error stating 'load is not permitted in code_mode scripts'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a script containing a 'load(...)' module import statement"
+            ],
+            "pseudocode": "res := runScript(ctx, \"load('math.star', 'pi')\")\nassert !res.OK\nassert strings.Contains(res.Detail, \"load is not permitted in code_mode scripts\")"
+          }
         },
         {
-          "id": "08-REQ-3.3",
+          "id": "REQ-3.3",
           "pattern": "ubiquitous",
-          "system": "sandboxed runtime",
-          "action": "for any script execution, omit all host system primitives including open, os, socket, http, os.environ, subprocesses, and time functions from module globals"
+          "action": "for any script execution, omit all host system primitives including open, os, socket, http, os.environ, subprocesses, and time functions from module globals",
+          "contract": "attempting to access any host primitive fails with an undefined identifier error; no ambient host I/O primitives exist in module globals",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a generator of host primitive names (open, os, socket, http, environ, subprocess, time)"
+            ],
+            "pseudocode": "for name in [\"open\", \"os\", \"socket\", \"http\", \"environ\", \"subprocess\", \"time\"]:\n    res := runScript(ctx, fmt.Sprintf(\"val = %s\", name))\n    assert !res.OK\n    assert strings.Contains(res.Detail, \"undefined\")"
+          }
         }
       ]
     },
     {
-      "id": "08-REQ-4",
+      "id": "REQ-4",
       "title": "Keyword-argument tool bindings and invocation",
       "rationale": "Binding tools as keyword-only functions guarantees parameter mapping fidelity to underlying JSON schemas while preventing argument position misalignment.",
+      "system": "tool binding handler",
       "criteria": [
         {
-          "id": "08-REQ-4.1",
+          "id": "REQ-4.1",
           "pattern": "unwanted",
           "condition": "a script invokes a bound tool function with one or more positional arguments",
-          "system": "tool binding handler",
           "action": "reject the call and halt the function execution with a Starlark error",
-          "contract": "returns a Starlark error containing '<tool> only accepts keyword arguments'"
+          "contract": "returns a Starlark error containing '<tool> only accepts keyword arguments'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a bound tool 'fetch' registered in code mode"
+            ],
+            "pseudocode": "res := runScript(ctx, \"fetch('http://example.com')\")\nassert !res.OK\nassert strings.Contains(res.Detail, \"fetch only accepts keyword arguments\")"
+          }
         },
         {
-          "id": "08-REQ-4.2",
+          "id": "REQ-4.2",
           "pattern": "event_driven",
           "condition": "a bound tool is invoked with keyword arguments",
-          "system": "tool binding handler",
-          "action": "convert Starlark argument values into Go JSON-compatible structures and dispatch a core.ToolUseBlock via core.CallNested"
+          "action": "convert Starlark argument values into Go JSON-compatible structures and dispatch a core.ToolUseBlock via core.CallNested",
+          "contract": "Starlark keyword arguments are converted into Go JSON-compatible structures and dispatched via core.CallNested; structured Data map is converted into Starlark dicts and returned to the script",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a bound tool registered and a mock nested dispatcher returning structured Data"
+            ],
+            "pseudocode": "dispatcher.OnCall = func(b core.ToolUseBlock) core.ToolResult {\n    return core.ToolResult{OK: true, Data: map[string]any{\"count\": 42}}\n}\nres := runScript(ctx, \"def main():\\n r = search(query='go')\\n return r['count']\")\nassert res.OK\nassert res.Data[\"return_value\"] == 42"
+          }
         },
         {
-          "id": "08-REQ-4.3",
-          "pattern": "complex_event",
-          "condition": "a nested tool call dispatched via core.CallNested succeeds with OK set to true",
-          "guard": "ToolResult.Data is non-nil",
-          "system": "tool binding handler",
-          "action": "convert the structured Data map into Starlark dicts, lists, and primitives and return the converted value to the script"
+          "id": "REQ-4.3",
+          "pattern": "event_driven",
+          "condition": "a nested tool call dispatched via core.CallNested succeeds with OK set to true and ToolResult.Data is non-nil",
+          "action": "convert the structured Data map into Starlark dicts, lists, and primitives and return the converted value to the script",
+          "check": {
+            "same_as": "REQ-4.2"
+          }
         },
         {
-          "id": "08-REQ-4.4",
-          "pattern": "complex_event",
-          "condition": "a nested tool call dispatched via core.CallNested succeeds with OK set to true",
-          "guard": "ToolResult.Data is nil",
-          "system": "tool binding handler",
-          "action": "return a Starlark dictionary containing {'text': ToolResult.Text} to the script"
+          "id": "REQ-4.4",
+          "pattern": "event_driven",
+          "condition": "a nested tool call dispatched via core.CallNested succeeds with OK set to true and ToolResult.Data is nil",
+          "action": "return a Starlark dictionary containing {'text': ToolResult.Text} to the script",
+          "contract": "the call returns a Starlark dictionary containing {'text': 'done'}; script accesses res['text'] without error",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a bound tool returning OK=true, Text='done', and nil Data"
+            ],
+            "pseudocode": "dispatcher.OnCall = func(b core.ToolUseBlock) core.ToolResult {\n    return core.ToolResult{OK: true, Text: \"done\", Data: nil}\n}\nres := runScript(ctx, \"def main():\\n r = ping()\\n return r['text']\")\nassert res.OK\nassert res.Data[\"return_value\"] == \"done\""
+          }
         },
         {
-          "id": "08-REQ-4.5",
+          "id": "REQ-4.5",
           "pattern": "unwanted",
           "condition": "a nested tool call dispatched via core.CallNested returns core.ErrTerminated",
-          "system": "tool binding handler",
           "action": "immediately halt script execution and propagate Terminate set to true on the code-mode ToolResult",
-          "contract": "code_mode tool execution stops and ToolResult.Terminate is true"
+          "contract": "code_mode tool execution stops and ToolResult.Terminate is true",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a bound tool whose execution returns core.ErrTerminated from CallNested"
+            ],
+            "pseudocode": "dispatcher.OnCall = func(b core.ToolUseBlock) (core.ToolResult, error) {\n    return core.ToolResult{}, core.ErrTerminated\n}\nres := runScript(ctx, \"finish(); print('unreachable')\")\nassert res.Terminate == true"
+          }
         },
         {
-          "id": "08-REQ-4.6",
+          "id": "REQ-4.6",
           "pattern": "unwanted",
           "condition": "a nested tool call dispatched via core.CallNested is aborted by context cancellation",
-          "system": "tool binding handler",
           "action": "halt script execution and return an abortion failure result",
-          "contract": "returns core.ToolResult with OK: false and Error: 'aborted'"
+          "contract": "returns core.ToolResult with OK: false and Error: 'aborted'",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a cancellable context and a bound tool invoked during cancellation"
+            ],
+            "pseudocode": "ctx, cancel := context.WithCancel(context.Background())\ndispatcher.OnCall = func(b core.ToolUseBlock) (core.ToolResult, error) {\n    cancel()\n    return core.ToolResult{}, context.Canceled\n}\nres := runScript(ctx, \"slow_op()\")\nassert !res.OK\nassert res.Error == \"aborted\""
+          }
         }
       ]
     },
     {
-      "id": "08-REQ-5",
+      "id": "REQ-5",
       "title": "Non-exceptional tool error values",
       "rationale": "Exposing tool errors as structured values rather than raising Starlark exceptions allows scripts to inspect error states and apply fallback logic without halting execution.",
       "criteria": [
         {
-          "id": "08-REQ-5.1",
-          "pattern": "complex_event",
-          "condition": "a nested tool call dispatched via core.CallNested returns a ToolResult",
-          "guard": "ToolResult.OK is false",
+          "id": "REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "a nested tool call dispatched via core.CallNested returns a ToolResult and ToolResult.OK is false",
           "system": "error representation",
-          "action": "construct and return a ToolError Starlark value without raising a runtime exception"
+          "action": "construct and return a ToolError Starlark value without raising a runtime exception",
+          "contract": "function returns a ToolError Starlark value; no runtime exception is raised and script execution continues",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a bound tool returning ToolResult{OK: false, Error: 'not_found', Detail: 'item missing'}"
+            ],
+            "pseudocode": "dispatcher.OnCall = func(b core.ToolUseBlock) core.ToolResult {\n    return core.ToolResult{OK: false, Error: \"not_found\", Detail: \"item missing\"}\n}\nres := runScript(ctx, \"def main():\\n err = lookup(id=1)\\n return type(err)\")\nassert res.OK\nassert res.Data[\"return_value\"] == \"tool_error\""
+          }
         },
         {
-          "id": "08-REQ-5.2",
+          "id": "REQ-5.2",
           "pattern": "ubiquitous",
           "system": "error representation",
-          "action": "for any ToolError value, set type(val) to 'tool_error', set attributes ok to False, is_error to True, error to the error code string, detail to the detail string, and data to the error payload"
+          "action": "for any ToolError value, set type(val) to 'tool_error', set attributes ok to False, is_error to True, error to the error code string, detail to the detail string, and data to the error payload",
+          "contract": "type(val) is 'tool_error'; attributes ok is False and is_error is True; error matches error code, detail matches detail string, data matches payload",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a generator of failing ToolResult instances with varied Error, Detail, and Data payloads"
+            ],
+            "pseudocode": "for tr in gen_failing_tool_results():\n    te := codemode.NewToolError(tr)\n    assert te.Type() == \"tool_error\"\n    assert te.Attr(\"ok\") == starlark.False\n    assert te.Attr(\"is_error\") == starlark.True\n    assert te.Attr(\"error\").(starlark.String) == tr.Error\n    assert te.Attr(\"detail\").(starlark.String) == tr.Detail"
+          }
         },
         {
-          "id": "08-REQ-5.3",
+          "id": "REQ-5.3",
           "pattern": "ubiquitous",
           "system": "error representation",
-          "action": "allow dictionary key indexing on ToolError instances for keys 'error', 'detail', 'ok', and 'is_error'"
+          "action": "allow dictionary key indexing on ToolError instances for keys 'error', 'detail', 'ok', and 'is_error'",
+          "contract": "indexing e['error'], e['detail'], e['ok'], and e['is_error'] returns the respective values",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a ToolError instance returned to a Starlark script"
+            ],
+            "pseudocode": "res := runScript(ctx, \"def main():\\n e = failing_tool()\\n return (e['error'], e['detail'], e['ok'], e['is_error'])\")\nassert res.OK\nassert res.Data[\"return_value\"] == []any{\"failed\", \"detail msg\", false, true}"
+          }
         },
         {
-          "id": "08-REQ-5.4",
+          "id": "REQ-5.4",
           "pattern": "event_driven",
           "condition": "the built-in helper is_error(val) is evaluated",
           "system": "error helper",
-          "action": "return True if val is a ToolError instance, and False for all other Starlark values"
+          "action": "return True if val is a ToolError instance, and False for all other Starlark values",
+          "contract": "is_error returns True for ToolError instances; is_error returns False for dicts, strings, integers, and None",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Starlark script evaluating is_error with ToolError and non-error values"
+            ],
+            "pseudocode": "res := runScript(ctx, \"def main():\\n return [is_error(failing_tool()), is_error({'error': 'mock'}), is_error(None), is_error(123)]\")\nassert res.OK\nassert res.Data[\"return_value\"] == []any{true, false, false, false}"
+          }
         }
       ]
     },
     {
-      "id": "08-REQ-6",
+      "id": "REQ-6",
       "title": "Concurrent execution helper (parallel)",
       "rationale": "Providing parallel dispatch helper functions enables scripts to execute batches of independent tool calls concurrently up to a configurable concurrency limit.",
+      "system": "concurrency helper",
       "criteria": [
         {
-          "id": "08-REQ-6.1",
+          "id": "REQ-6.1",
           "pattern": "event_driven",
           "condition": "call(tool_fn, **kwargs) is executed in a script",
-          "system": "concurrency helper",
-          "action": "return a call descriptor capturing the target tool callable and keyword arguments"
+          "action": "return a call descriptor capturing the target tool callable and keyword arguments",
+          "contract": "returns a call descriptor capturing target tool callable and keyword arguments",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Starlark script invoking call(target_tool, key='val', num=10)"
+            ],
+            "pseudocode": "res := runScript(ctx, \"def main():\\n c = call(my_tool, key='val')\\n return (type(c), c.tool == my_tool, c.kwargs['key'])\")\nassert res.OK\nassert res.Data[\"return_value\"] == []any{\"call_descriptor\", true, \"val\"}"
+          }
         },
         {
-          "id": "08-REQ-6.2",
+          "id": "REQ-6.2",
           "pattern": "event_driven",
           "condition": "parallel(calls) is invoked with a list or tuple of call descriptors, tuples, or dicts",
-          "system": "concurrency helper",
-          "action": "validate all call specifications, chunk them into batches of at most opts.MaxConcurrentCalls, and dispatch each batch via core.CallNested concurrently"
+          "action": "validate all call specifications, chunk them into batches of at most opts.MaxConcurrentCalls, and dispatch each batch via core.CallNested concurrently",
+          "contract": "validates all calls against bound tools and remaining MaxCalls budget; chunks calls into concurrent batches of at most opts.MaxConcurrentCalls; dispatches each batch via core.CallNested concurrently",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "options with MaxConcurrentCalls=2 and 5 call specifications (descriptors, tuples, dicts)"
+            ],
+            "pseudocode": "calls := \"parallel([call(work, i=1), (work, {'i': 2}), {'tool': work, 'args': {'i': 3}}, call(work, i=4), call(work, i=5)])\"\nres := runScriptWithOpts(ctx, calls, Options{MaxConcurrentCalls: 2})\nassert res.OK\nassert len(res.Data[\"return_value\"].([]any)) == 5\nassert maxConcurrentSeen <= 2"
+          }
         },
         {
-          "id": "08-REQ-6.3",
+          "id": "REQ-6.3",
           "pattern": "event_driven",
           "condition": "concurrent batch calls complete across all workers",
-          "system": "concurrency helper",
-          "action": "assemble the converted Starlark result values into a list matching the exact original order of the input calls"
+          "action": "assemble the converted Starlark result values into a list matching the exact original order of the input calls",
+          "contract": "results are assembled into a list matching the exact original order of the input calls",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "tool calls with varying execution latencies executed via parallel"
+            ],
+            "pseudocode": "script := \"def main():\\n return parallel([call(delayed, delay=50, id=1), call(delayed, delay=10, id=2), call(delayed, delay=30, id=3)])\"\nres := runScript(ctx, script)\nassert res.OK\nassert res.Data[\"return_value\"] == []any{map[string]any{\"id\": 1}, map[string]any{\"id\": 2}, map[string]any{\"id\": 3}}"
+          }
         },
         {
-          "id": "08-REQ-6.4",
+          "id": "REQ-6.4",
           "pattern": "unwanted",
           "condition": "any nested call within parallel triggers an interceptor termination returning core.ErrTerminated",
-          "system": "concurrency helper",
           "action": "immediately halt parallel batch execution and return with ToolResult.Terminate set to true",
-          "contract": "parallel stops remaining calls and sets Terminate: true on the code-mode result"
+          "contract": "parallel stops remaining calls and sets Terminate: true on the code-mode result",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a batch of parallel calls where one call encounters an interceptor terminate vote"
+            ],
+            "pseudocode": "script := \"parallel([call(normal_tool), call(terminating_tool), call(normal_tool)])\"\nres := runScript(ctx, script)\nassert res.Terminate == true"
+          }
         }
       ]
     },
     {
-      "id": "08-REQ-7",
+      "id": "REQ-7",
       "title": "Resource limits and budget enforcement",
       "rationale": "Enforcing timeouts, step limits, call counts, and output byte limits prevents runaway scripts from consuming excessive compute, memory, or context budget.",
+      "system": "limit enforcer",
       "criteria": [
         {
-          "id": "08-REQ-7.1",
+          "id": "REQ-7.1",
           "pattern": "unwanted",
           "condition": "script wall-clock execution time exceeds opts.MaxTimeout",
-          "system": "limit enforcer",
           "action": "halt execution cleanly and return a failure result identifying the timeout",
-          "contract": "returns ToolResult with OK: false, Error: 'timeout', and Detail indicating the elapsed timeout limit"
+          "contract": "returns ToolResult with OK: false, Error: 'timeout', and Detail indicating the elapsed timeout limit",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "options configured with MaxTimeout=50ms and a long-running script"
+            ],
+            "pseudocode": "res := runScriptWithOpts(ctx, \"while True: pass\", Options{MaxTimeout: 50 * time.Millisecond})\nassert !res.OK\nassert res.Error == \"timeout\"\nassert strings.Contains(res.Detail, \"50ms\")"
+          }
         },
         {
-          "id": "08-REQ-7.2",
+          "id": "REQ-7.2",
           "pattern": "unwanted",
           "condition": "script execution step count exceeds opts.MaxSteps configured on the Starlark thread",
-          "system": "limit enforcer",
           "action": "terminate script execution and return a step limit error",
-          "contract": "returns ToolResult with OK: false, Error: 'step_limit_exceeded', and Detail naming the step limit"
+          "contract": "returns ToolResult with OK: false, Error: 'step_limit_exceeded', and Detail naming the step limit",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "options configured with MaxSteps=100 and a script with an intensive loop"
+            ],
+            "pseudocode": "res := runScriptWithOpts(ctx, \"for x in range(1000): pass\", Options{MaxSteps: 100})\nassert !res.OK\nassert res.Error == \"step_limit_exceeded\"\nassert strings.Contains(res.Detail, \"100\")"
+          }
         },
         {
-          "id": "08-REQ-7.3",
+          "id": "REQ-7.3",
           "pattern": "unwanted",
           "condition": "cumulative nested tool calls dispatched across direct calls and parallel exceed opts.MaxCalls",
-          "system": "limit enforcer",
           "action": "reject the excess call, halt script execution, and return a call limit error",
-          "contract": "returns ToolResult with OK: false, Error: 'call_limit_exceeded', and Detail naming the call limit"
+          "contract": "returns ToolResult with OK: false, Error: 'call_limit_exceeded', and Detail naming the call limit",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "options configured with MaxCalls=3"
+            ],
+            "pseudocode": "res := runScriptWithOpts(ctx, \"for i in range(5): ping()\", Options{MaxCalls: 3})\nassert !res.OK\nassert res.Error == \"call_limit_exceeded\"\nassert strings.Contains(res.Detail, \"3\")"
+          }
         },
         {
-          "id": "08-REQ-7.4",
+          "id": "REQ-7.4",
           "pattern": "unwanted",
           "condition": "cumulative printed and returned output bytes exceed opts.MaxOutputBytes",
-          "system": "limit enforcer",
           "action": "halt script execution and return an output limit error",
-          "contract": "returns ToolResult with OK: false, Error: 'output_limit_exceeded', and Detail naming the output byte limit"
+          "contract": "returns ToolResult with OK: false, Error: 'output_limit_exceeded', and Detail naming the output byte limit",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "options configured with MaxOutputBytes=200 and a script generating extensive output"
+            ],
+            "pseudocode": "res := runScriptWithOpts(ctx, \"print('A' * 300)\", Options{MaxOutputBytes: 200})\nassert !res.OK\nassert res.Error == \"output_limit_exceeded\"\nassert strings.Contains(res.Detail, \"200\")"
+          }
         },
         {
-          "id": "08-REQ-7.5",
-          "pattern": "complex_event",
-          "condition": "script execution terminates due to any exceeded limit",
-          "guard": "partial printed output or completed nested calls exist",
-          "system": "limit enforcer",
-          "action": "include the partial output and completed calls ledger in ToolResult.Data and format them in ToolResult.Text"
+          "id": "REQ-7.5",
+          "pattern": "event_driven",
+          "condition": "script execution terminates due to any exceeded limit and partial printed output or completed nested calls exist",
+          "action": "include the partial output and completed calls ledger in ToolResult.Data and format them in ToolResult.Text",
+          "contract": "partial printed output and completed calls ledger are included in ToolResult.Data; partial output and completed calls summary are formatted in ToolResult.Text",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a script that prints output and performs tool calls before breaching a limit"
+            ],
+            "pseudocode": "res := runScriptWithOpts(ctx, \"print('step 1 completed'); ping(); print('A'*500)\", Options{MaxOutputBytes: 100})\nassert !res.OK\nassert strings.Contains(res.Data[\"partial_output\"].(string), \"step 1 completed\")\nassert len(res.Data[\"calls_completed\"].([]any)) == 1\nassert strings.Contains(res.Text, \"step 1 completed\")\nassert strings.Contains(res.Text, \"ping\")"
+          }
         }
       ]
     },
     {
-      "id": "08-REQ-8",
+      "id": "REQ-8",
       "title": "Output capture, middle truncation, and disk spilling",
       "rationale": "Buffering printed output and script return values with middle truncation and spill file support prevents context blowup while preserving key beginnings and conclusions.",
+      "system": "output collector",
       "criteria": [
         {
-          "id": "08-REQ-8.1",
+          "id": "REQ-8.1",
           "pattern": "event_driven",
           "condition": "a script calls the print built-in function",
-          "system": "output collector",
-          "action": "capture the formatted printed line into an internal tools.Accumulator configured with TruncateMiddle and capacity opts.MaxOutputBytes"
+          "action": "capture the formatted printed line into an internal tools.Accumulator configured with TruncateMiddle and capacity opts.MaxOutputBytes",
+          "contract": "printed lines are captured into internal tools.Accumulator configured with TruncateMiddle and capacity opts.MaxOutputBytes",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a script executing multiple print calls"
+            ],
+            "pseudocode": "res := runScript(ctx, \"print('line 1'); print('line 2')\")\nassert res.OK\nassert res.Text == \"line 1\\nline 2\""
+          }
         },
         {
-          "id": "08-REQ-8.2",
+          "id": "REQ-8.2",
           "pattern": "event_driven",
           "condition": "script evaluation concludes successfully",
-          "system": "output collector",
-          "action": "determine the return value by executing main() if defined, else reading global variable result if defined, else defaulting to None"
+          "action": "determine the return value by executing main() if defined, else reading global variable result if defined, else defaulting to None",
+          "contract": "executing main() takes precedence if defined; reading global variable result is used if main() is absent; defaults to None if neither is defined",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "scripts defining main(), global variable result, or neither"
+            ],
+            "pseudocode": "r1 := runScript(ctx, \"def main(): return 'from_main'\\nresult = 'from_result'\")\nassert r1.Data[\"return_value\"] == \"from_main\"\nr2 := runScript(ctx, \"result = 'from_result'\")\nassert r2.Data[\"return_value\"] == \"from_result\"\nr3 := runScript(ctx, \"x = 1\")\nassert r3.Data[\"return_value\"] == nil"
+          }
         },
         {
-          "id": "08-REQ-8.3",
+          "id": "REQ-8.3",
           "pattern": "ubiquitous",
-          "system": "output collector",
-          "action": "for any script execution, format ToolResult.Text with combined printed text and return value, printed text only, formatted return value only, or '[Script finished with no output]'"
+          "action": "for any script execution, format ToolResult.Text with combined printed text and return value, printed text only, formatted return value only, or '[Script finished with no output]'",
+          "contract": "both present: combines printed text and formatted return value; printed text only: returns printed text; return value only: returns formatted return value; neither present: returns '[Script finished with no output]'",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a generator of script execution outputs with varied printed text and return value states"
+            ],
+            "pseudocode": "for out in gen_script_outputs():\n    text := codemode.FormatResultText(out.Printed, out.ReturnValue)\n    if out.Printed != \"\" && out.ReturnValue != nil:\n        assert strings.Contains(text, out.Printed) && strings.Contains(text, \"Return value:\")\n    else if out.Printed != \"\":\n        assert text == out.Printed\n    else if out.ReturnValue != nil:\n        assert strings.HasPrefix(text, \"Return value:\")\n    else:\n        assert text == \"[Script finished with no output]\""
+          }
         },
         {
-          "id": "08-REQ-8.4",
-          "pattern": "complex_event",
-          "condition": "total output bytes exceed opts.MaxOutputBytes",
-          "guard": "opts.DisableSpill is false",
-          "system": "output collector",
-          "action": "truncate output via middle elision marker and stream full output to a spill file in opts.SpillDir"
+          "id": "REQ-8.4",
+          "pattern": "event_driven",
+          "condition": "total output bytes exceed opts.MaxOutputBytes and opts.DisableSpill is false",
+          "action": "truncate output via middle elision marker and stream full output to a spill file in opts.SpillDir",
+          "contract": "output is truncated retaining head and tail with middle elision marker; full output is written to a spill file in opts.SpillDir; SpillPath points to valid on-disk file containing complete output",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "options with MaxOutputBytes=200, SpillDir configured, and DisableSpill=false"
+            ],
+            "pseudocode": "spillDir := t.TempDir()\nres := runScriptWithOpts(ctx, \"print('HEAD' + 'X'*500 + 'TAIL')\", Options{MaxOutputBytes: 100, SpillDir: spillDir, DisableSpill: false})\nassert strings.Contains(res.Text, \"HEAD\")\nassert strings.Contains(res.Text, \"TAIL\")\nassert strings.Contains(res.Text, \"bytes elided\")\nassert res.Metadata.SpillPath != \"\"\ndata, _ := os.ReadFile(res.Metadata.SpillPath)\nassert len(data) > 500"
+          }
         },
         {
-          "id": "08-REQ-8.5",
-          "pattern": "complex_event",
-          "condition": "total output bytes exceed opts.MaxOutputBytes",
-          "guard": "opts.DisableSpill is true",
-          "system": "output collector",
-          "action": "truncate output via middle elision marker without writing a spill file to disk"
+          "id": "REQ-8.5",
+          "pattern": "event_driven",
+          "condition": "total output bytes exceed opts.MaxOutputBytes and opts.DisableSpill is true",
+          "action": "truncate output via middle elision marker without writing a spill file to disk",
+          "contract": "output is truncated via middle elision marker; no spill file is written to disk and SpillPath is empty",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "options with MaxOutputBytes=100 and DisableSpill=true"
+            ],
+            "pseudocode": "res := runScriptWithOpts(ctx, \"print('HEAD' + 'Y'*500 + 'TAIL')\", Options{MaxOutputBytes: 100, DisableSpill: true})\nassert strings.Contains(res.Text, \"bytes elided\")\nassert res.Metadata.SpillPath == \"\""
+          }
         },
         {
-          "id": "08-REQ-8.6",
+          "id": "REQ-8.6",
           "pattern": "event_driven",
           "condition": "output truncation occurs during script execution",
-          "system": "output collector",
-          "action": "populate core.ToolMetadata on ToolResult with Truncated: true, TruncatedBy: 'bytes', TotalBytes, SpillPath, and DurationMS"
+          "action": "populate core.ToolMetadata on ToolResult with Truncated: true, TruncatedBy: 'bytes', TotalBytes, SpillPath, and DurationMS",
+          "contract": "populates core.ToolMetadata with Truncated: true and TruncatedBy: 'bytes'; populates TotalBytes, SpillPath, and DurationMS",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a script execution triggering output truncation"
+            ],
+            "pseudocode": "res := runScriptWithOpts(ctx, \"print('Z'*400)\", Options{MaxOutputBytes: 100})\nassert res.Metadata.Truncated == true\nassert res.Metadata.TruncatedBy == \"bytes\"\nassert res.Metadata.TotalBytes >= 400\nassert res.Metadata.DurationMS >= 0"
+          }
         }
       ]
     },
     {
-      "id": "08-REQ-9",
+      "id": "REQ-9",
       "title": "Script error diagnostics and telemetry ledger",
       "rationale": "Recording structured diagnostics and an execution ledger of completed calls ensures transparency for failures without rolling back side effects.",
       "criteria": [
         {
-          "id": "08-REQ-9.1",
+          "id": "REQ-9.1",
           "pattern": "unwanted",
           "condition": "a script encounters a syntax error during parsing",
           "system": "script diagnostic handler",
           "action": "terminate execution and return a syntax error result detailing the file and line number",
-          "contract": "returns ToolResult with OK: false, Error: 'syntax_error', line number, and error details"
+          "contract": "returns ToolResult with OK: false, Error: 'syntax_error', line number, and error details",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a script containing invalid Starlark syntax (e.g. unclosed parenthesis)"
+            ],
+            "pseudocode": "res := runScript(ctx, \"def foo(\\n  return 1\")\nassert !res.OK\nassert res.Error == \"syntax_error\"\nassert res.Data[\"line\"].(int) > 0\nassert strings.Contains(res.Detail, \"syntax\")"
+          }
         },
         {
-          "id": "08-REQ-9.2",
+          "id": "REQ-9.2",
           "pattern": "unwanted",
           "condition": "a script encounters a runtime execution error such as undefined variable or type mismatch",
           "system": "script diagnostic handler",
           "action": "terminate execution and return a runtime error result with stack and line information",
-          "contract": "returns ToolResult with OK: false, Error: 'runtime_error', line number, and error details"
+          "contract": "returns ToolResult with OK: false, Error: 'runtime_error', line number, and error details",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a script with a runtime error (e.g. division by zero or undefined variable access)"
+            ],
+            "pseudocode": "res := runScript(ctx, \"x = 1 / 0\")\nassert !res.OK\nassert res.Error == \"runtime_error\"\nassert res.Data[\"line\"].(int) > 0\nassert strings.Contains(res.Detail, \"zero\")"
+          }
         },
         {
-          "id": "08-REQ-9.3",
+          "id": "REQ-9.3",
           "pattern": "ubiquitous",
           "system": "telemetry ledger",
-          "action": "for any nested tool call executed during script run, append a record containing tool name, arguments, ok status, and error code to an execution ledger"
+          "action": "for any nested tool call executed during script run, append a record containing tool name, arguments, ok status, and error code to an execution ledger",
+          "contract": "ledger records tool name, arguments, ok status, and error code for every nested call; records are ordered by chronological dispatch order",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a generator of scripts executing varied success and failure tool calls"
+            ],
+            "pseudocode": "for script in gen_tool_call_scripts():\n    res := runScript(ctx, script)\n    ledger := res.Data[\"calls_completed\"].([]any)\n    for entry in ledger:\n        m := entry.(map[string]any)\n        assert m[\"tool\"] != \"\"\n        assert m[\"arguments\"] != nil\n        assert m[\"ok\"] != nil"
+          }
         },
         {
-          "id": "08-REQ-9.4",
+          "id": "REQ-9.4",
           "pattern": "event_driven",
           "condition": "a script execution completes, fails, or is halted by a limit",
           "system": "telemetry ledger",
-          "action": "populate calls_completed in ToolResult.Data with the execution ledger and include the summary in ToolResult.Text without rolling back side effects"
+          "action": "populate calls_completed in ToolResult.Data with the execution ledger and include the summary in ToolResult.Text without rolling back side effects",
+          "contract": "calls_completed in ToolResult.Data contains the full execution ledger; ToolResult.Text formats the completed calls summary; tool side effects are not rolled back",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a script performing multiple tool calls and then failing at a subsequent step"
+            ],
+            "pseudocode": "res := runScript(ctx, \"ping(id=1); ping(id=2); fail_now()\")\nassert !res.OK\ncalls := res.Data[\"calls_completed\"].([]any)\nassert len(calls) == 2\nassert strings.Contains(res.Text, \"ping(id=1)\")\nassert strings.Contains(res.Text, \"ping(id=2)\")"
+          }
         },
         {
-          "id": "08-REQ-9.5",
+          "id": "REQ-9.5",
           "pattern": "unwanted",
           "condition": "the caller context is cancelled before or during script execution",
           "system": "script diagnostic handler",
           "action": "halt execution cleanly and return an aborted result",
-          "contract": "returns ToolResult with OK: false, Error: 'aborted', and Detail: 'Operation aborted'"
+          "contract": "returns ToolResult with OK: false, Error: 'aborted', and Detail: 'Operation aborted'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a caller context cancelled prior to or during script execution"
+            ],
+            "pseudocode": "ctx, cancel := context.WithCancel(context.Background())\ncancel()\nres := runScript(ctx, \"for i in range(1000): pass\")\nassert !res.OK\nassert res.Error == \"aborted\"\nassert res.Detail == \"Operation aborted\""
+          }
         }
       ]
     },
     {
-      "id": "08-REQ-10",
+      "id": "REQ-10",
       "title": "Offline example and documentation governance",
       "rationale": "Providing an offline end-to-end example and updated documentation validates code mode without external network dependencies and maintains architectural records.",
       "criteria": [
         {
-          "id": "08-REQ-10.1",
+          "id": "REQ-10.1",
           "pattern": "ubiquitous",
           "system": "offline example",
-          "action": "provide an offline runnable example in examples/codemode/main.go binding navigation tools and an in-memory MCP tool against provider/faux without network access or API keys"
+          "action": "provide an offline runnable example in examples/codemode/main.go binding navigation tools and an in-memory MCP tool against provider/faux without network access or API keys",
+          "check": {
+            "same_as": "PATH-5"
+          }
         },
         {
-          "id": "08-REQ-10.2",
+          "id": "REQ-10.2",
           "pattern": "ubiquitous",
           "system": "offline example",
-          "action": "provide an accompanying README in examples/codemode/README.md explaining how to run and verify the offline code-mode workflow"
+          "action": "provide an accompanying README in examples/codemode/README.md explaining how to run and verify the offline code-mode workflow",
+          "check": {
+            "same_as": "PATH-5"
+          }
         },
         {
-          "id": "08-REQ-10.3",
+          "id": "REQ-10.3",
           "pattern": "ubiquitous",
           "system": "dependency governance",
-          "action": "record the dependency adoption ruling for go.starlark.net in docs/DEPS.md documenting sandboxing, step budgeting, and pure-Go rationale"
+          "action": "record the dependency adoption ruling for go.starlark.net in docs/DEPS.md documenting sandboxing, step budgeting, and pure-Go rationale",
+          "contract": "default options match documented architecture (MaxTimeout 30s, MaxSteps 100k, MaxCalls 50, MaxConcurrentCalls 8, MaxOutputBytes 100KB); runtime provides deterministic execution without ambient host I/O",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "default codemode.Options constructor and runtime configuration"
+            ],
+            "pseudocode": "opts := codemode.DefaultOptions()\nassert opts.MaxTimeout == 30*time.Second\nassert opts.MaxSteps == 100000\nassert opts.MaxCalls == 50\nassert opts.MaxConcurrentCalls == 8\nassert opts.MaxOutputBytes == 102400"
+          }
         },
         {
-          "id": "08-REQ-10.4",
+          "id": "REQ-10.4",
           "pattern": "ubiquitous",
           "system": "documentation",
-          "action": "update docs/architecture.md, docs/configuration.md, and README.md with the code mode architecture, codemode.Options reference, and getting started usage"
+          "action": "update docs/architecture.md, docs/configuration.md, and README.md with the code mode architecture, codemode.Options reference, and getting started usage",
+          "check": {
+            "same_as": "REQ-10.3"
+          }
         }
       ]
     }
   ],
   "execution_paths": [
     {
-      "id": "08-PATH-1",
+      "id": "PATH-1",
       "title": "Model executes a multi-step navigation and filtering script in code mode",
       "steps": [
         {
@@ -461,10 +773,27 @@
           "actor": "Code Mode Runner",
           "action": "captures printed output, formats ToolResult with the filtered list and completed calls ledger, and returns it to the agent loop"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "codemode.New",
+          "starlark.Thread",
+          "core.CallNested",
+          "tools.ListFiles"
+        ],
+        "setup": [
+          "a code-mode tool binding real navigation tool list_files and a test workspace directory"
+        ],
+        "end_state": [
+          "list_files is executed via core.CallNested",
+          "Starlark filters directory entries in memory",
+          "ToolResult returns filtered output with OK=true and completed calls ledger"
+        ],
+        "pseudocode": "cm, _, _ := codemode.New([]core.Tool{tools.ListFiles(ws)}, codemode.Options{})\nres, _ := cm.Execute(ctx, `{\"script\": \"entries = list_files(path='.')\\nfor e in entries['entries']:\\n  if e['name'].endswith('.go'):\\n    print(e['name'])\"}`)\nassert res.OK\nassert strings.Contains(res.Text, \".go\")\nassert len(res.Data[\"calls_completed\"].([]any)) == 1"
+      }
     },
     {
-      "id": "08-PATH-2",
+      "id": "PATH-2",
       "title": "Model executes parallel tool calls inside a code mode script",
       "steps": [
         {
@@ -483,10 +812,28 @@
           "actor": "Code Mode Runner",
           "action": "maps results to Starlark values in original call order, records execution in telemetry ledger, and returns the combined response"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "codemode.New",
+          "starlark.Thread",
+          "core.CallNested",
+          "parallel helper",
+          "tools.ReadFile"
+        ],
+        "setup": [
+          "a code-mode tool binding real navigation tool read_file and multiple workspace files"
+        ],
+        "end_state": [
+          "calls are dispatched concurrently bounded by MaxConcurrentCalls",
+          "results are returned in exact original input order",
+          "final output reflects aggregated contents"
+        ],
+        "pseudocode": "cm, _, _ := codemode.New([]core.Tool{tools.ReadFile(ws)}, codemode.Options{MaxConcurrentCalls: 4})\nres, _ := cm.Execute(ctx, `{\"script\": \"paths = ['a.txt', 'b.txt', 'c.txt']\\nresults = parallel([call(read_file, path=p) for p in paths])\\nfor r in results:\\n  print(r['text'])\"}`)\nassert res.OK\nassert strings.Contains(res.Text, \"content_a\")\nassert strings.Contains(res.Text, \"content_b\")\nassert len(res.Data[\"calls_completed\"].([]any)) == 3"
+      }
     },
     {
-      "id": "08-PATH-3",
+      "id": "PATH-3",
       "title": "Script execution halts and spills output when exceeding resource limit",
       "steps": [
         {
@@ -505,10 +852,27 @@
           "actor": "Code Mode Runner",
           "action": "returns ToolResult with OK: false, Error: 'output_limit_exceeded', Metadata with SpillPath and Truncated: true, and completed calls ledger"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "codemode.New",
+          "starlark.Thread",
+          "tools.Accumulator"
+        ],
+        "setup": [
+          "a code-mode tool with MaxOutputBytes=256 and configured SpillDir"
+        ],
+        "end_state": [
+          "execution terminates with output_limit_exceeded error",
+          "Accumulator middle-truncates text retaining head and tail with elided marker",
+          "full output is written to SpillPath disk file",
+          "ToolMetadata records Truncated: true, TruncatedBy: 'bytes', TotalBytes, and SpillPath"
+        ],
+        "pseudocode": "spillDir := t.TempDir()\ncm, _, _ := codemode.New([]core.Tool{tools.ReadFile(ws)}, codemode.Options{MaxOutputBytes: 256, SpillDir: spillDir})\nres, _ := cm.Execute(ctx, `{\"script\": \"for i in range(100):\\n  print('line number ' + str(i) + ' with extensive logging payload')\"}`)\nassert !res.OK\nassert res.Error == \"output_limit_exceeded\"\nassert res.Metadata.Truncated == true\nassert res.Metadata.TruncatedBy == \"bytes\"\nassert res.Metadata.SpillPath != \"\"\nassert os.Stat(res.Metadata.SpillPath) == nil"
+      }
     },
     {
-      "id": "08-PATH-4",
+      "id": "PATH-4",
       "title": "Script handles nested tool failure via non-exceptional ToolError",
       "steps": [
         {
@@ -531,10 +895,29 @@
           "actor": "Code Mode Runner",
           "action": "returns ToolResult with OK: true and the fallback output to the agent loop"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "codemode.New",
+          "starlark.Thread",
+          "core.CallNested",
+          "ToolError",
+          "tools.ReadFile"
+        ],
+        "setup": [
+          "a code-mode tool binding read_file tool and a script targeting a nonexistent file"
+        ],
+        "end_state": [
+          "read_file returns failing result through CallNested",
+          "Starlark receives ToolError value without raising exception",
+          "is_error(res) evaluates to True",
+          "script continues and returns fallback output with ToolResult.OK=true"
+        ],
+        "pseudocode": "cm, _, _ := codemode.New([]core.Tool{tools.ReadFile(ws)}, codemode.Options{})\nres, _ := cm.Execute(ctx, `{\"script\": \"res = read_file(path='missing.txt')\\nif is_error(res):\\n  print('File not found, using fallback')\\nelse:\\n  print(res['text'])\"}`)\nassert res.OK\nassert strings.Contains(res.Text, \"File not found, using fallback\")\nassert len(res.Data[\"calls_completed\"].([]any)) == 1\nassert res.Data[\"calls_completed\"].([]any)[0].(map[string]any)[\"ok\"] == false"
+      }
     },
     {
-      "id": "08-PATH-5",
+      "id": "PATH-5",
       "title": "Offline example executes code mode agent workflow against faux provider",
       "steps": [
         {
@@ -557,7 +940,24 @@
           "actor": "Example App",
           "action": "prints the completed conversation and exits cleanly with zero status"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "examples/codemode/main.go",
+          "provider/faux",
+          "agent.Agent",
+          "codemode.New"
+        ],
+        "setup": [
+          "examples/codemode application with navigation tools, in-memory MCP tool, and provider/faux"
+        ],
+        "end_state": [
+          "agent initializes with code_mode tool",
+          "faux provider supplies scripted multi-step code_mode invocations",
+          "agent runs navigation and parallel queries in Starlark and finishes successfully with zero exit status"
+        ],
+        "pseudocode": "cmd := exec.Command(\"go\", \"run\", \"./examples/codemode\")\ncmd.Env = append(os.Environ(), \"OFFLINE_TEST=1\")\nout, err := cmd.CombinedOutput()\nassert err == nil\nassert strings.Contains(string(out), \"Code mode example completed successfully\")"
+      }
     }
   ],
   "external_apis": [

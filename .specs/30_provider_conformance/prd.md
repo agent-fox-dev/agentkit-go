@@ -4,9 +4,8 @@ spec_name: "provider_conformance"
 title: "Cross-provider conformance suite, live smoke tests, and provider selection in the examples and README"
 status: "active"
 created_at: "2026-10-21T11:17:18.520866Z"
-updated_at: "2026-10-21T11:17:18.520866Z"
 intent_hash: "f63b83918d0051292954872bea33e382d48e5f2eca97684199c6f67d417b73c4"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/14-run-the-agent-on-anthropic-openrouter-or-ollama.md"
 ---
 ## Intent
@@ -314,3 +313,13 @@ No new Go module is added. The suite depends on symbols from earlier specs of th
 | Anthropic | SSE `event: <type>` and `data: {…}` lines: `message_start` (with `usage.input_tokens` and `cache_read_input_tokens`); `content_block_start`, `_delta` (`text_delta`, `thinking_delta`, `signature_delta`, `input_json_delta`) and `_stop`; `message_delta` (`stop_reason`, `usage.output_tokens`); `message_stop`; `error`. HTTP error body `{"type":"error","error":{"type","message"}}`. Request fields: `model`, `messages[].content[]` (`text`, `thinking{thinking,signature}`, `tool_use{id,name,input}`, `tool_result{tool_use_id,content}`), `output_config.effort`, `tools[].name` | verified against in-repo fixtures (`provider/anthropic/stream_test.go`, `runner_metadata_smoke_test.go`, `request_test.go`) |
 | OpenRouter | SSE `data: {chunk}` with `id`, `object` `chat.completion.chunk`, `created` and `model`, and `choices[0].delta` holding `content`, `reasoning`, `reasoning_details[]{type,text,format,index}` and `tool_calls[]{index,id,type,function{name,arguments}}`, plus `finish_reason`. A usage chunk carries `prompt_tokens`, `completion_tokens`, `total_tokens`, `prompt_tokens_details.cached_tokens`, `completion_tokens_details.reasoning_tokens` and `cost`, followed by `data: [DONE]`. Error chunk and HTTP error body: `{"error":{"code","message"}}`. Request fields: `model`, `messages[]{role,content,tool_calls,tool_call_id,reasoning_details}`, `reasoning.effort`, `tools[].function.name` | unverified: taken from spec 27's PRD and test spec and from the input's probe |
 | Ollama | NDJSON lines `{"model","message":{"role","content","thinking","tool_calls":[{"id","function":{"index","name","arguments":{…}}}]},"done":false}`. Final line `{"done":true,"done_reason":"stop","prompt_eval_count","prompt_eval_cached_count","eval_count"}`. Error line and HTTP error body: `{"error":"…"}`. `GET /api/tags` returns `{"models":[{"name","model"}]}`. Request fields: `model`, `messages[]{role,content,thinking,tool_calls,tool_name,tool_call_id}`, `think`, `tools[].function.name` | unverified: taken from spec 28's test spec and from the input's probe; `prompt_eval_cached_count` and `tool_call_id` are probe-only |
+
+## Glossary
+
+- **event skeleton**: A turn's provider event types with MessageUpdateEvents removed and each run of consecutive delta events of one block collapsed into one.
+- **live smoke test**: TestLive: an opt-in test gated on AGENTKIT_LIVE=1 that runs one real read_file tool loop per provider against its live service.
+- **logical turn**: A vendor-neutral script of one model response: an ordered list of text, thinking or tool-call blocks, how it ends (normal stop, tool-call stop, cut off, HTTP error status, in-stream error) and optional usage.
+- **provider events**: The run's events after a turn's TurnStartEvent, up to and including that turn's first MessageEndEvent.
+- **request summary**: The vendor-neutral decoding of a recorded request body: model id, effort in vendor form, declared tool names, user texts, assistant messages with text, tool calls and replayed thinking, and tool results.
+- **selected row**: The catalog.Select(provider, "STANDARD", "") result that supplies the expected model id, effort and price.
+- **vendor fake**: An httptest server in a _test.go file that renders logical turns in one vendor's native wire format (Anthropic Messages SSE, OpenRouter Chat Completions SSE, Ollama NDJSON) and records every request.

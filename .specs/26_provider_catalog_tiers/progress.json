@@ -1,0 +1,37 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/progress.v3.json",
+  "spec_id": "26",
+  "spec_name": "provider_catalog_tiers",
+  "schema_version": 3,
+  "updated_at": "2026-10-21T10:27:53.198261Z",
+  "tasks": [
+    {
+      "id": 1,
+      "state": "done"
+    },
+    {
+      "id": 2,
+      "state": "done"
+    },
+    {
+      "id": 3,
+      "state": "done"
+    },
+    {
+      "id": 4,
+      "state": "done"
+    },
+    {
+      "id": 5,
+      "state": "done"
+    },
+    {
+      "id": 6,
+      "state": "done"
+    },
+    {
+      "id": 7,
+      "state": "done"
+    }
+  ]
+}

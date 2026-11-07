@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "19",
   "spec_name": "sandbox_gateway",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make vet && make lint",
@@ -41,23 +41,14 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Add gateway.proto with its generated code and hash, the shared wire conversions and the gateway protocol constants",
       "criteria": [
-        "19-REQ-1.1",
-        "19-REQ-1.2",
-        "19-REQ-1.3",
-        "19-REQ-1.4",
-        "19-REQ-1.6",
-        "19-REQ-1.7"
-      ],
-      "tests": [
-        "TS-19-1",
-        "TS-19-2",
-        "TS-19-3",
-        "TS-19-4",
-        "TS-19-6",
-        "TS-19-7"
+        "REQ-1.1",
+        "REQ-1.2",
+        "REQ-1.3",
+        "REQ-1.4",
+        "REQ-1.6",
+        "REQ-1.7"
       ],
       "steps": [
         "Write TS-19-1, TS-19-2 and TS-19-7 in sandbox/internal/sandboxpb/gateway_proto_test.go, TS-19-3 in sandbox/internal/gatewaywire/convert_test.go, TS-19-4 in sandbox/gateway/version_test.go, and extend internal/policy/proto_test.go for TS-19-6; confirm they fail",
@@ -88,18 +79,13 @@
       ],
       "done_when": [
         "TestProtocolShape_TS13_1 and TestProtoNotStale_TS13_5 pass unmodified"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Make attach.ClientConn and attach.Live follow an Unwrap chain and give the podman and landlock wrappers Unwrap",
       "criteria": [
-        "19-REQ-7.8"
-      ],
-      "tests": [
-        "TS-19-53"
+        "REQ-7.8"
       ],
       "steps": [
         "Write TS-19-53: sandbox/internal/attach/unwrap_test.go (a fakeagent-attached sandbox sb, test wrappers w1{sb} and w2{w1} with Unwrap() sandbox.Sandbox, a plain non-attach sandbox), sandbox/podman/unwrap_internal_test.go and sandbox/landlock/unwrap_internal_test.go constructing each wrapper around an attached sandbox; confirm they fail",
@@ -117,33 +103,22 @@
         "sandbox/podman/unwrap_internal_test.go",
         "sandbox/landlock/sandbox.go",
         "sandbox/landlock/unwrap_internal_test.go"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Implement gateway.Dial with its URL, token, transport and handshake rules and the Provider's Capabilities, Reap, List and Destroy",
       "criteria": [
-        "19-REQ-2.1",
-        "19-REQ-2.2",
-        "19-REQ-2.3",
-        "19-REQ-2.5",
-        "19-REQ-2.6",
-        "19-REQ-2.7",
-        "19-REQ-2.8",
-        "19-REQ-3.1",
-        "19-REQ-3.2",
-        "19-REQ-3.3"
-      ],
-      "tests": [
-        "TS-19-8",
-        "TS-19-9",
-        "TS-19-10",
-        "TS-19-12",
-        "TS-19-13",
-        "TS-19-15",
-        "TS-19-16"
+        "REQ-2.1",
+        "REQ-2.2",
+        "REQ-2.3",
+        "REQ-2.5",
+        "REQ-2.6",
+        "REQ-2.7",
+        "REQ-2.8",
+        "REQ-3.1",
+        "REQ-3.2",
+        "REQ-3.3"
       ],
       "steps": [
         "Add sandbox/gateway/fakegw_test.go: a fake Gateway server built from sandboxpb.RegisterGatewayServer on a grpc.Server over a net.Pipe-backed in-memory listener, with a recording Dialer, settable Capabilities/List/Reap answers, unary and stream interceptors recording full method and incoming metadata, an open-connection counter, and a fakeagent.Agent registered on the same server; write TS-19-8, TS-19-9, TS-19-10, TS-19-12, TS-19-13, TS-19-15 and TS-19-16; confirm they fail",
@@ -168,33 +143,19 @@
       ],
       "depends_on": [
         1
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Implement gateway Create, the returned sandbox with its GitRepo Sync, refusal mapping, metadata and Provider.Close",
       "criteria": [
-        "19-REQ-4",
-        "19-REQ-1.5",
-        "19-REQ-2.4",
-        "19-REQ-3.4",
-        "19-REQ-3.5",
-        "19-REQ-3.6",
-        "19-REQ-3.7"
-      ],
-      "tests": [
-        "TS-19-5",
-        "TS-19-11",
-        "TS-19-18",
-        "TS-19-19",
-        "TS-19-20",
-        "TS-19-21",
-        "TS-19-23",
-        "TS-19-24",
-        "TS-19-27",
-        "TS-19-29"
+        "REQ-4",
+        "REQ-1.5",
+        "REQ-2.4",
+        "REQ-3.4",
+        "REQ-3.5",
+        "REQ-3.6",
+        "REQ-3.7"
       ],
       "steps": [
         "Extend the fake gateway with Create (answering an id, the effective spec and times, or a set Refusal or status), SyncGit, Destroy recording its ctx deadline with a settable failure, a deny-all Unauthenticated mode, per-method counters and a TLS mode serving a test CA and leaf for gw.example.test generated with crypto/x509; write TS-19-5, TS-19-11, TS-19-18, TS-19-19, TS-19-20, TS-19-21, TS-19-23, TS-19-24, TS-19-27 and TS-19-29; confirm they fail",
@@ -222,36 +183,23 @@
       ],
       "depends_on": [
         3
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Create the sandbox/gatewayd module with Config validation, authenticated Serve and the Gateway service's Capabilities, Create, List, Destroy and Reap",
       "criteria": [
-        "19-REQ-5.1",
-        "19-REQ-5.2",
-        "19-REQ-5.3",
-        "19-REQ-5.4",
-        "19-REQ-5.5",
-        "19-REQ-5.8",
-        "19-REQ-3.1",
-        "19-REQ-6.1",
-        "19-REQ-6.2",
-        "19-REQ-6.4",
-        "19-REQ-6.6"
-      ],
-      "tests": [
-        "TS-19-14",
-        "TS-19-30",
-        "TS-19-31",
-        "TS-19-34",
-        "TS-19-37",
-        "TS-19-38",
-        "TS-19-39",
-        "TS-19-41",
-        "TS-19-43"
+        "REQ-5.1",
+        "REQ-5.2",
+        "REQ-5.3",
+        "REQ-5.4",
+        "REQ-5.5",
+        "REQ-5.8",
+        "REQ-3.1",
+        "REQ-6.1",
+        "REQ-6.2",
+        "REQ-6.4",
+        "REQ-6.6"
       ],
       "steps": [
         "Create sandbox/gatewayd/go.mod: `module github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd`, `go 1.27`, require the root module, the sandbox module and google.golang.org/grpc at the sandbox module's version (protobuf only if a hand-written file imports it), `replace github.com/agent-fox-dev/agentkit-go => ../../` and `replace github.com/agent-fox-dev/agentkit-go/sandbox => ../`; tidy offline; add sandbox/gatewayd to the Makefile MODULES and to the `doc` target's module loop",
@@ -288,33 +236,20 @@
       "depends_on": [
         2,
         4
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Implement the typed Agent relay with routing, metadata stripping and status normalisation, and SyncGit with the GitRepo slot",
       "criteria": [
-        "19-REQ-7.1",
-        "19-REQ-7.2",
-        "19-REQ-7.3",
-        "19-REQ-7.4",
-        "19-REQ-7.5",
-        "19-REQ-7.6",
-        "19-REQ-7.7",
-        "19-REQ-5.3"
-      ],
-      "tests": [
-        "TS-19-32",
-        "TS-19-33",
-        "TS-19-46",
-        "TS-19-47",
-        "TS-19-48",
-        "TS-19-49",
-        "TS-19-50",
-        "TS-19-51",
-        "TS-19-52"
+        "REQ-7.1",
+        "REQ-7.2",
+        "REQ-7.3",
+        "REQ-7.4",
+        "REQ-7.5",
+        "REQ-7.6",
+        "REQ-7.7",
+        "REQ-5.3"
       ],
       "steps": [
         "Add gwtest backends: FakeAgent (Create attaches a fakeagent.Agent through attach.Dial and returns a wrapper with Unwrap, optionally with a local directory to remove) and Slot (wraps local.Unisolated(), simulates the clone in Sync(GitRepo) with a settable error and seeded delay, counts and logs clone start/end, implements Unwrap); write TS-19-32, TS-19-33, TS-19-46, TS-19-47, TS-19-48, TS-19-49, TS-19-50, TS-19-51 and TS-19-52; confirm they fail",
@@ -340,34 +275,21 @@
       ],
       "depends_on": [
         5
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Complete the server lifecycle: capacity with pruning, caller-gone and unrelayable creates, expiry, liveness removal, ownership, logging and Shutdown",
       "criteria": [
-        "19-REQ-5.6",
-        "19-REQ-5.7",
-        "19-REQ-6.3",
-        "19-REQ-6.5",
-        "19-REQ-6.7",
-        "19-REQ-6.8",
-        "19-REQ-3.4",
-        "19-REQ-4.5",
-        "19-REQ-4.7"
-      ],
-      "tests": [
-        "TS-19-17",
-        "TS-19-26",
-        "TS-19-28",
-        "TS-19-35",
-        "TS-19-36",
-        "TS-19-40",
-        "TS-19-42",
-        "TS-19-44",
-        "TS-19-45"
+        "REQ-5.6",
+        "REQ-5.7",
+        "REQ-6.3",
+        "REQ-6.5",
+        "REQ-6.7",
+        "REQ-6.8",
+        "REQ-3.4",
+        "REQ-4.5",
+        "REQ-4.7"
       ],
       "steps": [
         "Add gwtest backends: Blocking (Create blocks until released), Unrelayable (returns local sandboxes inside a wrapper with no Unwrap), CtxWait (waits for the RPC ctx to end, then creates), CancelOnCreate (cancels the caller's ctx before returning), HandshakeFail (fakeagent switched to protocol major 99 after the backend's own Hello) and FailingClose; write TS-19-17, TS-19-26, TS-19-28, TS-19-35, TS-19-36, TS-19-40, TS-19-42, TS-19-44 and TS-19-45; confirm they fail",
@@ -396,28 +318,18 @@
       ],
       "depends_on": [
         6
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Prove parity with a local sandbox over the gateway: proxies, conformance, cancellation, transfers and transport failures",
       "criteria": [
-        "19-REQ-10.1",
-        "19-REQ-10.2",
-        "19-REQ-10.3",
-        "19-REQ-10.4",
-        "19-REQ-4.1",
-        "19-REQ-4.4"
-      ],
-      "tests": [
-        "TS-19-22",
-        "TS-19-25",
-        "TS-19-67",
-        "TS-19-68",
-        "TS-19-69",
-        "TS-19-70"
+        "REQ-10.1",
+        "REQ-10.2",
+        "REQ-10.3",
+        "REQ-10.4",
+        "REQ-4.1",
+        "REQ-4.4"
       ],
       "steps": [
         "Write TS-19-67 in sandbox/gatewayd/parity_test.go: a gateway sandbox over local.Unisolated() with NetworkModes [NetworkUnrestricted]; compare each proxy from Tools with the tools.All tool of the same name field by field and by marshalled InputSchema and OutputSchema, then toolconformance.RunGroup(t, \"gateway\", builder) where builder creates a fresh gateway sandbox, Syncs tree.Tar(t) and returns its Tools (follow sandbox/conformance_test.go)",
@@ -439,27 +351,15 @@
       ],
       "depends_on": [
         7
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 9,
-      "kind": "implement",
       "title": "Add the agentkit-gateway command, the sandbox-gateway make targets and the opt-in Podman tests",
       "criteria": [
-        "19-REQ-8",
-        "19-REQ-9.6",
-        "19-REQ-10.5"
-      ],
-      "tests": [
-        "TS-19-54",
-        "TS-19-55",
-        "TS-19-56",
-        "TS-19-57",
-        "TS-19-58",
-        "TS-19-59",
-        "TS-19-65",
-        "TS-19-71"
+        "REQ-8",
+        "REQ-9.6",
+        "REQ-10.5"
       ],
       "steps": [
         "Write TS-19-55, TS-19-56, TS-19-57 and TS-19-59 in sandbox/gatewayd/cmd/agentkit-gateway (run, flag and token-file tests; a fake podman script on PATH printing `podman version 5.0.0` and logging invocations), TS-19-54 and TS-19-58 against a binary built in TestMain (skipped on Windows), TS-19-65 in internal/policy/gateway_make_test.go (skipped under -short or without make), and TS-19-71 in sandbox/gatewayd/podman_optin_test.go; confirm they fail",
@@ -489,26 +389,17 @@
       ],
       "depends_on": [
         7
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 10,
-      "kind": "implement",
       "title": "Pin the gatewayd module's dependencies, gates and the no-socket-listening invariant in the policy tests",
       "criteria": [
-        "19-REQ-9.1",
-        "19-REQ-9.2",
-        "19-REQ-9.3",
-        "19-REQ-9.4",
-        "19-REQ-9.5"
-      ],
-      "tests": [
-        "TS-19-60",
-        "TS-19-61",
-        "TS-19-62",
-        "TS-19-63",
-        "TS-19-64"
+        "REQ-9.1",
+        "REQ-9.2",
+        "REQ-9.3",
+        "REQ-9.4",
+        "REQ-9.5"
       ],
       "steps": [
         "Write TS-19-60, TS-19-61 in internal/policy/gatewayd_deps_test.go, extend crosstarget_test.go for TS-19-62, write TS-19-63 in internal/policy/nolisten_test.go and TS-19-64 in internal/policy/gateway_unchanged_test.go; confirm they fail",
@@ -532,18 +423,13 @@
       ],
       "done_when": [
         "internal/policy/testdata is unchanged"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 11,
-      "kind": "implement",
       "title": "Update the documentation for the gateway and prove make check passes offline",
       "criteria": [
-        "19-REQ-9.7"
-      ],
-      "tests": [
-        "TS-19-66"
+        "REQ-9.7"
       ],
       "steps": [
         "Write TS-19-66 as TestMakeCheckOffline_TS19_66 in internal/policy/check_test.go with TS-09-20's guards (skip under -short, inside make check, or without make): build a temporary bin directory symlinking every PATH executable except podman, docker and protoc, run `make check` with that PATH, GOPROXY=off and AGENTKIT_IN_MAKE_CHECK=1, and require success with sandbox/gatewayd tests run and the opt-in engine tests skipped; confirm it fails before the docs and wiring are complete, if it does",
@@ -565,44 +451,7 @@
       ],
       "depends_on": [
         10
-      ],
-      "state": "done"
-    },
-    {
-      "id": 12,
-      "kind": "integration",
-      "title": "Verify every gateway execution path end to end and remove any remaining stub",
-      "tests": [
-        "TS-19-72",
-        "TS-19-73",
-        "TS-19-74",
-        "TS-19-75",
-        "TS-19-76",
-        "TS-19-77"
-      ],
-      "steps": [
-        "Write TS-19-72, TS-19-73, TS-19-74 and TS-19-75 in sandbox/gatewayd/smoke_test.go with gwtest over the real local.Unisolated() backend, TS-19-76 in sandbox/gatewayd/cmd/agentkit-gateway/smoke_unix_test.go against the built binary and a fake podman script, and TS-19-77 in sandbox/gatewayd/podman_optin_test.go (skipping without an engine); confirm each passes",
-        "Trace 19-PATH-1: gateway.Dial → parseURL/checkToken → grpc.NewClient with bearer credentials → Gateway.Capabilities → auth interceptor → Capabilities handler; Provider.Create → CheckSpec and TTL check → Gateway.Create → Backend.Create → registry record → attach.New Hello through route and the relay → Tools → read_file Call; confirm each step calls the next",
-        "Trace 19-PATH-2 (gwSandbox.Sync(LocalDir) → attach rsync client → relay Rsync with the slot taken on an OK SYNC → agent → Export) and 19-PATH-3 (Provider.Close → gwSandbox.Close → attach teardown → Gateway.Destroy → registry.remove(client) → local Close)",
-        "Trace 19-PATH-4 (AfterFunc expiry → registry.remove(expired) → route answers Unavailable → attach classify → sandbox_unavailable), 19-PATH-5 (main → run → flags → readTokenFile → podman.New → gatewayd.New → net.Listen → listening line → Serve → signal → Shutdown → exit 0) and 19-PATH-6 (podman Create → wrapper Unwrap → attach.ClientConn → SyncGit → backend Sync(GitRepo) → relayed tools → Close)",
-        "Confirm contract producers are consumed in production code: gatewaywire conversions by both the client and the server; refusalErr by Create and GitRepo Sync; rpcErr by every client Gateway RPC; attach.ClientConn and attach.Live through Unwrap by gatewayd Create, route and pruning; token.Validate by gatewayd.New and readTokenFile; buildver.Version by Capabilities and --version; gateway.ProtocolMajor by Dial and Capabilities; gateway.SandboxIDKey by the client's Config.Metadata and route",
-        "Confirm entry points from other specs are called from production code: attach.New (13) from gateway Create, sandbox.CheckSpec (13) from Create, gitclone.Check and attach.Live (17) from gwSandbox.Sync, sandbox.DefaultImage (16) from Create, sandboxpb.RsyncStart_SYNC (14) from the relay's slot logic, podman.New (17) from the command's default deps",
-        "Search every file in the tasks' touches for panic(\"not implemented\"), TODO, FIXME, an Agent relay method still served by UnimplementedAgentServer, and bare `return nil` or empty results on non-trivial paths; remove any that remain",
-        "Run the spec tests and `make check` offline (no engine, no protoc, GOPROXY=off) and confirm the opt-in tests skip"
-      ],
-      "touches": [
-        "sandbox/gatewayd/smoke_test.go",
-        "sandbox/gatewayd/cmd/agentkit-gateway/smoke_unix_test.go",
-        "sandbox/gatewayd/podman_optin_test.go"
-      ],
-      "depends_on": [
-        11
-      ],
-      "done_when": [
-        "`make check` passes offline with no container engine and no protoc on PATH",
-        "every execution path 19-PATH-1 to 19-PATH-6 is traced through production code with no stub left"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

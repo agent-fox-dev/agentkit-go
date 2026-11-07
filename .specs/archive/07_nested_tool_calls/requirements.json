@@ -1,351 +1,602 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
   "spec_id": "07",
   "spec_name": "nested_tool_calls",
-  "schema_version": 2,
-  "introduction": "Enables tools to declare reachable child tools, validates tool hierarchies against cycles and terminating tools, recursively filters reachable tools through tool policies, checks unguarded shell tools across wrappers, and executes nested tool calls through a uniform authorization, audit, event, and concurrency pipeline with parent tool-use ID tracking.",
-  "glossary": {
-    "leaf tool": "A tool that declares no child tools in ReachableTools.",
-    "nested tool call": "An invocation of a tool by a wrapper tool via CallNested rather than directly by the model provider.",
-    "parent tool-use ID": "The unique identifier of the wrapper tool call that initiated a nested tool call.",
-    "terminating tool": "A tool marked with Terminating: true that signals the agent run should terminate upon successful completion.",
-    "wrapper tool": "A tool that declares child tools in ReachableTools and invokes them programmatically during execution."
-  },
+  "schema_version": 3,
   "requirements": [
     {
-      "id": "07-REQ-1",
+      "id": "REQ-1",
       "title": "Reachable and terminating tool declarations and validation",
       "rationale": "Validating reachable tool hierarchies and terminating restrictions at registration prevents recursive loops and unauthorized run terminations.",
       "criteria": [
         {
-          "id": "07-REQ-1.1",
+          "id": "REQ-1.1",
           "pattern": "ubiquitous",
           "system": "core tool definition",
-          "action": "declare reachable child tools via ReachableTools []Tool and intentional run termination via Terminating bool on core.Tool"
+          "action": "declare reachable child tools via ReachableTools []Tool and intentional run termination via Terminating bool on core.Tool",
+          "contract": "ReachableTools holds the child tool slice; Terminating boolean flag is true on the parent tool",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a core.Tool definition with ReachableTools and Terminating fields populated"
+            ],
+            "pseudocode": "child = core.Tool{Name: \"child\", Handler: h}\nparent = core.Tool{Name: \"parent\", ReachableTools: []core.Tool{child}, Terminating: true}\nassert len(parent.ReachableTools) == 1\nassert parent.ReachableTools[0].Name == \"child\"\nassert parent.Terminating == true"
+          }
         },
         {
-          "id": "07-REQ-1.2",
+          "id": "REQ-1.2",
           "pattern": "ubiquitous",
           "system": "wire projection",
-          "action": "exclude ReachableTools and Terminating from core.ToolWire and ToolWires output so provider payloads remain byte-identical"
+          "action": "exclude ReachableTools and Terminating from core.ToolWire and ToolWires output so provider payloads remain byte-identical",
+          "contract": "ToolWire and ToolWires output contains only Name, Description, InputSchema, and ConstrainedSampling; ReachableTools and Terminating fields are excluded from wire representation",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a core.Tool with ReachableTools populated and Terminating set to true"
+            ],
+            "pseudocode": "child = core.Tool{Name: \"child\", Handler: h}\nt = core.Tool{Name: \"wrapper\", Description: \"wrapper tool\", InputSchema: s, ReachableTools: []core.Tool{child}, Terminating: true}\nwire = core.ToolWire(t)\njsonBytes, _ := json.Marshal(wire)\nvar m map[string]any\njson.Unmarshal(jsonBytes, &m)\nassert _, ok := m[\"ReachableTools\"]; !ok\nassert _, ok := m[\"reachable_tools\"]; !ok\nassert _, ok := m[\"Terminating\"]; !ok\nassert _, ok := m[\"terminating\"]; !ok"
+          }
         },
         {
-          "id": "07-REQ-1.3",
+          "id": "REQ-1.3",
           "pattern": "unwanted",
           "condition": "NewAgent, NewAgentWithHistory, or RegisterTool is called with tools containing a direct or transitive reachability cycle",
           "system": "agent tool validator",
           "action": "reject agent construction or registration and return an error identifying the cyclic path",
-          "contract": "returns an error matching 'agentkit: reachable tools cycle detected: <path>'"
+          "contract": "returns an error matching 'agentkit: reachable tools cycle detected: <path>'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "tools configured with direct or transitive reachability cycles (e.g. A -> B -> A)"
+            ],
+            "pseudocode": "var toolA, toolB core.Tool\ntoolA = core.Tool{Name: \"toolA\", ReachableTools: []core.Tool{toolB}}\ntoolB = core.Tool{Name: \"toolB\", ReachableTools: []core.Tool{toolA}}\ntoolA.ReachableTools[0] = toolB\n_, err := NewAgent(cfg, toolA)\nassert err != nil\nassert strings.Contains(err.Error(), \"agentkit: reachable tools cycle detected: toolA -> toolB -> toolA\")\nag, _ := NewAgent(cfg)\nerrReg := ag.RegisterTool(toolA)\nassert errReg != nil\nassert strings.Contains(errReg.Error(), \"agentkit: reachable tools cycle detected:\")"
+          }
         },
         {
-          "id": "07-REQ-1.4",
+          "id": "REQ-1.4",
           "pattern": "unwanted",
           "condition": "NewAgent, NewAgentWithHistory, or RegisterTool is called where a wrapper tool declares a reachable tool with Terminating set to true",
           "system": "agent tool validator",
           "action": "reject agent construction or registration and return an error naming both the wrapper and the terminating tool",
-          "contract": "returns an error formatted as 'agentkit: terminating tool \\\"<terminating>\\\" cannot be reached through wrapper \\\"<wrapper>\\\"'"
+          "contract": "returns an error formatted as 'agentkit: terminating tool \\\"<terminating>\\\" cannot be reached through wrapper \\\"<wrapper>\\\"'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a wrapper tool declaring a child tool that has Terminating set to true"
+            ],
+            "pseudocode": "term = core.Tool{Name: \"finish\", Terminating: true, Handler: h}\nwrap = core.Tool{Name: \"code_mode\", ReachableTools: []core.Tool{term}, Handler: h}\n_, err := NewAgent(cfg, wrap)\nassert err != nil\nexpected := `agentkit: terminating tool \"finish\" cannot be reached through wrapper \"code_mode\"`\nassert strings.Contains(err.Error(), expected)\nag, _ := NewAgent(cfg)\nerrReg := ag.RegisterTool(wrap)\nassert errReg != nil\nassert strings.Contains(errReg.Error(), expected)"
+          }
         },
         {
-          "id": "07-REQ-1.5",
+          "id": "REQ-1.5",
           "pattern": "ubiquitous",
           "system": "cycle detector",
-          "action": "for any tool hierarchy containing diamond dependencies without cycles, validate the hierarchy successfully without cycle errors"
+          "action": "for any tool hierarchy containing diamond dependencies without cycles, validate the hierarchy successfully without cycle errors",
+          "contract": "no cycle error is returned and agent construction succeeds",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a tool hierarchy structured as a diamond (A reaches B and C; both B and C reach D)"
+            ],
+            "pseudocode": "for diamond in gen_diamond_hierarchies():\n    ag, err := NewAgent(cfg, diamond.Root)\n    assert err == nil\n    assert ag != nil"
+          }
         }
       ]
     },
     {
-      "id": "07-REQ-2",
+      "id": "REQ-2",
       "title": "Reachable tool queries and tool policy resolution",
       "rationale": "Deduplicating transitive reachable sets and pruning empty wrappers ensures accurate tool access queries and clean prompt schemas for the model.",
       "criteria": [
         {
-          "id": "07-REQ-2.1",
+          "id": "REQ-2.1",
           "pattern": "event_driven",
           "condition": "core.ReachableTools is called with a tool slice",
           "system": "reachability query",
-          "action": "return the deduplicated transitive closure of all input tools and their reachable tools hierarchies, preserving the order of first appearance"
+          "action": "return the deduplicated transitive closure of all input tools and their reachable tools hierarchies, preserving the order of first appearance",
+          "contract": "all transitively reachable tools are returned in deduplicated order of first appearance",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a tool slice with duplicate reachability paths across multiple branches"
+            ],
+            "pseudocode": "d = core.Tool{Name: \"D\"}\nb = core.Tool{Name: \"B\", ReachableTools: []core.Tool{d}}\nc = core.Tool{Name: \"C\", ReachableTools: []core.Tool{d}}\na = core.Tool{Name: \"A\", ReachableTools: []core.Tool{b, c}}\nres := core.ReachableTools([]core.Tool{a})\nnames := []string{}\nfor _, t := range res { names = append(names, t.Name) }\nassert reflect.DeepEqual(names, []string{\"A\", \"B\", \"D\", \"C\"})"
+          }
         },
         {
-          "id": "07-REQ-2.2",
+          "id": "REQ-2.2",
           "pattern": "event_driven",
           "condition": "(*Agent).ReachableTools is called on an agent",
           "system": "agent query",
-          "action": "resolve the agent's current ToolPolicy against registered tools and return core.ReachableTools on the resolved tool set"
+          "action": "resolve the agent's current ToolPolicy against registered tools and return core.ReachableTools on the resolved tool set",
+          "contract": "the agent resolves ToolPolicy against registered tools and returns core.ReachableTools on the resolved set",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an agent initialized with registered tools and a tool policy"
+            ],
+            "pseudocode": "ag, _ := NewAgent(AgentConfig{ToolPolicy: core.ToolPolicy{ExcludeTools: []string{\"sub2\"}}}, wrapTool, leafTool)\nres := ag.ReachableTools()\nassert len(res) > 0\nfor _, t := range res { assert t.Name != \"sub2\" }"
+          }
         },
         {
-          "id": "07-REQ-2.3",
+          "id": "REQ-2.3",
           "pattern": "event_driven",
           "condition": "ToolPolicy.Resolve is invoked on a registered tool slice",
           "system": "tool policy resolver",
-          "action": "apply NoTools, ToolNames, and ExcludeTools filtering recursively to the ReachableTools slice of each wrapper tool"
+          "action": "apply NoTools, ToolNames, and ExcludeTools filtering recursively to the ReachableTools slice of each wrapper tool",
+          "contract": "policy filters are applied recursively to ReachableTools of wrapper tools",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a wrapper tool whose ReachableTools slice contains child tools filtered by NoTools, ToolNames, or ExcludeTools"
+            ],
+            "pseudocode": "c1 = core.Tool{Name: \"c1\"}\nc2 = core.Tool{Name: \"c2\"}\nwrap = core.Tool{Name: \"wrap\", ReachableTools: []core.Tool{c1, c2}}\npolicy := core.ToolPolicy{ExcludeTools: []string{\"c2\"}}\nresolved := policy.Resolve([]core.Tool{wrap})\nassert len(resolved) == 1\nassert len(resolved[0].ReachableTools) == 1\nassert resolved[0].ReachableTools[0].Name == \"c1\""
+          }
         },
         {
-          "id": "07-REQ-2.4",
-          "pattern": "complex_event",
-          "condition": "ToolPolicy.Resolve evaluates a wrapper tool",
-          "guard": "the wrapper originally declared one or more reachable tools and policy filtering leaves it with zero reachable tools",
+          "id": "REQ-2.4",
+          "pattern": "event_driven",
+          "condition": "ToolPolicy.Resolve evaluates a wrapper tool and the wrapper originally declared one or more reachable tools and policy filtering leaves it with zero reachable tools",
           "system": "tool policy resolver",
-          "action": "drop the wrapper tool from the returned resolved tool slice"
+          "action": "drop the wrapper tool from the returned resolved tool slice",
+          "contract": "the wrapper tool is dropped from the resolved tool slice",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a wrapper tool that originally declared reachable tools, but all reachable tools are excluded by policy"
+            ],
+            "pseudocode": "c1 = core.Tool{Name: \"c1\"}\nwrap = core.Tool{Name: \"wrap\", ReachableTools: []core.Tool{c1}}\npolicy := core.ToolPolicy{ExcludeTools: []string{\"c1\"}}\nresolved := policy.Resolve([]core.Tool{wrap})\nassert len(resolved) == 0"
+          }
         },
         {
-          "id": "07-REQ-2.5",
-          "pattern": "complex_event",
-          "condition": "ToolPolicy.Resolve evaluates a leaf tool",
-          "guard": "the leaf tool originally declared zero reachable tools and policy filtering admits the tool",
+          "id": "REQ-2.5",
+          "pattern": "event_driven",
+          "condition": "ToolPolicy.Resolve evaluates a leaf tool and the leaf tool originally declared zero reachable tools and policy filtering admits the tool",
           "system": "tool policy resolver",
-          "action": "retain the leaf tool in the resolved tool slice despite having an empty ReachableTools slice"
+          "action": "retain the leaf tool in the resolved tool slice despite having an empty ReachableTools slice",
+          "contract": "the leaf tool is retained in the resolved tool slice despite having empty ReachableTools",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a leaf tool that originally declared zero reachable tools"
+            ],
+            "pseudocode": "leaf = core.Tool{Name: \"leaf\", ReachableTools: nil}\npolicy := core.ToolPolicy{ToolNames: []string{\"leaf\"}}\nresolved := policy.Resolve([]core.Tool{leaf})\nassert len(resolved) == 1\nassert resolved[0].Name == \"leaf\"\nassert len(resolved[0].ReachableTools) == 0"
+          }
         }
       ]
     },
     {
-      "id": "07-REQ-3",
+      "id": "REQ-3",
       "title": "Transitive unguarded shell tool checking",
       "rationale": "Inspecting transitively reachable tools closes security loopholes where shell tools could otherwise be executed through wrappers without authorization hooks.",
+      "system": "execute guard",
       "criteria": [
         {
-          "id": "07-REQ-3.1",
-          "pattern": "complex_event",
-          "condition": "checkExecuteGuard is invoked at the start of an agent run",
-          "guard": "AgentConfig.BeforeToolCall is nil",
-          "system": "execute guard",
-          "action": "inspect all transitively reachable tools of the resolved tool set using core.ReachableTools"
+          "id": "REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "checkExecuteGuard is invoked at the start of an agent run and AgentConfig.BeforeToolCall is nil",
+          "action": "inspect all transitively reachable tools of the resolved tool set using core.ReachableTools",
+          "contract": "checkExecuteGuard inspects all transitively reachable tools via core.ReachableTools",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an agent configuration where AgentConfig.BeforeToolCall is nil and resolved tools include a wrapper tool"
+            ],
+            "pseudocode": "inspectCount := 0\n// Mock or check that checkExecuteGuard checks transitive reachable tools via core.ReachableTools\n// When BeforeToolCall is nil, checkExecuteGuard calls core.ReachableTools(resolved)\ntools := []core.Tool{wrapWithShell}\nerr := checkExecuteGuard(AgentConfig{BeforeToolCall: nil}, tools)\nassert err != nil"
+          }
         },
         {
-          "id": "07-REQ-3.2",
+          "id": "REQ-3.2",
           "pattern": "unwanted",
           "condition": "AgentConfig.BeforeToolCall is nil and any resolved wrapper tool transitively reaches a tool satisfying guard.IsShellTool",
-          "system": "execute guard",
           "action": "abort agent execution before issuing any model provider requests",
-          "contract": "returns an error wrapping core.ErrUnguardedExecute naming both the wrapper tool and the reachable shell tool"
+          "contract": "returns an error wrapping core.ErrUnguardedExecute naming both the wrapper tool and the reachable shell tool",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "AgentConfig.BeforeToolCall is nil and a wrapper reaches a shell tool (guard.IsShellTool is true)"
+            ],
+            "pseudocode": "shellTool = core.Tool{Name: \"execute\", Handler: h}\nwrapper = core.Tool{Name: \"code_mode\", ReachableTools: []core.Tool{shellTool}, Handler: h}\ncfg := AgentConfig{BeforeToolCall: nil}\nerr := checkExecuteGuard(cfg, []core.Tool{wrapper})\nassert err != nil\nassert errors.Is(err, core.ErrUnguardedExecute)\nassert strings.Contains(err.Error(), `wrapper \"code_mode\" reached shell tool \"execute\"`)"
+          }
         },
         {
-          "id": "07-REQ-3.3",
-          "pattern": "complex_event",
-          "condition": "checkExecuteGuard is invoked at the start of an agent run",
-          "guard": "AgentConfig.BeforeToolCall is non-nil",
-          "system": "execute guard",
-          "action": "permit execution to proceed without failing on reachable shell tools"
+          "id": "REQ-3.3",
+          "pattern": "event_driven",
+          "condition": "checkExecuteGuard is invoked at the start of an agent run and AgentConfig.BeforeToolCall is non-nil",
+          "action": "permit execution to proceed without failing on reachable shell tools",
+          "contract": "checkExecuteGuard succeeds with no error",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "AgentConfig.BeforeToolCall is non-nil and a wrapper reaches a shell tool"
+            ],
+            "pseudocode": "shellTool = core.Tool{Name: \"execute\", Handler: h}\nwrapper = core.Tool{Name: \"code_mode\", ReachableTools: []core.Tool{shellTool}, Handler: h}\ncfg := AgentConfig{BeforeToolCall: func(ctx context.Context, c core.BeforeToolCallContext) (core.BeforeToolCallDecision, error) { return core.BeforeToolCallDecision{}, nil }}\nerr := checkExecuteGuard(cfg, []core.Tool{wrapper})\nassert err == nil"
+          }
         }
       ]
     },
     {
-      "id": "07-REQ-4",
+      "id": "REQ-4",
       "title": "Nested execution caller API and context dispatch",
       "rationale": "Providing context-propagated nested dispatchers enforces that wrappers can only invoke their explicitly declared reachable tools.",
       "criteria": [
         {
-          "id": "07-REQ-4.1",
+          "id": "REQ-4.1",
           "pattern": "ubiquitous",
           "system": "nested execution API",
-          "action": "define core.NestedCaller interface with Call(ctx, calls...), WithNestedCaller context injector, and CallNested invocation helper"
+          "action": "define core.NestedCaller interface with Call(ctx, calls...), WithNestedCaller context injector, and CallNested invocation helper",
+          "contract": "NestedCaller interface defines Call(ctx, calls...), WithNestedCaller injects caller, and CallNested dispatches to caller",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "core package exports"
+            ],
+            "pseudocode": "var _ core.NestedCaller = (*mockCaller)(nil)\nctx := core.WithNestedCaller(context.Background(), mockCallerInstance)\nres, err := core.CallNested(ctx, core.ToolUseBlock{ID: \"call_1\", Name: \"t1\"})\nassert err == nil\nassert len(res) == 1"
+          }
         },
         {
-          "id": "07-REQ-4.2",
+          "id": "REQ-4.2",
           "pattern": "unwanted",
           "condition": "CallNested is invoked on a context where no NestedCaller is attached",
           "system": "nested execution helper",
           "action": "return an error without executing any tool calls",
-          "contract": "returns nil result slice and core.ErrNoNestedCaller"
+          "contract": "returns nil result slice and core.ErrNoNestedCaller",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a context without any NestedCaller attached"
+            ],
+            "pseudocode": "ctx := context.Background()\nres, err := core.CallNested(ctx, core.ToolUseBlock{ID: \"call_1\", Name: \"child\"})\nassert res == nil\nassert errors.Is(err, core.ErrNoNestedCaller)"
+          }
         },
         {
-          "id": "07-REQ-4.3",
-          "pattern": "complex_event",
-          "condition": "executeBatch prepares invocation for a tool handler",
-          "guard": "the tool declares one or more reachable tools in ReachableTools",
+          "id": "REQ-4.3",
+          "pattern": "event_driven",
+          "condition": "executeBatch prepares invocation for a tool handler and the tool declares one or more reachable tools in ReachableTools",
           "system": "execution batch",
-          "action": "construct a NestedCaller dispatcher bound to parent tool-use ID, parent tool name, and resolved reachable tools, and attach it to ctx via WithNestedCaller"
+          "action": "construct a NestedCaller dispatcher bound to parent tool-use ID, parent tool name, and resolved reachable tools, and attach it to ctx via WithNestedCaller",
+          "contract": "executeBatch injects a NestedCaller bound to parent tool-use ID, parent name, and resolved reachable tools into ctx; the wrapper handler can invoke CallNested successfully",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a wrapper tool with ReachableTools invoked within executeBatch"
+            ],
+            "pseudocode": "var receivedCaller core.NestedCaller\nchild = core.Tool{Name: \"child\", Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) { return core.ToolResult{OK: true}, nil }}\nwrap = core.Tool{Name: \"wrap\", ReachableTools: []core.Tool{child}, Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n    res, err := core.CallNested(ctx, core.ToolUseBlock{ID: \"c1\", Name: \"child\"})\n    assert err == nil\n    assert len(res) == 1 && res[0].OK\n    return core.ToolResult{OK: true}, nil\n}}\n// Execute batch with wrap tool call\nbatch := []core.ToolUseBlock{{ID: \"parent_call_1\", Name: \"wrap\"}}\nresults := executeBatch(ctx, agent, batch)\nassert results[0].OK"
+          }
         },
         {
-          "id": "07-REQ-4.4",
+          "id": "REQ-4.4",
           "pattern": "unwanted",
           "condition": "a nested tool call specifies a tool name not present in the wrapper tool's resolved reachable tools",
           "system": "nested execution dispatcher",
           "action": "reject the nested tool call inline without invoking any tool handler",
-          "contract": "returns ToolResult with OK=false, Error='unknown_tool', and a descriptive Detail message, while CallNested returns a nil Go error"
+          "contract": "returns ToolResult with OK=false, Error='unknown_tool', and a descriptive Detail message, while CallNested returns a nil Go error",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a wrapper tool calling a tool name not in its reachable tools"
+            ],
+            "pseudocode": "// Inside nested execution dispatcher for wrapper that has reachable tools [\"child1\"]\nresults, err := caller.Call(ctx, core.ToolUseBlock{ID: \"c1\", Name: \"unknown_tool_x\"})\nassert err == nil\nassert len(results) == 1\nassert results[0].OK == false\nassert results[0].Error == \"unknown_tool\"\nassert len(results[0].Detail) > 0"
+          }
         }
       ]
     },
     {
-      "id": "07-REQ-5",
+      "id": "REQ-5",
       "title": "Interceptor context, blocking, and argument rewriting",
       "rationale": "Passing parent context and honouring interceptor decisions enables fine-grained authorization, parameter rewriting, and wrapper termination.",
       "criteria": [
         {
-          "id": "07-REQ-5.1",
+          "id": "REQ-5.1",
           "pattern": "ubiquitous",
           "system": "interceptor context",
-          "action": "set ParentToolUseID and ParentToolName to the parent wrapper call identifiers for nested calls, and empty strings for direct calls, in BeforeToolCallContext and AfterToolCallContext"
+          "action": "set ParentToolUseID and ParentToolName to the parent wrapper call identifiers for nested calls, and empty strings for direct calls, in BeforeToolCallContext and AfterToolCallContext",
+          "contract": "ParentToolUseID and ParentToolName are empty for direct calls and populated with parent wrapper identifiers for nested calls",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "direct tool calls and nested tool calls evaluated by interceptors"
+            ],
+            "pseudocode": "var directCtx, nestedCtx core.BeforeToolCallContext\ninterceptor := func(ctx context.Context, c core.BeforeToolCallContext) (core.BeforeToolCallDecision, error) {\n    if c.ToolName == \"parent\" { directCtx = c }\n    if c.ToolName == \"child\" { nestedCtx = c }\n    return core.BeforeToolCallDecision{}, nil\n}\nrunAgentWithNestedCall(interceptor)\nassert directCtx.ParentToolUseID == \"\"\nassert directCtx.ParentToolName == \"\"\nassert nestedCtx.ParentToolUseID == \"parent_call_1\"\nassert nestedCtx.ParentToolName == \"parent\""
+          }
         },
         {
-          "id": "07-REQ-5.2",
-          "pattern": "complex_event",
-          "condition": "BeforeToolCall evaluates a nested tool call",
-          "guard": "the interceptor returns Block=true and Terminate=false",
+          "id": "REQ-5.2",
+          "pattern": "event_driven",
+          "condition": "BeforeToolCall evaluates a nested tool call and the interceptor returns Block=true and Terminate=false",
           "system": "nested execution pipeline",
-          "action": "return a blocked tool result to the wrapper caller without terminating the wrapper or returning a Go error from CallNested"
+          "action": "return a blocked tool result to the wrapper caller without terminating the wrapper or returning a Go error from CallNested",
+          "contract": "the nested call returns ToolResult with OK=false, Error='blocked_by_policy', and Detail matching reason; CallNested returns a nil Go error and the wrapper continues execution",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a BeforeToolCall interceptor that returns Block=true and Terminate=false on a nested tool call"
+            ],
+            "pseudocode": "interceptor := func(ctx context.Context, c core.BeforeToolCallContext) (core.BeforeToolCallDecision, error) {\n    if c.ParentToolUseID != \"\" {\n        return core.BeforeToolCallDecision{Block: true, Reason: \"permission denied\"}, nil\n    }\n    return core.BeforeToolCallDecision{}, nil\n}\nwrap := core.Tool{Name: \"wrap\", ReachableTools: []core.Tool{child}, Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n    res, err := core.CallNested(ctx, core.ToolUseBlock{ID: \"n1\", Name: \"child\"})\n    assert err == nil\n    assert len(res) == 1\n    assert res[0].OK == false\n    assert res[0].Error == \"blocked_by_policy\"\n    assert res[0].Detail == \"permission denied\"\n    return core.ToolResult{OK: true, Detail: \"recovered from block\"}, nil\n}}\n// run wrapper\nres := executeBatch(ctx, agent, []core.ToolUseBlock{{ID: \"p1\", Name: \"wrap\"}})\nassert res[0].OK"
+          }
         },
         {
-          "id": "07-REQ-5.3",
-          "pattern": "complex_event",
-          "condition": "BeforeToolCall evaluates a nested tool call",
-          "guard": "the interceptor returns Block=true and Terminate=true",
+          "id": "REQ-5.3",
+          "pattern": "event_driven",
+          "condition": "BeforeToolCall evaluates a nested tool call and the interceptor returns Block=true and Terminate=true",
           "system": "nested execution pipeline",
-          "action": "terminate wrapper execution immediately and propagate the termination vote to the batch"
+          "action": "terminate wrapper execution immediately and propagate the termination vote to the batch",
+          "contract": "CallNested returns core.ErrTerminated, wrapper execution terminates, and Terminate=true propagates to the batch result",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a BeforeToolCall interceptor that returns Block=true and Terminate=true on a nested tool call"
+            ],
+            "pseudocode": "interceptor := func(ctx context.Context, c core.BeforeToolCallContext) (core.BeforeToolCallDecision, error) {\n    if c.ParentToolUseID != \"\" {\n        return core.BeforeToolCallDecision{Block: true, Terminate: true, Reason: \"critical violation\"}, nil\n    }\n    return core.BeforeToolCallDecision{}, nil\n}\nwrap := core.Tool{Name: \"wrap\", ReachableTools: []core.Tool{child}, Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n    _, err := core.CallNested(ctx, core.ToolUseBlock{ID: \"n1\", Name: \"child\"})\n    assert errors.Is(err, core.ErrTerminated)\n    return core.ToolResult{}, err\n}}\nres := executeBatch(ctx, agent, []core.ToolUseBlock{{ID: \"p1\", Name: \"wrap\"}})\nassert res[0].Terminate == true"
+          }
         },
         {
-          "id": "07-REQ-5.4",
-          "pattern": "complex_event",
-          "condition": "BeforeToolCall evaluates a nested tool call",
-          "guard": "the interceptor returns non-nil Arguments in BeforeToolCallDecision",
+          "id": "REQ-5.4",
+          "pattern": "event_driven",
+          "condition": "BeforeToolCall evaluates a nested tool call and the interceptor returns non-nil Arguments in BeforeToolCallDecision",
           "system": "nested execution pipeline",
-          "action": "substitute the decision arguments for the nested call arguments prior to input schema validation and handler invocation"
+          "action": "substitute the decision arguments for the nested call arguments prior to input schema validation and handler invocation",
+          "contract": "the nested tool handler receives the rewritten arguments instead of the original arguments",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a BeforeToolCall interceptor that rewrites arguments on a nested tool call"
+            ],
+            "pseudocode": "interceptor := func(ctx context.Context, c core.BeforeToolCallContext) (core.BeforeToolCallDecision, error) {\n    if c.ParentToolUseID != \"\" {\n        return core.BeforeToolCallDecision{Arguments: json.RawMessage(`{\"rewritten\": true}`)}, nil\n    }\n    return core.BeforeToolCallDecision{}, nil\n}\nvar receivedArgs json.RawMessage\nchild := core.Tool{Name: \"child\", Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n    receivedArgs = args\n    return core.ToolResult{OK: true}, nil\n}}\n// execute nested call\ncallNestedWithInterceptor(child, interceptor, json.RawMessage(`{\"rewritten\": false}`))\nassert string(receivedArgs) == `{\"rewritten\": true}`"
+          }
         }
       ]
     },
     {
-      "id": "07-REQ-6",
+      "id": "REQ-6",
       "title": "Terminating vote isolation for nested calls",
       "rationale": "Preventing untrusted child tools from unilaterally terminating runs protects agent loop integrity while recording audit trails for debugging.",
       "criteria": [
         {
-          "id": "07-REQ-6.1",
-          "pattern": "complex_event",
-          "condition": "a tool handler executes during a nested tool call",
-          "guard": "the tool handler returns ToolResult with Terminate=true and the tool is not a top-level terminating tool",
+          "id": "REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "a tool handler executes during a nested tool call and the tool handler returns ToolResult with Terminate=true and the tool is not a top-level terminating tool",
           "system": "nested execution pipeline",
-          "action": "override Terminate to false on the returned ToolResult and continue agent execution"
+          "action": "override Terminate to false on the returned ToolResult and continue agent execution",
+          "contract": "Terminate is overridden to false on the nested ToolResult and agent execution continues; nested AuditEvent has TerminateIgnored=true and nested ToolResult Detail notes that termination was ignored; wrapper ToolResult Detail annotates that a nested terminate vote was ignored",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an unmarked child tool handler returning Terminate=true during a nested tool call"
+            ],
+            "pseudocode": "child := core.Tool{Name: \"child\", Terminating: false, Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n    return core.ToolResult{OK: true, Terminate: true, Detail: \"done\"}, nil\n}}\nwrap := core.Tool{Name: \"wrap\", ReachableTools: []core.Tool{child}, Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n    res, _ := core.CallNested(ctx, core.ToolUseBlock{ID: \"n1\", Name: \"child\"})\n    assert res[0].Terminate == false\n    assert strings.Contains(res[0].Detail, \"terminate vote ignored\")\n    return core.ToolResult{OK: true, Detail: \"wrapper finished\"}, nil\n}}\nbatchRes := executeBatch(ctx, agent, []core.ToolUseBlock{{ID: \"p1\", Name: \"wrap\"}})\nassert batchRes[0].Terminate == false\nassert strings.Contains(batchRes[0].Detail, \"nested terminate vote ignored\")"
+          }
         },
         {
-          "id": "07-REQ-6.2",
+          "id": "REQ-6.2",
           "pattern": "event_driven",
           "condition": "an unmarked tool handler returns Terminate=true during a nested tool call",
           "system": "nested execution pipeline",
-          "action": "set TerminateIgnored=true on the nested AuditEvent and append an annotation to the nested ToolResult Detail indicating the terminate vote was ignored"
+          "action": "set TerminateIgnored=true on the nested AuditEvent and append an annotation to the nested ToolResult Detail indicating the terminate vote was ignored",
+          "check": {
+            "same_as": "REQ-6.1"
+          }
         },
         {
-          "id": "07-REQ-6.3",
+          "id": "REQ-6.3",
           "pattern": "event_driven",
           "condition": "an unmarked tool handler returns Terminate=true during a nested tool call",
           "system": "execution batch",
-          "action": "record in the parent wrapper ToolResult Detail that a nested terminate vote was ignored"
+          "action": "record in the parent wrapper ToolResult Detail that a nested terminate vote was ignored",
+          "check": {
+            "same_as": "REQ-6.1"
+          }
         }
       ]
     },
     {
-      "id": "07-REQ-7",
+      "id": "REQ-7",
       "title": "Nested concurrency, execution modes, and cancellation",
       "rationale": "Parallel execution with sequential fallbacks preserves performance and ordering while isolating failures and supporting clean context cancellation.",
+      "system": "nested execution dispatcher",
       "criteria": [
         {
-          "id": "07-REQ-7.1",
+          "id": "REQ-7.1",
           "pattern": "event_driven",
           "condition": "CallNested is invoked with multiple tool calls in a single call group",
-          "system": "nested execution dispatcher",
-          "action": "execute the calls concurrently using goroutines joined by sync.WaitGroup"
+          "action": "execute the calls concurrently using goroutines joined by sync.WaitGroup",
+          "contract": "nested tool calls run concurrently across goroutines joined by sync.WaitGroup",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "multiple independent child tool calls dispatched in a single CallNested invocation"
+            ],
+            "pseudocode": "var active int32\nvar maxActive int32\nchild := core.Tool{Name: \"child\", Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n    cur := atomic.AddInt32(&active, 1)\n    for {\n        old := atomic.LoadInt32(&maxActive)\n        if cur <= old || atomic.CompareAndSwapInt32(&maxActive, old, cur) { break }\n    }\n    time.Sleep(50 * time.Millisecond)\n    atomic.AddInt32(&active, -1)\n    return core.ToolResult{OK: true}, nil\n}}\n// Invoke CallNested with 3 calls\ncore.CallNested(ctx, call1, call2, call3)\nassert atomic.LoadInt32(&maxActive) > 1"
+          }
         },
         {
-          "id": "07-REQ-7.2",
-          "pattern": "complex_event",
-          "condition": "CallNested is invoked with multiple tool calls",
-          "guard": "AgentConfig.ParallelTools is false or any invoked tool has ExecutionMode equal to core.Sequential",
-          "system": "nested execution dispatcher",
-          "action": "execute the tool calls sequentially in caller order"
+          "id": "REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "CallNested is invoked with multiple tool calls and AgentConfig.ParallelTools is false or any invoked tool has ExecutionMode equal to core.Sequential",
+          "action": "execute the tool calls sequentially in caller order",
+          "contract": "nested tool calls run sequentially one after another in caller order",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "multiple tool calls passed to CallNested where AgentConfig.ParallelTools is false or a tool has ExecutionMode Sequential"
+            ],
+            "pseudocode": "var active int32\nvar maxActive int32\nchildSeq := core.Tool{Name: \"seq\", ExecutionMode: core.Sequential, Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n    cur := atomic.AddInt32(&active, 1)\n    if cur > atomic.LoadInt32(&maxActive) { atomic.StoreInt32(&maxActive, cur) }\n    time.Sleep(20 * time.Millisecond)\n    atomic.AddInt32(&active, -1)\n    return core.ToolResult{OK: true}, nil\n}}\ncore.CallNested(ctx, call1, call2)\nassert atomic.LoadInt32(&maxActive) == 1"
+          }
         },
         {
-          "id": "07-REQ-7.3",
+          "id": "REQ-7.3",
           "pattern": "ubiquitous",
-          "system": "nested execution dispatcher",
-          "action": "for any batch of calls provided to CallNested, return the ToolResult slice in the exact order matching the input calls slice"
+          "action": "for any batch of calls provided to CallNested, return the ToolResult slice in the exact order matching the input calls slice",
+          "contract": "the returned ToolResult slice matches the exact order of the input tool calls",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "any list of nested tool calls with varying execution durations passed to CallNested"
+            ],
+            "pseudocode": "for calls in gen_tool_call_batches():\n    results, err := core.CallNested(ctx, calls...)\n    assert err == nil\n    assert len(results) == len(calls)\n    for i := range calls {\n        assert results[i].ToolUseID == calls[i].ID\n    }"
+          }
         },
         {
-          "id": "07-REQ-7.4",
+          "id": "REQ-7.4",
           "pattern": "event_driven",
           "condition": "a nested tool call fails due to handler error, panic, or validation failure",
-          "system": "nested execution dispatcher",
-          "action": "isolate the failure to that call and allow sibling nested calls in the same call group to complete their execution"
+          "action": "isolate the failure to that call and allow sibling nested calls in the same call group to complete their execution",
+          "contract": "failure of one nested call does not cancel sibling calls and remaining calls complete normally",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "multiple concurrent nested tool calls where one call panics or fails validation"
+            ],
+            "pseudocode": "failTool := core.Tool{Name: \"fail\", Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n    return core.ToolResult{OK: false, Error: \"failed\"}, nil\n}}\nokTool := core.Tool{Name: \"ok\", Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n    return core.ToolResult{OK: true, Detail: \"success\"}, nil\n}}\nresults, err := core.CallNested(ctx, core.ToolUseBlock{ID: \"c1\", Name: \"fail\"}, core.ToolUseBlock{ID: \"c2\", Name: \"ok\"})\nassert err == nil\nassert results[0].OK == false\nassert results[1].OK == true && results[1].Detail == \"success\""
+          }
         },
         {
-          "id": "07-REQ-7.5",
+          "id": "REQ-7.5",
           "pattern": "unwanted",
           "condition": "the context passed to CallNested is cancelled while nested tool calls are pending or in flight",
-          "system": "nested execution dispatcher",
           "action": "abort in-flight nested tool calls and return aborted tool results",
-          "contract": "returns ToolResult{OK: false, Error: 'aborted', Detail: 'Operation aborted'} for aborted calls"
+          "contract": "returns ToolResult{OK: false, Error: 'aborted', Detail: 'Operation aborted'} for aborted calls",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a context that is cancelled while nested tool calls are executing"
+            ],
+            "pseudocode": "ctx, cancel := context.WithCancel(context.Background())\nslowTool := core.Tool{Name: \"slow\", Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n    <-ctx.Done()\n    return core.ToolResult{OK: false, Error: \"aborted\", Detail: \"Operation aborted\"}, nil\n}}\ngo func() { time.Sleep(10 * time.Millisecond); cancel() }()\nresults, _ := core.CallNested(ctx, core.ToolUseBlock{ID: \"c1\", Name: \"slow\"})\nassert len(results) == 1\nassert results[0].OK == false\nassert results[0].Error == \"aborted\"\nassert results[0].Detail == \"Operation aborted\""
+          }
         }
       ]
     },
     {
-      "id": "07-REQ-8",
+      "id": "REQ-8",
       "title": "Telemetry, events, audit records, and subagent spend",
       "rationale": "Comprehensive telemetry, parent-linked tracing, and immediate spend reporting give full visibility into nested execution without stream pollution.",
       "criteria": [
         {
-          "id": "07-REQ-8.1",
+          "id": "REQ-8.1",
           "pattern": "ubiquitous",
           "system": "nested execution dispatcher",
-          "action": "generate a unique tool-use ID for each nested tool call"
+          "action": "generate a unique tool-use ID for each nested tool call",
+          "contract": "each nested tool call is assigned a unique non-empty tool-use ID",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a wrapper tool issuing nested tool calls"
+            ],
+            "pseudocode": "for batch in gen_nested_call_batches():\n    ids := map[string]bool{}\n    for _, call := range batch {\n        genID := generateNestedToolUseID(call)\n        assert len(genID) > 0\n        assert !ids[genID]\n        ids[genID] = true\n    }"
+          }
         },
         {
-          "id": "07-REQ-8.2",
+          "id": "REQ-8.2",
           "pattern": "event_driven",
           "condition": "a nested tool call is prepared, updated, or finalized",
           "system": "nested event emitter",
-          "action": "emit ToolExecutionStartEvent, ToolExecutionUpdateEvent, and ToolExecutionEndEvent to the event stream with ParentToolUseID populated and serialized with omitempty"
+          "action": "emit ToolExecutionStartEvent, ToolExecutionUpdateEvent, and ToolExecutionEndEvent to the event stream with ParentToolUseID populated and serialized with omitempty",
+          "contract": "ToolExecutionStartEvent and ToolExecutionEndEvent carry ParentToolUseID; ParentToolUseID is omitted from JSON when empty; ToolResultEvent is not emitted for nested tool calls",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an event listener subscribed to an agent run containing nested tool calls"
+            ],
+            "pseudocode": "var events []core.Event\nlistener := func(ev core.Event) { events = append(events, ev) }\nrunAgentWithNestedCalls(listener)\nvar startEv *core.ToolExecutionStartEvent\nvar endEv *core.ToolExecutionEndEvent\nfor _, ev := range events {\n    if e, ok := ev.(core.ToolExecutionStartEvent); ok && e.ParentToolUseID != \"\" { startEv = &e }\n    if e, ok := ev.(core.ToolExecutionEndEvent); ok && e.ParentToolUseID != \"\" { endEv = &e }\n    _, isResult := ev.(core.ToolResultEvent)\n    if isResult && ev.(core.ToolResultEvent).ParentToolUseID != \"\" { assert false, \"nested ToolResultEvent must not be emitted\" }\n}\nassert startEv != nil && startEv.ParentToolUseID == \"parent_call_1\"\nassert endEv != nil && endEv.ParentToolUseID == \"parent_call_1\"\n// verify omitempty JSON serialization\nb, _ := json.Marshal(core.ToolExecutionStartEvent{ToolUseID: \"p1\"})\nassert !strings.Contains(string(b), \"parent_tool_use_id\")"
+          }
         },
         {
-          "id": "07-REQ-8.3",
+          "id": "REQ-8.3",
           "pattern": "event_driven",
           "condition": "a nested tool call completes",
           "system": "nested event emitter",
-          "action": "suppress ToolResultEvent from being emitted to the agent event stream"
+          "action": "suppress ToolResultEvent from being emitted to the agent event stream",
+          "check": {
+            "same_as": "REQ-8.2"
+          }
         },
         {
-          "id": "07-REQ-8.4",
+          "id": "REQ-8.4",
           "pattern": "event_driven",
           "condition": "a nested tool call completes",
           "system": "nested audit logger",
-          "action": "emit an AuditEvent with Kind=AuditToolCall, ParentToolUseID populated, ArgumentsHash, error status, and elapsed duration"
+          "action": "emit an AuditEvent with Kind=AuditToolCall, ParentToolUseID populated, ArgumentsHash, error status, and elapsed duration",
+          "contract": "an AuditEvent is recorded with Kind=AuditToolCall, ParentToolUseID, ArgumentsHash, and elapsed duration",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an audit logger configured on an agent running nested tool calls"
+            ],
+            "pseudocode": "var audited []core.AuditEvent\nlogger := func(ev core.AuditEvent) { audited = append(audited, ev) }\nrunAgentWithNestedCallsAndAudit(logger)\nvar nestedAudit *core.AuditEvent\nfor _, a := range audited {\n    if a.ParentToolUseID != \"\" { nestedAudit = &a }\n}\nassert nestedAudit != nil\nassert nestedAudit.ParentToolUseID == \"parent_call_1\"\nassert nestedAudit.Kind == core.AuditToolCall\nassert nestedAudit.ArgumentsHash != \"\"\nassert nestedAudit.Elapsed > 0"
+          }
         },
         {
-          "id": "07-REQ-8.5",
+          "id": "REQ-8.5",
           "pattern": "event_driven",
           "condition": "a nested tool call handler executes",
           "system": "nested tracer",
-          "action": "wrap handler execution in a tracer span named 'agentkit.tool_call' recording tool_name, tool_use_id, parent_tool_use_id, and status attributes"
+          "action": "wrap handler execution in a tracer span named 'agentkit.tool_call' recording tool_name, tool_use_id, parent_tool_use_id, and status attributes",
+          "contract": "a tracer span named 'agentkit.tool_call' is created recording tool_name, tool_use_id, parent_tool_use_id, and status",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a tracer configured on an agent executing nested tool calls"
+            ],
+            "pseudocode": "recorder := tracetest.NewSpanRecorder()\nrunAgentWithNestedCallsAndTracer(recorder)\nspans := recorder.Ended()\nvar nestedSpan trace.ReadOnlySpan\nfor _, s := range spans {\n    if s.Name() == \"agentkit.tool_call\" {\n        for _, attr := range s.Attributes() {\n            if attr.Key == \"parent_tool_use_id\" && attr.Value.AsString() == \"parent_call_1\" {\n                nestedSpan = s\n            }\n        }\n    }\n}\nassert nestedSpan != nil"
+          }
         },
         {
-          "id": "07-REQ-8.6",
+          "id": "REQ-8.6",
           "pattern": "ubiquitous",
           "system": "nested execution dispatcher",
-          "action": "propagate core.WithUsageReporter on context to nested tool handlers so that off-loop subagent usage is reported immediately to the parent agent"
+          "action": "propagate core.WithUsageReporter on context to nested tool handlers so that off-loop subagent usage is reported immediately to the parent agent",
+          "contract": "core.WithUsageReporter is preserved on context and subagent spend is reported immediately to the parent agent",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a nested tool call invoking a subagent that reports usage"
+            ],
+            "pseudocode": "subagentSpendReported := false\nchildTool := core.Tool{Name: \"subagent_caller\", Handler: func(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {\n    rep := core.UsageReporterFromContext(ctx)\n    assert rep != nil\n    rep.ReportUsage(core.Usage{Tokens: 100})\n    return core.ToolResult{OK: true}, nil\n}}\nrunAgentWithNestedTool(childTool)\nassert agent.Usage().Tokens >= 100"
+          }
         }
       ]
     },
     {
-      "id": "07-REQ-9",
+      "id": "REQ-9",
       "title": "Session log and turn stop policy isolation",
       "rationale": "Confining session logs and turn stop policies to top-level wrapper calls keeps resumed transcripts clean and aligned with provider conversation turns.",
       "criteria": [
         {
-          "id": "07-REQ-9.1",
+          "id": "REQ-9.1",
           "pattern": "event_driven",
           "condition": "a turn containing nested tool calls concludes",
           "system": "agent session recorder",
-          "action": "persist only the top-level wrapper tool call and result to the session store and conversation history, omitting all nested tool calls"
+          "action": "persist only the top-level wrapper tool call and result to the session store and conversation history, omitting all nested tool calls",
+          "contract": "only the top-level wrapper tool call and result are recorded in conversation history and session persistence; all nested tool calls are omitted from history and session logs",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an agent run completing a turn that involved nested tool calls"
+            ],
+            "pseudocode": "sessionStore := newMockSessionStore()\nag := createAgentWithStore(sessionStore)\nag.RunMessage(ctx, \"execute script with nested calls\")\nhistory := ag.History()\nfor _, msg := range history {\n    for _, block := range msg.ToolCalls() {\n        assert block.Name != \"child_tool\", \"nested tool call must not appear in history\"\n    }\n}\nsavedSession := sessionStore.LastSaved()\nassert !strings.Contains(savedSession, \"child_tool\")"
+          }
         },
         {
-          "id": "07-REQ-9.2",
+          "id": "REQ-9.2",
           "pattern": "event_driven",
           "condition": "turn stop policies are evaluated at turn conclusion",
           "system": "agent stop evaluator",
-          "action": "evaluate stop policies including stop.WhenToolCalled exclusively against top-level tool calls and results, ignoring nested tool calls"
+          "action": "evaluate stop policies including stop.WhenToolCalled exclusively against top-level tool calls and results, ignoring nested tool calls",
+          "contract": "turn stop policies ignore nested tool calls and evaluate exclusively against top-level tool calls",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a stop policy configured with stop.WhenToolCalled(\"child_tool\") and a wrapper tool that calls \"child_tool\""
+            ],
+            "pseudocode": "stopPolicy := stop.WhenToolCalled(\"child_tool\")\nag := createAgentWithStopPolicy(stopPolicy)\nag.RunMessage(ctx, \"run wrapper tool that calls child_tool\")\nassert ag.Idle()\nassert ag.StopReason() != core.StopReasonToolCalled, \"stop policy must ignore nested child_tool calls\""
+          }
         }
       ]
     }
   ],
   "execution_paths": [
     {
-      "id": "07-PATH-1",
+      "id": "PATH-1",
       "title": "Parallel execution of nested child tools through a wrapper tool",
       "steps": [
         {
@@ -376,10 +627,29 @@
           "actor": "Agent Recorder",
           "action": "commits only the top-level wrapper tool call and result to conversation history and session storage"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "Agent",
+          "executeBatch",
+          "NestedCaller",
+          "core.Tool",
+          "ConversationHistory"
+        ],
+        "setup": [
+          "an agent configured with a wrapper tool executing child tools concurrently"
+        ],
+        "end_state": [
+          "wrapper executes child tools in parallel using goroutines",
+          "events and tracer spans carry parent tool-use ID",
+          "results are returned to wrapper in input order",
+          "only top-level wrapper call is written to conversation history"
+        ],
+        "pseudocode": "ag, err := NewAgent(AgentConfig{ParallelTools: true}, wrapperTool, childTool1, childTool2)\nassert err == nil\nres, err := ag.RunMessage(ctx, \"run wrapper\")\nassert err == nil\nassert res.Finished"
+      }
     },
     {
-      "id": "07-PATH-2",
+      "id": "PATH-2",
       "title": "Cycle detection rejection at agent construction",
       "steps": [
         {
@@ -394,10 +664,25 @@
           "actor": "Agent Tool Validator",
           "action": "rejects agent initialization and returns an error naming the cycle path"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "NewAgent",
+          "checkTool",
+          "cycleDetector"
+        ],
+        "setup": [
+          "tool definitions toolA and toolB where toolA reaches toolB and toolB reaches toolA"
+        ],
+        "end_state": [
+          "agent initialization is refused",
+          "error message identifies the cyclic path 'toolA -> toolB -> toolA'"
+        ],
+        "pseudocode": "var toolA, toolB core.Tool\ntoolA = core.Tool{Name: \"toolA\", ReachableTools: []core.Tool{toolB}, Handler: noopHandler}\ntoolB = core.Tool{Name: \"toolB\", ReachableTools: []core.Tool{toolA}, Handler: noopHandler}\ntoolA.ReachableTools[0] = toolB\n_, err := NewAgent(AgentConfig{}, toolA)\nassert err != nil\nassert strings.Contains(err.Error(), \"agentkit: reachable tools cycle detected: toolA -> toolB -> toolA\")"
+      }
     },
     {
-      "id": "07-PATH-3",
+      "id": "PATH-3",
       "title": "Interceptor blocking and terminating a nested tool call",
       "steps": [
         {
@@ -420,10 +705,27 @@
           "actor": "Execution Batch",
           "action": "sets Terminate=true on the wrapper tool result and terminates the agent run"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "Agent",
+          "executeBatch",
+          "NestedCaller",
+          "BeforeToolCall"
+        ],
+        "setup": [
+          "an agent configured with a BeforeToolCall interceptor that blocks and terminates nested calls"
+        ],
+        "end_state": [
+          "CallNested aborts with core.ErrTerminated",
+          "wrapper execution terminates immediately",
+          "batch receives Terminate=true and terminates agent run"
+        ],
+        "pseudocode": "interceptor := func(ctx context.Context, c core.BeforeToolCallContext) (core.BeforeToolCallDecision, error) {\n    if c.ParentToolUseID != \"\" {\n        return core.BeforeToolCallDecision{Block: true, Terminate: true, Reason: \"abort nested\"}, nil\n    }\n    return core.BeforeToolCallDecision{}, nil\n}\nag, _ := NewAgent(AgentConfig{BeforeToolCall: interceptor}, wrapperTool, childTool)\nres, _ := ag.RunMessage(ctx, \"trigger wrapper\")\nassert res.Terminated == true"
+      }
     },
     {
-      "id": "07-PATH-4",
+      "id": "PATH-4",
       "title": "Unguarded shell tool detection across reachable tool wrappers",
       "steps": [
         {
@@ -438,7 +740,22 @@
           "actor": "Execute Guard",
           "action": "detects the reachable shell tool and aborts execution before any provider requests with core.ErrUnguardedExecute"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "Agent",
+          "checkExecuteGuard",
+          "core.ReachableTools"
+        ],
+        "setup": [
+          "an agent configured without BeforeToolCall where a wrapper tool reaches a shell tool"
+        ],
+        "end_state": [
+          "agent run aborts before making provider requests",
+          "error wraps core.ErrUnguardedExecute naming wrapper and shell tool"
+        ],
+        "pseudocode": "shellTool := core.Tool{Name: \"execute\", Handler: noopHandler}\nwrapper := core.Tool{Name: \"code_mode\", ReachableTools: []core.Tool{shellTool}, Handler: noopHandler}\nag, _ := NewAgent(AgentConfig{BeforeToolCall: nil}, wrapper)\n_, err := ag.RunMessage(ctx, \"run script\")\nassert err != nil\nassert errors.Is(err, core.ErrUnguardedExecute)\nassert strings.Contains(err.Error(), `wrapper \"code_mode\" reached shell tool \"execute\"`)"
+      }
     }
   ]
 }

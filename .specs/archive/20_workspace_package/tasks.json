@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "20",
   "spec_name": "workspace_package",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -41,31 +41,18 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Create package workspace with Open and containment (Resolve, Rel, CheckWriteTarget, Normalize)",
       "criteria": [
-        "20-REQ-1.1",
-        "20-REQ-1.2",
-        "20-REQ-1.3",
-        "20-REQ-1.4",
-        "20-REQ-2.1",
-        "20-REQ-2.2",
-        "20-REQ-2.3",
-        "20-REQ-2.4",
-        "20-REQ-2.5",
-        "20-REQ-2.6"
-      ],
-      "tests": [
-        "TS-20-1",
-        "TS-20-2",
-        "TS-20-3",
-        "TS-20-4",
-        "TS-20-8",
-        "TS-20-9",
-        "TS-20-10",
-        "TS-20-11",
-        "TS-20-12",
-        "TS-20-13"
+        "REQ-1.1",
+        "REQ-1.2",
+        "REQ-1.3",
+        "REQ-1.4",
+        "REQ-2.1",
+        "REQ-2.2",
+        "REQ-2.3",
+        "REQ-2.4",
+        "REQ-2.5",
+        "REQ-2.6"
       ],
       "steps": [
         "Read tools/path.go and the Resolve/CheckWriteTarget/Normalize tests in tools/tools_test.go (around lines 190-250, 820-890, 1440) to learn the exact behaviour and messages",
@@ -85,35 +72,22 @@
       ],
       "done_when": [
         "`go test ./workspace/... -count=1` passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Move the ignore engine into workspace with memoized git config, Ignore() and Ignored()",
       "criteria": [
-        "20-REQ-1.5",
-        "20-REQ-3.1",
-        "20-REQ-3.2",
-        "20-REQ-3.3",
-        "20-REQ-5.1",
-        "20-REQ-5.2",
-        "20-REQ-5.3",
-        "20-REQ-5.4",
-        "20-REQ-5.5",
-        "20-REQ-5.6"
-      ],
-      "tests": [
-        "TS-20-5",
-        "TS-20-15",
-        "TS-20-17",
-        "TS-20-27",
-        "TS-20-28",
-        "TS-20-29",
-        "TS-20-30",
-        "TS-20-31"
+        "REQ-1.5",
+        "REQ-3.1",
+        "REQ-3.2",
+        "REQ-3.3",
+        "REQ-5.1",
+        "REQ-5.2",
+        "REQ-5.3",
+        "REQ-5.4",
+        "REQ-5.5",
+        "REQ-5.6"
       ],
       "steps": [
         "Read tools/ignore.go, tools/glob.go (globMatch) and tools/search.go isHidden (line ~502)",
@@ -137,35 +111,21 @@
       ],
       "done_when": [
         "`go test ./workspace/... -count=1` passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Add (*Workspace).Walk and pin the Workspace/Options/WalkOptions shapes and import rule",
       "criteria": [
-        "20-REQ-1.6",
-        "20-REQ-4.1",
-        "20-REQ-4.2",
-        "20-REQ-4.3",
-        "20-REQ-4.4",
-        "20-REQ-4.5",
-        "20-REQ-4.6",
-        "20-REQ-4.7",
-        "20-REQ-8.3"
-      ],
-      "tests": [
-        "TS-20-6",
-        "TS-20-20",
-        "TS-20-21",
-        "TS-20-22",
-        "TS-20-23",
-        "TS-20-24",
-        "TS-20-25",
-        "TS-20-26",
-        "TS-20-49"
+        "REQ-1.6",
+        "REQ-4.1",
+        "REQ-4.2",
+        "REQ-4.3",
+        "REQ-4.4",
+        "REQ-4.5",
+        "REQ-4.6",
+        "REQ-4.7",
+        "REQ-8.3"
       ],
       "steps": [
         "Read tools/walk.go, tools/walk_test.go, tools/walk_smoke_test.go and the TestSearchReadsOnlyItsOwnIgnoreSources test; record the pre-change tools.Walk visited set for the TS-20-20 tree",
@@ -187,27 +147,17 @@
       ],
       "done_when": [
         "`go test ./workspace/... -count=1` passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Prove Walk/Ignored consistency, memoization and concurrency safety of the workspace",
       "criteria": [
-        "20-REQ-1.7",
-        "20-REQ-5.7",
-        "20-REQ-3.4",
-        "20-REQ-3.5",
-        "20-REQ-3.2"
-      ],
-      "tests": [
-        "TS-20-7",
-        "TS-20-16",
-        "TS-20-18",
-        "TS-20-19",
-        "TS-20-32"
+        "REQ-1.7",
+        "REQ-5.7",
+        "REQ-3.4",
+        "REQ-3.5",
+        "REQ-3.2"
       ],
       "steps": [
         "Write TS-20-16 (counting GitConfig: 0 after Open, exactly 1 after 32 goroutines first use Walk and Ignored, still 1 later) and confirm the result",
@@ -228,37 +178,22 @@
       ],
       "done_when": [
         "`go test ./workspace/... -count=1 -race` passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Add tools.For and tools.References as workspace-based entry points (additive bridge)",
       "criteria": [
-        "20-REQ-2.7",
-        "20-REQ-6.1",
-        "20-REQ-6.2",
-        "20-REQ-6.3",
-        "20-REQ-6.4",
-        "20-REQ-6.6",
-        "20-REQ-7.1",
-        "20-REQ-7.2",
-        "20-REQ-7.3",
-        "20-REQ-7.4"
-      ],
-      "tests": [
-        "TS-20-14",
-        "TS-20-33",
-        "TS-20-34",
-        "TS-20-35",
-        "TS-20-36",
-        "TS-20-38",
-        "TS-20-41",
-        "TS-20-42",
-        "TS-20-43",
-        "TS-20-44"
+        "REQ-2.7",
+        "REQ-6.1",
+        "REQ-6.2",
+        "REQ-6.3",
+        "REQ-6.4",
+        "REQ-6.6",
+        "REQ-7.1",
+        "REQ-7.2",
+        "REQ-7.3",
+        "REQ-7.4"
       ],
       "steps": [
         "BEFORE changing tools, record from the existing tools.All(tools.Options{Workspace: ws, Ignore: NoGlobalExcludes()}) the marshalled definitions of all eleven tools (name, description, input/output schema, guidelines, execution mode) into tools/testdata/definitions.json, record the sandbox/internal/tooldigest digests, the duplicate-name error text of Index.Tools() clashes, and the site list of the existing (*Workspace).References over a small Go module",
@@ -281,25 +216,16 @@
       ],
       "done_when": [
         "`make test` passes in every module (old API still present)"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Migrate codesearch to a *workspace.Workspace",
       "criteria": [
-        "20-REQ-8.2",
-        "20-REQ-9.1",
-        "20-REQ-9.2",
-        "20-REQ-9.3"
-      ],
-      "tests": [
-        "TS-20-48",
-        "TS-20-52",
-        "TS-20-53",
-        "TS-20-54"
+        "REQ-8.2",
+        "REQ-9.1",
+        "REQ-9.2",
+        "REQ-9.3"
       ],
       "steps": [
         "BEFORE changing, record the error text of the current codesearch.New(nil, Options{})",
@@ -324,25 +250,16 @@
       ],
       "done_when": [
         "`make test` and `make lint` pass in codesearch; `GOOS=windows go vet ./...` compiles in codesearch"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Migrate the sandbox tree (LocalDir, rsyncx, agent, attach, fakeagent, treegen) to workspace",
       "criteria": [
-        "20-REQ-9.4",
-        "20-REQ-9.5",
-        "20-REQ-9.6",
-        "20-REQ-9.7"
-      ],
-      "tests": [
-        "TS-20-55",
-        "TS-20-56",
-        "TS-20-57",
-        "TS-20-58"
+        "REQ-9.4",
+        "REQ-9.5",
+        "REQ-9.6",
+        "REQ-9.7"
       ],
       "steps": [
         "BEFORE changing, record the pre-change tools.Walk output for the treegen test tree and the recorded tool digests (reuse task 5's recording)",
@@ -374,21 +291,14 @@
       ],
       "done_when": [
         "`make test` and `make lint` pass in the sandbox, gatewayd and podman modules"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Migrate root-module tests, examples and examples/harness to tools.For over an opened workspace",
       "criteria": [
-        "20-REQ-8.5",
-        "20-REQ-9.8"
-      ],
-      "tests": [
-        "TS-20-51",
-        "TS-20-59"
+        "REQ-8.5",
+        "REQ-9.8"
       ],
       "steps": [
         "Write TS-20-51 (tools imports workspace; tools declares MatchGlob and ExpandBraces; root agentkit non-test files import neither tools nor workspace) and TS-20-59 (proto hashes match their .sha256, ProtocolMinor == 2) and confirm the current state",
@@ -422,29 +332,18 @@
       ],
       "done_when": [
         "`make test` and `make lint` pass in every module in MODULES"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 9,
-      "kind": "implement",
       "title": "Migrate tools internals onto the workspace and delete the old tools identifiers",
       "criteria": [
-        "20-REQ-6.5",
-        "20-REQ-6.7",
-        "20-REQ-6.8",
-        "20-REQ-7.5",
-        "20-REQ-7.6",
-        "20-REQ-8.1"
-      ],
-      "tests": [
-        "TS-20-37",
-        "TS-20-39",
-        "TS-20-40",
-        "TS-20-45",
-        "TS-20-46",
-        "TS-20-47"
+        "REQ-6.5",
+        "REQ-6.7",
+        "REQ-6.8",
+        "REQ-7.5",
+        "REQ-7.6",
+        "REQ-8.1"
       ],
       "steps": [
         "BEFORE changing, record Search/SearchIn/CountCandidates results for a temp tree (for TS-20-45); write TS-20-37, 39, 40, 45, 46, 47 and confirm they fail",
@@ -481,27 +380,17 @@
       "done_when": [
         "`make test` and `make lint` pass in every module in MODULES",
         "go vet shows no remaining reference to the removed tools identifiers"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 10,
-      "kind": "implement",
       "title": "Enforce the workspace import graph, regenerate the API golden, retire the hash pins, write the erratum and docs",
       "criteria": [
-        "20-REQ-8.4",
-        "20-REQ-10.1",
-        "20-REQ-10.2",
-        "20-REQ-10.3",
-        "20-REQ-10.4"
-      ],
-      "tests": [
-        "TS-20-50",
-        "TS-20-60",
-        "TS-20-61",
-        "TS-20-62",
-        "TS-20-63"
+        "REQ-8.4",
+        "REQ-10.1",
+        "REQ-10.2",
+        "REQ-10.3",
+        "REQ-10.4"
       ],
       "steps": [
         "Write TS-20-50, 60, 61, 62, 63 and confirm the failing ones fail",
@@ -534,46 +423,7 @@
       ],
       "done_when": [
         "`make check` passes in every module in MODULES"
-      ],
-      "state": "done",
-      "optional": false
-    },
-    {
-      "id": 11,
-      "kind": "integration",
-      "title": "Verify the four workspace execution paths end to end",
-      "tests": [
-        "TS-20-64",
-        "TS-20-65",
-        "TS-20-66",
-        "TS-20-67"
-      ],
-      "steps": [
-        "Write TS-20-64 (find_files over workspace.Open + tools.For, outside path gives result code path_not_allowed), TS-20-65 (codesearch.New + tools.For with Index + search_files), TS-20-66 (LocalDir{Ignore: ws.Ignore()} with the local provider and a real agent binary, attach with no ErrToolMismatch, read_file of a synced file) and TS-20-67 (tools.References over a Go module with one use in an ignored directory) using real components and confirm they pass",
-        "Trace 20-PATH-1 through the real code: workspace.Open -> tools.For -> find_files -> ws.Resolve -> ws.Walk; confirm each step calls the next and no stub remains",
-        "Trace 20-PATH-2: codesearch.New -> ws.Walk build; tools.For appends Index.Tools(); search_files filters candidates with ws.Ignored",
-        "Trace 20-PATH-3: ws.Ignore() -> LocalDir.Ignore -> rsyncx visitFrom -> workspace.Walk; agent buildSet -> tools.For; attach hostTools digest comparison",
-        "Trace 20-PATH-4: tools.References -> ws.Walk/ws.Ignored in the package loader and candidate scan",
-        "For every criterion with a contract (Open, Resolve error texts, Ignore(), Walk errors, tools.For nil workspace, References errors, codesearch.New nil error), confirm the producer's result is consumed by a production caller, not only by tests",
-        "Grep every file listed in all tasks' touches (workspace/, tools/, codesearch/, sandbox/, examples/, internal/policy/) for `panic(\"not implemented\")`, `TODO`, `NotImplementedError` and bare `return nil` on non-trivial paths, and remove any that remain",
-        "Confirm no production code outside tests references the removed tools identifiers, and the agentkit root package imports neither tools nor workspace in non-test code",
-        "Run `make check` and confirm every module in MODULES passes"
-      ],
-      "touches": [
-        "workspace/smoke_test.go",
-        "tools/smoke_workspace_test.go",
-        "codesearch/smoke_workspace_test.go",
-        "sandbox/smoke_workspace_test.go",
-        "tools/references_smoke_test.go"
-      ],
-      "depends_on": [
-        10
-      ],
-      "done_when": [
-        "`make check` passes in every module in MODULES with all four smoke tests passing"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     }
   ]
 }

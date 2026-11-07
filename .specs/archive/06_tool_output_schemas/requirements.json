@@ -1,311 +1,532 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
   "spec_id": "06",
   "spec_name": "tool_output_schemas",
-  "schema_version": 2,
-  "introduction": "Defines output schemas (OutputSchema) on core.Tool, preserves byte-identical provider wire request serialization, passes through output schemas and structured results for MCP tools, and guarantees output schema conformance and documented error codes for all built-in tools.",
-  "glossary": {
-    "Diagnostic": "A non-fatal report (diag.Diagnostic) with severity level, file or line context, and descriptive message recorded during configuration or schema parsing.",
-    "OutputSchema": "A typed schema definition (*schema.Schema) describing the JSON structure of a tool's structured Data result payload.",
-    "StructuredContent": "Decoded JSON structured content returned in MCP CallToolResult payloads.",
-    "ToolWire": "The provider-facing projection of a tool definition containing Name, Description, InputSchema, and ConstrainedSampling."
-  },
+  "schema_version": 3,
   "requirements": [
     {
-      "id": "06-REQ-1",
+      "id": "REQ-1",
       "title": "Output Schema Declaration on Core Tools and Wire Request Invariance",
       "rationale": "Tools must advertise their structured return types to programmatic callers without altering provider-facing wire payloads.",
       "criteria": [
         {
-          "id": "06-REQ-1.1",
+          "id": "REQ-1.1",
           "pattern": "ubiquitous",
           "system": "core.Tool",
-          "action": "declare an optional OutputSchema field of type *schema.Schema representing the schema of its structured Data result"
+          "action": "declare an optional OutputSchema field of type *schema.Schema representing the schema of its structured Data result",
+          "contract": "t.OutputSchema is accessible as *schema.Schema; the resulting ToolWire has Name, Description, InputSchema, and ConstrainedSampling matching t; ToolWire has no OutputSchema field",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a tool definition with Name, Description, InputSchema, and OutputSchema"
+            ],
+            "pseudocode": "s := schema.Object(schema.Prop(\"key\", schema.String())); t := core.Tool{Name: \"test\", OutputSchema: s}; w := t.Wire(); assert t.OutputSchema == s; assert reflect.TypeOf(w).FieldByName(\"OutputSchema\").Index == nil"
+          }
         },
         {
-          "id": "06-REQ-1.2",
+          "id": "REQ-1.2",
           "pattern": "optional",
           "condition": "a tool leaves OutputSchema as nil",
           "system": "system",
-          "action": "permit tool registration and execution without enforcing or advertising an output schema"
+          "action": "permit tool registration and execution without enforcing or advertising an output schema",
+          "contract": "registration succeeds without error; tool execution returns a valid ToolResult with OK true",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an Agent or tool registry and a tool created with OutputSchema left nil"
+            ],
+            "pseudocode": "t := core.Tool{Name: \"echo\", Execute: func(ctx context.Context, in json.RawMessage) core.ToolResult { return core.OKResult(map[string]any{\"ok\": true}) }}; assert t.OutputSchema == nil; res := t.Execute(ctx, nil); assert res.OK == true"
+          }
         },
         {
-          "id": "06-REQ-1.3",
+          "id": "REQ-1.3",
           "pattern": "ubiquitous",
           "system": "core.ToolWire",
-          "action": "exclude OutputSchema from its projection struct"
+          "action": "exclude OutputSchema from its projection struct",
+          "check": {
+            "same_as": "REQ-1.1"
+          }
         },
         {
-          "id": "06-REQ-1.4",
+          "id": "REQ-1.4",
           "pattern": "ubiquitous",
           "system": "provider request serializer",
-          "action": "for any tool set with or without OutputSchema, serialize request bodies for Anthropic, Google, Ollama, OpenAI, and OpenAI Responses wire formats that are byte-identical to golden request fixtures"
+          "action": "for any tool set with or without OutputSchema, serialize request bodies for Anthropic, Google, Ollama, OpenAI, and OpenAI Responses wire formats that are byte-identical to golden request fixtures",
+          "contract": "serialized request bodies across Anthropic, Google, Ollama, OpenAI, and OpenAI Responses wire formats match golden request fixtures byte-for-byte",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "the canonical request fixture and wire golden tests"
+            ],
+            "pseudocode": "for req in genRequestsWithArbitraryOutputSchemas(): for provider in [anthropic, google, ollama, openai, openairesponses]: body := provider.Marshal(req.Tools); golden := loadGolden(provider); assert bytes.Equal(body, golden)"
+          }
         }
       ]
     },
     {
-      "id": "06-REQ-2",
+      "id": "REQ-2",
       "title": "MCP Tool Output Schema Mapping and Diagnostics",
       "rationale": "Connected MCP servers can define tool output schemas that must be captured by the pool or reported as non-fatal diagnostics when invalid.",
       "criteria": [
         {
-          "id": "06-REQ-2.1",
+          "id": "REQ-2.1",
           "pattern": "event_driven",
           "condition": "an MCP server advertises a valid outputSchema on an imported tool definition",
           "system": "mcp pool adaptor",
-          "action": "convert outputSchema into *schema.Schema via schemaFrom and assign it to the OutputSchema field of the adapted core.Tool"
+          "action": "convert outputSchema into *schema.Schema via schemaFrom and assign it to the OutputSchema field of the adapted core.Tool",
+          "contract": "core.Tool.OutputSchema is non-nil; core.Tool.OutputSchema reflects the properties and types defined by the server outputSchema",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an MCP server tool definition with a valid JSON schema outputSchema"
+            ],
+            "pseudocode": "toolDef := &mcp.Tool{Name: \"calc\", OutputSchema: map[string]any{\"type\": \"object\", \"properties\": map[string]any{\"value\": map[string]any{\"type\": \"number\"}}, \"required\": []any{\"value\"}}}; adapted := pool.adapt(conn, toolDef, \"srv__calc\"); assert adapted.OutputSchema != nil; assert adapted.OutputSchema.Type == schema.TypeObject"
+          }
         },
         {
-          "id": "06-REQ-2.2",
+          "id": "REQ-2.2",
           "pattern": "unwanted",
           "condition": "an MCP server advertises an outputSchema that fails JSON parsing or schema conversion",
           "system": "mcp pool adaptor",
           "action": "assign nil to OutputSchema on the adapted core.Tool, append a diagnostic of severity SeverityError recording the server name and tool name to the pool diagnostics, and complete tool adaptation without terminating the connection",
-          "contract": "adapted tool has OutputSchema == nil; pool diagnostics slice contains a SeverityError diagnostic naming the server and tool; connection remains open"
+          "contract": "adapted tool has OutputSchema == nil; pool diagnostics slice contains a SeverityError diagnostic naming the server and tool; connection remains open",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an MCP server tool definition with an invalid or unparseable outputSchema"
+            ],
+            "pseudocode": "toolDef := &mcp.Tool{Name: \"broken\", OutputSchema: \"not a valid schema object\"}; adapted := pool.adapt(conn, toolDef, \"srv__broken\"); assert adapted.OutputSchema == nil; diags := pool.Diagnostics(); assert len(diags) > 0; assert diags[0].Severity == diag.SeverityError; assert strings.Contains(diags[0].Message, \"broken\")"
+          }
         },
         {
-          "id": "06-REQ-2.3",
+          "id": "REQ-2.3",
           "pattern": "event_driven",
           "condition": "an MCP server tool definition omits outputSchema",
           "system": "mcp pool adaptor",
-          "action": "set OutputSchema to nil on the adapted core.Tool without appending diagnostics"
+          "action": "set OutputSchema to nil on the adapted core.Tool without appending diagnostics",
+          "contract": "adapted tool has OutputSchema == nil; no diagnostics are appended to the pool diagnostics",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an MCP server tool definition without an outputSchema field"
+            ],
+            "pseudocode": "toolDef := &mcp.Tool{Name: \"simple\", OutputSchema: nil}; initialDiags := len(pool.Diagnostics()); adapted := pool.adapt(conn, toolDef, \"srv__simple\"); assert adapted.OutputSchema == nil; assert len(pool.Diagnostics()) == initialDiags"
+          }
         },
         {
-          "id": "06-REQ-2.4",
+          "id": "REQ-2.4",
           "pattern": "ubiquitous",
           "system": "mcp.Pool",
-          "action": "provide a Diagnostics method returning all non-fatal diagnostics collected across server connections and tool imports"
+          "action": "provide a Diagnostics method returning all non-fatal diagnostics collected across server connections and tool imports",
+          "check": {
+            "same_as": "REQ-2.2"
+          }
         }
       ]
     },
     {
-      "id": "06-REQ-3",
+      "id": "REQ-3",
       "title": "MCP Tool Structured Content Result Mapping",
       "rationale": "Structured results from MCP servers must be surfaced directly in ToolResult.Data so downstream consumers can inspect typed payloads.",
+      "system": "mcp tool adaptor",
       "criteria": [
         {
-          "id": "06-REQ-3.1",
+          "id": "REQ-3.1",
           "pattern": "event_driven",
           "condition": "an MCP tool execution returns a CallToolResult containing non-nil StructuredContent that is a JSON object map",
-          "system": "mcp tool adaptor",
-          "action": "assign ToolResult.Data directly to the StructuredContent map"
+          "action": "assign ToolResult.Data directly to the StructuredContent map",
+          "contract": "ToolResult.Data equals the StructuredContent map directly without nesting under 'structured'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an adapted MCP tool whose invocation returns CallToolResult with StructuredContent as map[string]any"
+            ],
+            "pseudocode": "mockConn.callResult = &mcp.CallToolResult{StructuredContent: map[string]any{\"temperature\": 72.5, \"units\": \"F\"}}; res := adapted.Execute(ctx, rawJSON); assert reflect.DeepEqual(res.Data, map[string]any{\"temperature\": 72.5, \"units\": \"F\"})"
+          }
         },
         {
-          "id": "06-REQ-3.2",
+          "id": "REQ-3.2",
           "pattern": "event_driven",
           "condition": "an MCP tool execution returns a CallToolResult containing non-nil StructuredContent that is a non-object JSON value",
-          "system": "mcp tool adaptor",
-          "action": "assign ToolResult.Data to a map with key 'value' mapped to the StructuredContent value"
+          "action": "assign ToolResult.Data to a map with key 'value' mapped to the StructuredContent value",
+          "contract": "ToolResult.Data is map[string]any{\"value\": StructuredContent}",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an adapted MCP tool whose invocation returns CallToolResult with primitive StructuredContent (e.g. integer, string, or array)"
+            ],
+            "pseudocode": "mockConn.callResult = &mcp.CallToolResult{StructuredContent: 42}; res := adapted.Execute(ctx, rawJSON); assert reflect.DeepEqual(res.Data, map[string]any{\"value\": 42})"
+          }
         },
         {
-          "id": "06-REQ-3.3",
+          "id": "REQ-3.3",
           "pattern": "event_driven",
           "condition": "an MCP tool execution returns a CallToolResult with nil StructuredContent",
-          "system": "mcp tool adaptor",
-          "action": "assign ToolResult.Data to a map containing key 'text' mapped to joined text content and key 'content' mapped to raw content slices"
+          "action": "assign ToolResult.Data to a map containing key 'text' mapped to joined text content and key 'content' mapped to raw content slices",
+          "contract": "ToolResult.Data contains key 'text' with joined text and key 'content' with raw content slice",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an adapted MCP tool whose invocation returns CallToolResult with nil StructuredContent and text content"
+            ],
+            "pseudocode": "mockConn.callResult = &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: \"hello world\"}}, StructuredContent: nil}; res := adapted.Execute(ctx, rawJSON); assert res.Data[\"text\"] == \"hello world\"; assert res.Data[\"content\"] != nil"
+          }
         },
         {
-          "id": "06-REQ-3.4",
+          "id": "REQ-3.4",
           "pattern": "ubiquitous",
-          "system": "mcp tool adaptor",
-          "action": "for any MCP tool execution, assign ToolResult.Text to the concatenated text content blocks for model consumption"
+          "action": "for any MCP tool execution, assign ToolResult.Text to the concatenated text content blocks for model consumption",
+          "contract": "ToolResult.Text equals the concatenated text from all text content blocks",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "an adapted MCP tool"
+            ],
+            "pseudocode": "for blocks in genContentBlocks(): mockConn.callResult = &mcp.CallToolResult{Content: blocks}; res := adapted.Execute(ctx, rawJSON); assert res.Text == joinTextBlocks(blocks)"
+          }
         }
       ]
     },
     {
-      "id": "06-REQ-4",
+      "id": "REQ-4",
       "title": "Output Schemas for Built-in File Operation Tools",
       "rationale": "File operation tools must formally declare the structure of their success payloads.",
       "criteria": [
         {
-          "id": "06-REQ-4.1",
+          "id": "REQ-4.1",
           "pattern": "ubiquitous",
           "system": "read_file tool",
-          "action": "declare OutputSchema as a schema.OneOf union containing a text read object schema with properties 'content' (string) and 'encoding' (string), and an image read object schema with properties 'note' (string), 'mime_type' (string), 'width' (integer), and 'height' (integer)"
+          "action": "declare OutputSchema as a schema.OneOf union containing a text read object schema with properties 'content' (string) and 'encoding' (string), and an image read object schema with properties 'note' (string), 'mime_type' (string), 'width' (integer), and 'height' (integer)",
+          "contract": "OutputSchema is a schema.OneOf schema with two branch schemas; first branch is an object with required properties 'content' (string) and 'encoding' (string); second branch is an object with required properties 'note' (string), 'mime_type' (string), 'width' (integer), and 'height' (integer)",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the built-in read_file tool"
+            ],
+            "pseudocode": "t := tools.ReadFileTool(ws); s := t.OutputSchema; assert s != nil; assert len(s.OneOf) == 2; textBranch := s.OneOf[0]; assert textBranch.Properties[\"content\"].Type == schema.TypeString; assert textBranch.Properties[\"encoding\"].Type == schema.TypeString; imgBranch := s.OneOf[1]; assert imgBranch.Properties[\"mime_type\"].Type == schema.TypeString; assert imgBranch.Properties[\"width\"].Type == schema.TypeInteger"
+          }
         },
         {
-          "id": "06-REQ-4.2",
+          "id": "REQ-4.2",
           "pattern": "ubiquitous",
           "system": "write_file tool",
-          "action": "declare OutputSchema as an object schema with properties 'written' (boolean) and 'bytes' (integer)"
+          "action": "declare OutputSchema as an object schema with properties 'written' (boolean) and 'bytes' (integer)",
+          "contract": "write_file OutputSchema is an object schema with 'written' (boolean) and 'bytes' (integer); edit_file OutputSchema is an object schema with 'edits_applied' (integer)",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the built-in write_file and edit_file tools"
+            ],
+            "pseudocode": "w := tools.WriteFileTool(ws); assert w.OutputSchema.Properties[\"written\"].Type == schema.TypeBoolean; assert w.OutputSchema.Properties[\"bytes\"].Type == schema.TypeInteger; e := tools.EditFileTool(ws); assert e.OutputSchema.Properties[\"edits_applied\"].Type == schema.TypeInteger"
+          }
         },
         {
-          "id": "06-REQ-4.3",
+          "id": "REQ-4.3",
           "pattern": "ubiquitous",
           "system": "edit_file tool",
-          "action": "declare OutputSchema as an object schema with property 'edits_applied' (integer)"
+          "action": "declare OutputSchema as an object schema with property 'edits_applied' (integer)",
+          "check": {
+            "same_as": "REQ-4.2"
+          }
         },
         {
-          "id": "06-REQ-4.4",
+          "id": "REQ-4.4",
           "pattern": "ubiquitous",
           "system": "list_files tool",
-          "action": "declare OutputSchema as an object schema with properties 'entries' (array of strings), 'truncated' (boolean), and optional 'note' (string)"
+          "action": "declare OutputSchema as an object schema with properties 'entries' (array of strings), 'truncated' (boolean), and optional 'note' (string)",
+          "contract": "list_files OutputSchema is an object with required 'entries' (array of strings), required 'truncated' (boolean), and optional 'note' (string); find_files OutputSchema is an object with required 'files' (array of strings), required 'truncated' (boolean), and optional 'marker' (string)",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the built-in list_files and find_files tools"
+            ],
+            "pseudocode": "l := tools.ListFilesTool(ws); assert l.OutputSchema.Properties[\"entries\"].Type == schema.TypeArray; assert l.OutputSchema.Properties[\"truncated\"].Type == schema.TypeBoolean; f := tools.FindFilesTool(ws); assert f.OutputSchema.Properties[\"files\"].Type == schema.TypeArray; assert f.OutputSchema.Properties[\"marker\"].Type == schema.TypeString"
+          }
         },
         {
-          "id": "06-REQ-4.5",
+          "id": "REQ-4.5",
           "pattern": "ubiquitous",
           "system": "find_files tool",
-          "action": "declare OutputSchema as an object schema with properties 'files' (array of strings), 'truncated' (boolean), and optional 'marker' (string)"
+          "action": "declare OutputSchema as an object schema with properties 'files' (array of strings), 'truncated' (boolean), and optional 'marker' (string)",
+          "check": {
+            "same_as": "REQ-4.4"
+          }
         }
       ]
     },
     {
-      "id": "06-REQ-5",
+      "id": "REQ-5",
       "title": "Output Schemas for Search and Outline Tools",
       "rationale": "Code outline and text search tools must formally declare the structure of their search hits and outline trees.",
       "criteria": [
         {
-          "id": "06-REQ-5.1",
+          "id": "REQ-5.1",
           "pattern": "ubiquitous",
           "system": "search_files tool",
-          "action": "declare OutputSchema as an object schema with properties 'matches' (array of objects containing 'file' string, 'line' integer, 'text' string, optional 'context_before' array of strings, and optional 'context_after' array of strings), 'truncated' (boolean), 'files_searched' (integer), and optional 'note' (string)"
+          "action": "declare OutputSchema as an object schema with properties 'matches' (array of objects containing 'file' string, 'line' integer, 'text' string, optional 'context_before' array of strings, and optional 'context_after' array of strings), 'truncated' (boolean), 'files_searched' (integer), and optional 'note' (string)",
+          "contract": "OutputSchema is an object schema with 'matches', 'truncated', 'files_searched', and optional 'note'; 'matches' is an array of objects having 'file' (string), 'line' (integer), 'text' (string), and optional 'context_before' and 'context_after' string arrays",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the built-in search_files tool"
+            ],
+            "pseudocode": "s := tools.SearchFilesTool(ws); assert s.OutputSchema != nil; assert s.OutputSchema.Properties[\"matches\"].Type == schema.TypeArray; item := s.OutputSchema.Properties[\"matches\"].Items; assert item.Properties[\"file\"].Type == schema.TypeString; assert item.Properties[\"line\"].Type == schema.TypeInteger"
+          }
         },
         {
-          "id": "06-REQ-5.2",
+          "id": "REQ-5.2",
           "pattern": "ubiquitous",
           "system": "file_outline tool",
-          "action": "declare OutputSchema as an object schema with properties 'file' (object with 'path' string, 'lang' string, 'backend' string, and 'decls' array of objects with 'name' string, 'kind' string, 'signature' string, 'start_line' integer, 'end_line' integer, optional 'container' string, and optional 'exported' boolean), 'backend' (string), 'declarations' (integer), and 'listed' (integer)"
+          "action": "declare OutputSchema as an object schema with properties 'file' (object with 'path' string, 'lang' string, 'backend' string, and 'decls' array of objects with 'name' string, 'kind' string, 'signature' string, 'start_line' integer, 'end_line' integer, optional 'container' string, and optional 'exported' boolean), 'backend' (string), 'declarations' (integer), and 'listed' (integer)",
+          "contract": "OutputSchema is an object schema with 'file', 'backend', 'declarations', and 'listed'; 'file' is an object containing 'path', 'lang', 'backend', and 'decls' array of declaration objects",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the built-in file_outline tool"
+            ],
+            "pseudocode": "o := tools.FileOutlineTool(ws); assert o.OutputSchema != nil; assert o.OutputSchema.Properties[\"backend\"].Type == schema.TypeString; fileProp := o.OutputSchema.Properties[\"file\"]; assert fileProp.Properties[\"decls\"].Type == schema.TypeArray; declItem := fileProp.Properties[\"decls\"].Items; assert declItem.Properties[\"name\"].Type == schema.TypeString"
+          }
         }
       ]
     },
     {
-      "id": "06-REQ-6",
+      "id": "REQ-6",
       "title": "Output Schemas for Symbol and Reference Tools",
       "rationale": "Symbol indexing and cross-reference tools must declare schemas matching their structured discovery results.",
       "criteria": [
         {
-          "id": "06-REQ-6.1",
+          "id": "REQ-6.1",
           "pattern": "ubiquitous",
           "system": "find_symbol tool",
-          "action": "declare OutputSchema as an object schema with properties 'symbols' (array of objects containing 'name' string, 'kind' string, 'path' string, 'start_line' integer, 'end_line' integer, optional 'signature' string, optional 'container' string, optional 'exported' boolean, and optional 'score' number), 'truncated' (boolean), 'backends' (array of strings), 'files_indexed' (integer), optional 'note' (string), optional 'partial' (boolean), and optional 'partial_reason' (string)"
+          "action": "declare OutputSchema as an object schema with properties 'symbols' (array of objects containing 'name' string, 'kind' string, 'path' string, 'start_line' integer, 'end_line' integer, optional 'signature' string, optional 'container' string, optional 'exported' boolean, and optional 'score' number), 'truncated' (boolean), 'backends' (array of strings), 'files_indexed' (integer), optional 'note' (string), optional 'partial' (boolean), and optional 'partial_reason' (string)",
+          "contract": "OutputSchema is an object schema with 'symbols', 'truncated', 'backends', 'files_indexed', and optional 'note', 'partial', and 'partial_reason'; 'symbols' is an array of symbol objects having 'name', 'kind', 'path', 'start_line', 'end_line', and optional 'signature', 'container', 'exported', 'score'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the built-in find_symbol tool"
+            ],
+            "pseudocode": "fs := tools.FindSymbolTool(ws, index); assert fs.OutputSchema != nil; assert fs.OutputSchema.Properties[\"symbols\"].Type == schema.TypeArray; symItem := fs.OutputSchema.Properties[\"symbols\"].Items; assert symItem.Properties[\"name\"].Type == schema.TypeString; assert symItem.Properties[\"kind\"].Type == schema.TypeString"
+          }
         },
         {
-          "id": "06-REQ-6.2",
+          "id": "REQ-6.2",
           "pattern": "ubiquitous",
           "system": "find_references tool",
-          "action": "declare OutputSchema as an object schema with properties 'target' (string), 'sites' (array of objects containing 'path' string, 'line' integer, 'text' string, optional 'container' string, and optional 'kind' string), 'backend' (string), 'partial' (boolean), 'truncated' (boolean), 'packages_checked' (integer), 'errors' (array of strings), and 'result' (object)"
+          "action": "declare OutputSchema as an object schema with properties 'target' (string), 'sites' (array of objects containing 'path' string, 'line' integer, 'text' string, optional 'container' string, and optional 'kind' string), 'backend' (string), 'partial' (boolean), 'truncated' (boolean), 'packages_checked' (integer), 'errors' (array of strings), and 'result' (object)",
+          "contract": "OutputSchema is an object schema with 'target', 'sites', 'backend', 'partial', 'truncated', 'packages_checked', 'errors', and 'result'; 'sites' is an array of objects having 'path', 'line', 'text', and optional 'container', 'kind'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the built-in find_references tool"
+            ],
+            "pseudocode": "fr := tools.FindReferencesTool(ws); assert fr.OutputSchema != nil; assert fr.OutputSchema.Properties[\"sites\"].Type == schema.TypeArray; siteItem := fr.OutputSchema.Properties[\"sites\"].Items; assert siteItem.Properties[\"path\"].Type == schema.TypeString; assert siteItem.Properties[\"line\"].Type == schema.TypeInteger"
+          }
         }
       ]
     },
     {
-      "id": "06-REQ-7",
+      "id": "REQ-7",
       "title": "Output Schemas for Subprocess and Shell Tools",
       "rationale": "Shell execution tools share a common subprocess result format that must be typed and populated on success and execution failures.",
+      "system": "subprocess tools",
       "criteria": [
         {
-          "id": "06-REQ-7.1",
+          "id": "REQ-7.1",
           "pattern": "ubiquitous",
-          "system": "subprocess tools",
-          "action": "declare a shared OutputSchema on execute, run_command, and powershell containing properties 'output' (string), 'exit_code' (integer), and 'outcome' (enum with values 'ok', 'exit', 'signal', 'timeout', 'abort')"
+          "action": "declare a shared OutputSchema on execute, run_command, and powershell containing properties 'output' (string), 'exit_code' (integer), and 'outcome' (enum with values 'ok', 'exit', 'signal', 'timeout', 'abort')",
+          "contract": "all three tools share the same OutputSchema containing 'output' (string), 'exit_code' (integer), and 'outcome' (enum: ok, exit, signal, timeout, abort); ToolResult.Data contains 'output', 'exit_code', and 'outcome' on non-zero exit and validates against OutputSchema",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the built-in subprocess tools execute, run_command, and powershell"
+            ],
+            "pseudocode": "ex := tools.ExecuteTool(); rc := tools.RunCommandTool(); ps := tools.PowerShellTool(); assert ex.OutputSchema == rc.OutputSchema && rc.OutputSchema == ps.OutputSchema; res := rc.Execute(ctx, json.RawMessage(`{\"command\":\"exit 3\"}`)); assert res.OK == false; assert res.Data[\"exit_code\"] == 3; assert res.Data[\"outcome\"] == \"exit\"; ord := jsonx.ToOrdered(res.Data); assert schema.Validate(rc.OutputSchema, ord) == nil"
+          }
         },
         {
-          "id": "06-REQ-7.2",
+          "id": "REQ-7.2",
           "pattern": "event_driven",
           "condition": "execute, run_command, or powershell produces a non-zero exit status or failure outcome",
-          "system": "subprocess tools",
-          "action": "populate ToolResult.Data with 'output', 'exit_code', and 'outcome' conforming to the subprocess OutputSchema"
+          "action": "populate ToolResult.Data with 'output', 'exit_code', and 'outcome' conforming to the subprocess OutputSchema",
+          "check": {
+            "same_as": "REQ-7.1"
+          }
         }
       ]
     },
     {
-      "id": "06-REQ-8",
+      "id": "REQ-8",
       "title": "Output Schemas for Network and Subagent Tools",
       "rationale": "Web retrieval, indexed code search, and specialist subagents must formally declare the shapes of their results.",
       "criteria": [
         {
-          "id": "06-REQ-8.1",
+          "id": "REQ-8.1",
           "pattern": "ubiquitous",
           "system": "fetch_url tool",
-          "action": "declare OutputSchema as an object schema with properties 'status' (integer), 'url' (string), 'content_type' (string), 'headers' (object), 'truncated' (boolean), optional 'binary' (boolean), and optional 'bytes' (integer)"
+          "action": "declare OutputSchema as an object schema with properties 'status' (integer), 'url' (string), 'content_type' (string), 'headers' (object), 'truncated' (boolean), optional 'binary' (boolean), and optional 'bytes' (integer)",
+          "contract": "OutputSchema is an object schema with required 'status', 'url', 'content_type', 'headers', 'truncated', and optional 'binary', 'bytes'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the built-in fetch_url tool"
+            ],
+            "pseudocode": "fu := tools.FetchURLTool(); assert fu.OutputSchema != nil; assert fu.OutputSchema.Properties[\"status\"].Type == schema.TypeInteger; assert fu.OutputSchema.Properties[\"url\"].Type == schema.TypeString; assert fu.OutputSchema.Properties[\"headers\"].Type == schema.TypeObject"
+          }
         },
         {
-          "id": "06-REQ-8.2",
+          "id": "REQ-8.2",
           "pattern": "ubiquitous",
           "system": "code_search tool",
-          "action": "declare OutputSchema as an object schema with properties 'files' (array of objects containing 'path' string and 'matches' array of objects with 'line' integer, 'text' string, optional 'context_before' array of strings, and optional 'context_after' array of strings), 'truncated' (boolean), 'note' (string), 'partial' (boolean), 'partial_reason' (string), 'symbol_sources' (array of strings), 'files_indexed' (integer), 'dirty_files' (array of strings), and 'skipped' (object containing 'binary' integer, 'oversized' integer, 'too_many_trigrams' integer, and 'too_small' integer)"
+          "action": "declare OutputSchema as an object schema with properties 'files' (array of objects containing 'path' string and 'matches' array of objects with 'line' integer, 'text' string, optional 'context_before' array of strings, and optional 'context_after' array of strings), 'truncated' (boolean), 'note' (string), 'partial' (boolean), 'partial_reason' (string), 'symbol_sources' (array of strings), 'files_indexed' (integer), 'dirty_files' (array of strings), and 'skipped' (object containing 'binary' integer, 'oversized' integer, 'too_many_trigrams' integer, and 'too_small' integer)",
+          "contract": "OutputSchema is an object schema containing 'files', 'truncated', 'note', 'partial', 'partial_reason', 'symbol_sources', 'files_indexed', 'dirty_files', and 'skipped'; 'files' is an array of file match objects, and 'skipped' is an object with binary, oversized, too_many_trigrams, and too_small integer properties",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the built-in code_search tool"
+            ],
+            "pseudocode": "cs := codesearch.Tool(idx); assert cs.OutputSchema != nil; assert cs.OutputSchema.Properties[\"files\"].Type == schema.TypeArray; assert cs.OutputSchema.Properties[\"skipped\"].Type == schema.TypeObject; skipProps := cs.OutputSchema.Properties[\"skipped\"].Properties; assert skipProps[\"binary\"].Type == schema.TypeInteger"
+          }
         },
         {
-          "id": "06-REQ-8.3",
+          "id": "REQ-8.3",
           "pattern": "ubiquitous",
           "system": "subagent tool",
-          "action": "declare OutputSchema as an object schema with properties 'result' (string) and 'turns' (integer)"
+          "action": "declare OutputSchema as an object schema with properties 'result' (string) and 'turns' (integer)",
+          "contract": "OutputSchema is an object schema with properties 'result' (string) and 'turns' (integer)",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the built-in subagent tool"
+            ],
+            "pseudocode": "sa := subagent.Tool(factory, opts); assert sa.OutputSchema != nil; assert sa.OutputSchema.Properties[\"result\"].Type == schema.TypeString; assert sa.OutputSchema.Properties[\"turns\"].Type == schema.TypeInteger"
+          }
         }
       ]
     },
     {
-      "id": "06-REQ-9",
+      "id": "REQ-9",
       "title": "Conformance Testing and Error Code Verification",
       "rationale": "A test suite must verify that all built-in tools produce output adhering to their declared schemas on success and return documented error codes on failure.",
+      "system": "conformance test suite",
       "criteria": [
         {
-          "id": "06-REQ-9.1",
+          "id": "REQ-9.1",
           "pattern": "event_driven",
           "condition": "any built-in tool completes execution with OK equal to true",
-          "system": "conformance test suite",
-          "action": "assert that schema.Validate(tool.OutputSchema, ordered) returns nil for the decoded ToolResult.Data"
+          "action": "assert that schema.Validate(tool.OutputSchema, ordered) returns nil for the decoded ToolResult.Data",
+          "contract": "each tool returns res.OK == true; each tool produces res.Data != nil; schema.Validate(tool.OutputSchema, jsonx.ToOrdered(res.Data)) returns nil with no validation issues",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an initialized workspace with sample files and every built-in tool registered"
+            ],
+            "pseudocode": "for tool in allBuiltinTools: res := tool.Execute(ctx, validArgs[tool.Name]); assert res.OK == true; ord := jsonx.ToOrdered(res.Data); assert schema.Validate(tool.OutputSchema, ord) == nil"
+          }
         },
         {
-          "id": "06-REQ-9.2",
+          "id": "REQ-9.2",
           "pattern": "unwanted",
           "condition": "a built-in tool receives malformed JSON arguments or invalid parameter values",
-          "system": "conformance test suite",
           "action": "induce the failure and verify that the tool returns OK equal to false with error code 'invalid_arguments'",
-          "contract": "res.OK == false, res.Error == 'invalid_arguments'"
+          "contract": "res.OK == false, res.Error == 'invalid_arguments'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "each built-in tool"
+            ],
+            "pseudocode": "for tool in allBuiltinTools: res := tool.Execute(ctx, json.RawMessage(`{malformed`)); assert res.OK == false; assert res.Error == \"invalid_arguments\""
+          }
         },
         {
-          "id": "06-REQ-9.3",
+          "id": "REQ-9.3",
           "pattern": "unwanted",
           "condition": "a built-in file or outline tool receives a path outside the workspace boundary",
-          "system": "conformance test suite",
           "action": "induce the path violation and verify that the tool returns OK equal to false with error code 'path_not_allowed'",
-          "contract": "res.OK == false, res.Error == 'path_not_allowed'"
+          "contract": "res.OK == false, res.Error == 'path_not_allowed'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "built-in tools operating on filesystem paths (read_file, write_file, edit_file, list_files, find_files, file_outline, find_symbol)"
+            ],
+            "pseudocode": "for tool in fileTools: res := tool.Execute(ctx, json.RawMessage(`{\"path\":\"../../secret\"}`)); assert res.OK == false; assert res.Error == \"path_not_allowed\""
+          }
         },
         {
-          "id": "06-REQ-9.4",
+          "id": "REQ-9.4",
           "pattern": "unwanted",
           "condition": "read_file, edit_file, or file_outline targets a directory or non-regular file",
-          "system": "conformance test suite",
           "action": "induce the non-regular file access and verify that the tool returns OK equal to false with error code 'not_a_file'",
-          "contract": "res.OK == false, res.Error == 'not_a_file'"
+          "contract": "res.OK == false, res.Error == 'not_a_file'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a directory existing in the workspace"
+            ],
+            "pseudocode": "for tool in [read_file, edit_file, file_outline]: res := tool.Execute(ctx, json.RawMessage(`{\"path\":\"existing_dir\"}`)); assert res.OK == false; assert res.Error == \"not_a_file\""
+          }
         },
         {
-          "id": "06-REQ-9.5",
+          "id": "REQ-9.5",
           "pattern": "unwanted",
           "condition": "a built-in tool execution is cancelled via context cancellation",
-          "system": "conformance test suite",
           "action": "cancel the context and verify that the tool returns OK equal to false with error code 'aborted'",
-          "contract": "res.OK == false, res.Error == 'aborted'"
+          "contract": "res.OK == false, res.Error == 'aborted'",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "each cancellable built-in tool and a cancelled context.Context"
+            ],
+            "pseudocode": "ctx, cancel := context.WithCancel(context.Background()); cancel(); for tool in cancellableTools: res := tool.Execute(ctx, validArgs[tool.Name]); assert res.OK == false; assert res.Error == \"aborted\""
+          }
         },
         {
-          "id": "06-REQ-9.6",
+          "id": "REQ-9.6",
           "pattern": "unwanted",
           "condition": "a subprocess shell tool encounters an execution failure or non-zero exit status",
-          "system": "conformance test suite",
           "action": "induce the command exit or failure, assert OK equal to false with error code 'exec_failed' or 'command_exit', and verify that ToolResult.Data validates against tool.OutputSchema",
-          "contract": "res.OK == false, res.Error in ['exec_failed', 'command_exit'], schema.Validate(tool.OutputSchema, ordered) == nil"
+          "contract": "res.OK == false, res.Error in ['exec_failed', 'command_exit'], schema.Validate(tool.OutputSchema, ordered) == nil",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the execute and run_command tools"
+            ],
+            "pseudocode": "res := runCmd.Execute(ctx, json.RawMessage(`{\"command\":\"sh -c 'exit 1'\"}`)); assert res.OK == false; assert res.Error == \"command_exit\"; ord := jsonx.ToOrdered(res.Data); assert schema.Validate(runCmd.OutputSchema, ord) == nil; res2 := runCmd.Execute(ctx, json.RawMessage(`{\"command\":\"/nonexistent_bin_xyz\"}`)); assert res2.OK == false; assert res2.Error == \"exec_failed\""
+          }
         },
         {
-          "id": "06-REQ-9.7",
+          "id": "REQ-9.7",
           "pattern": "unwanted",
           "condition": "read_file is called past end of file, or fetch_url requests a prohibited scheme or address",
-          "system": "conformance test suite",
           "action": "induce the condition and verify that the tool returns OK equal to false with error code 'offset_past_end', 'scheme_not_allowed', or 'address_not_allowed'",
-          "contract": "res.OK == false, res.Error in ['offset_past_end', 'scheme_not_allowed', 'address_not_allowed']"
+          "contract": "res.OK == false, res.Error in ['offset_past_end', 'scheme_not_allowed', 'address_not_allowed']",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "workspace with a 10-byte file and SSRF guard"
+            ],
+            "pseudocode": "res1 := readFile.Execute(ctx, json.RawMessage(`{\"path\":\"f.txt\",\"offset\":999}`)); assert res1.OK == false && res1.Error == \"offset_past_end\"; res2 := fetchUrl.Execute(ctx, json.RawMessage(`{\"url\":\"ftp://example.com\"}`)); assert res2.OK == false && res2.Error == \"scheme_not_allowed\"; res3 := fetchUrl.Execute(ctx, json.RawMessage(`{\"url\":\"http://127.0.0.1\"}`)); assert res3.OK == false && res3.Error == \"address_not_allowed\""
+          }
         },
         {
-          "id": "06-REQ-9.8",
+          "id": "REQ-9.8",
           "pattern": "unwanted",
           "condition": "a file tool encounters unreadable files, write errors, edit precondition mismatches, or subagent failures",
-          "system": "conformance test suite",
           "action": "induce the respective failure and verify that the tool returns OK equal to false with error code 'read_failed', 'write_failed', 'edit_precondition', 'edit_failed', 'list_failed', 'outline_failed', or 'subagent_failed'",
-          "contract": "res.OK == false, res.Error in ['read_failed', 'write_failed', 'edit_precondition', 'edit_failed', 'list_failed', 'outline_failed', 'subagent_failed']"
+          "contract": "res.OK == false, res.Error in ['read_failed', 'write_failed', 'edit_precondition', 'edit_failed', 'list_failed', 'outline_failed', 'subagent_failed']",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "error-inducing conditions: read-only file for write, mismatched old_str for edit, unlistable directory, failing subagent runner"
+            ],
+            "pseudocode": "resEdit := editTool.Execute(ctx, json.RawMessage(`{\"path\":\"f.txt\",\"edits\":[{\"old_str\":\"not_there\",\"new_str\":\"x\"}]}`)); assert resEdit.OK == false && resEdit.Error == \"edit_precondition\"; resSub := subagentTool.Execute(ctx, json.RawMessage(`{\"task\":\"fail\"}`)); assert resSub.OK == false && resSub.Error == \"subagent_failed\""
+          }
         }
       ]
     }
   ],
   "execution_paths": [
     {
-      "id": "06-PATH-1",
+      "id": "PATH-1",
       "title": "Programmatic built-in tool call and structured output schema validation",
       "steps": [
         {
@@ -324,10 +545,24 @@
           "actor": "conformance validator",
           "action": "confirms that schema.Validate returns no validation issues"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "tools.Workspace",
+          "schema.Validate",
+          "tools.All"
+        ],
+        "setup": [
+          "a real Workspace on disk containing Go source and text files"
+        ],
+        "end_state": [
+          "read_file and list_files return OK true with structured Data",
+          "marshaled Data conforms to each tool's declared OutputSchema via schema.Validate without errors"
+        ]
+      }
     },
     {
-      "id": "06-PATH-2",
+      "id": "PATH-2",
       "title": "MCP tool registration with output schema and structured result pass-through",
       "steps": [
         {
@@ -350,10 +585,25 @@
           "actor": "client",
           "action": "verifies that ToolResult.Data conforms to core.Tool.OutputSchema"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "mcp.Pool",
+          "mcp.ServerConnection",
+          "core.Tool"
+        ],
+        "setup": [
+          "a running in-process MCP server exposing a tool with outputSchema and returning structuredContent"
+        ],
+        "end_state": [
+          "the adapted core.Tool has OutputSchema populated matching the server definition",
+          "executing the tool returns ToolResult.OK true with Data holding the server's structuredContent directly",
+          "res.Data validates against adapted core.Tool.OutputSchema"
+        ]
+      }
     },
     {
-      "id": "06-PATH-3",
+      "id": "PATH-3",
       "title": "Provider wire request serialization invariant",
       "steps": [
         {
@@ -372,10 +622,24 @@
           "actor": "test harness",
           "action": "verifies serialized request bodies match golden fixtures byte-for-byte with OutputSchema omitted"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "canonicalRequest",
+          "core.ToolWires",
+          "anthropic.Provider",
+          "openai.Provider"
+        ],
+        "setup": [
+          "canonical Request fixture populated with tools carrying OutputSchema definitions"
+        ],
+        "end_state": [
+          "serialized request bodies match the wire golden fixtures byte-for-byte with OutputSchema omitted"
+        ]
+      }
     },
     {
-      "id": "06-PATH-4",
+      "id": "PATH-4",
       "title": "Subprocess tool execution failure and structured error data validation",
       "steps": [
         {
@@ -394,10 +658,25 @@
           "actor": "client",
           "action": "validates ToolResult.Data against tool.OutputSchema and confirms schema adherence on error"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "tools.Run",
+          "schema.Validate",
+          "core.ToolResult"
+        ],
+        "setup": [
+          "the real Execute or RunCommand tool in a live execution environment"
+        ],
+        "end_state": [
+          "res.OK is false and res.Error is 'command_exit'",
+          "res.Data contains output, exit_code 2, and outcome 'exit'",
+          "schema.Validate confirms res.Data conforms to the subprocess OutputSchema"
+        ]
+      }
     },
     {
-      "id": "06-PATH-5",
+      "id": "PATH-5",
       "title": "MCP tool registration with malformed output schema diagnostic recording",
       "steps": [
         {
@@ -416,7 +695,22 @@
           "actor": "client",
           "action": "queries pool.Diagnostics() and verifies the diagnostic was recorded"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "mcp.Pool",
+          "mcp.ServerConnection",
+          "diag.Diagnostic"
+        ],
+        "setup": [
+          "a running MCP server exposing a tool with malformed unparseable outputSchema"
+        ],
+        "end_state": [
+          "the adapted tool has OutputSchema == nil",
+          "pool.Diagnostics() contains a SeverityError diagnostic identifying the server and tool name",
+          "the pool connection remains active and the adapted tool remains callable"
+        ]
+      }
     }
   ],
   "external_apis": [

@@ -1,646 +1,1170 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
   "spec_id": "13",
   "spec_name": "sandbox_core",
-  "schema_version": 2,
-  "introduction": "Specification 13 adds the sandbox foundation: a host-side `sandbox` API whose `Sandbox.Tools` returns proxy tools that are drop-in replacements for `tools.All`. Every call runs in an `agentkit-sandboxd` agent reached over the `agentkit.sandbox.v1` gRPC protocol. The spec also covers tar transfer into and out of the sandbox's one workspace, and `local`, an in-process provider with no isolation that exists for tests.",
-  "glossary": {
-    "agent": "The AgentKit process inside a sandbox (sandbox/internal/agent, wrapped by the agentkit-sandboxd command) that serves the agentkit.sandbox.v1 Agent service and runs the built-in tools against the workspace.",
-    "definition digest": "The SHA-256 over a tool's name, description, input and output schema JSON, prompt guidelines, Builtin flag and execution mode. The host and the agent compute it with one shared function so that each can detect a definition mismatch.",
-    "deliberate refusal": "An RPC error with status InvalidArgument, FailedPrecondition, NotFound or Unimplemented. The agent returns it on purpose, and it does not mark the sandbox unavailable.",
-    "effective spec": "The Spec returned by Sandbox.Spec(): the caller's Spec after CheckSpec has applied its defaults, with Workdir set to the workspace root the agent reported in Hello.",
-    "entry rules": "The single tar-entry validation function used both when the agent extracts a synced tar and when the host validates an exported tar.",
-    "local provider": "local.Unisolated(), a sandbox.Provider that runs the agent service in the embedder's own process over os.Pipe pairs with no isolation; it exists for tests and development.",
-    "proxy tool": "A core.Tool whose definition fields are copied from the host's tools.All value and whose Execute sends the call to the agent over the Call RPC.",
-    "sandbox": "An ephemeral execution environment created by a sandbox.Provider that holds exactly one workspace and one agent process; represented on the host by the sandbox.Sandbox interface.",
-    "sandbox state": "The lifecycle of a sandbox: live, then unavailable (after a transport failure, when the agent ends, or at the TTL), then closed (after Close).",
-    "transport failure": "While the host context is still live, either an RPC error whose gRPC status is not one of the agent's deliberate refusals (InvalidArgument, FailedPrecondition, NotFound, Unimplemented), or a malformed response. It moves the sandbox to the unavailable state for good."
-  },
+  "schema_version": 3,
   "requirements": [
     {
-      "id": "13-REQ-1",
+      "id": "REQ-1",
       "title": "Agent protocol and generated code",
       "rationale": "One versioned gRPC protocol whose generated code is checked in keeps `go build` free of generators, and lets the tool schemas come from the tools package byte for byte.",
       "criteria": [
         {
-          "id": "13-REQ-1.1",
+          "id": "REQ-1.1",
           "pattern": "ubiquitous",
           "system": "sandbox/internal/sandboxpb/sandbox.proto",
-          "action": "declare package agentkit.sandbox.v1 with a go_package naming sandbox/internal/sandboxpb and a single service Agent with exactly five RPCs: unary Hello, Tools and Call, client-streaming SyncTar(stream TarChunk) returning SyncResponse, and server-streaming ExportTar(ExportRequest) returning stream TarChunk. Tool input, result data and result metadata are carried as JSON bytes fields, never as proto structs"
+          "action": "declare package agentkit.sandbox.v1 with a go_package naming sandbox/internal/sandboxpb and a single service Agent with exactly five RPCs: unary Hello, Tools and Call, client-streaming SyncTar(stream TarChunk) returning SyncResponse, and server-streaming ExportTar(ExportRequest) returning stream TarChunk. Tool input, result data and result metadata are carried as JSON bytes fields, never as proto structs",
+          "contract": "the package is agentkit.sandbox.v1 and the go_package option ends in sandbox/internal/sandboxpb; there is exactly one service, Agent, with exactly the methods Hello, Tools, Call, SyncTar and ExportTar; Hello, Tools and Call are unary; SyncTar is client-streaming with input TarChunk and output SyncResponse; ExportTar is server-streaming with input ExportRequest and output TarChunk; CallRequest has a string tool-name field and a bytes input field; CallResponse has bool ok, bytes data, string error, string detail, bytes metadata and string text; no field of CallRequest or CallResponse is message-typed (no google.protobuf.Struct, no session or id reference), and the input, data and metadata fields have kind BytesKind",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the checked-in sandbox/internal/sandboxpb generated code"
+            ],
+            "pseudocode": "fd = sandboxpb.File_sandbox_proto\nassert fd.Package() == 'agentkit.sandbox.v1'\nassert strings.HasSuffix(fd.Options().GoPackage, 'sandbox/internal/sandboxpb')\nassert fd.Services().Len() == 1; svc = fd.Services().Get(0); assert svc.Name() == 'Agent'\nassert methodNames(svc) == {Hello,Tools,Call,SyncTar,ExportTar}\nassert svc.Method('SyncTar').IsStreamingClient() && !IsStreamingServer()\nassert svc.Method('ExportTar').IsStreamingServer() && !IsStreamingClient()\nreq = fd.Messages().ByName('CallRequest'); resp = ...('CallResponse')\nfor f in [req.input, resp.data, resp.metadata]: assert f.Kind() == BytesKind\nfor f in fields(req)+fields(resp): assert f.Kind() != MessageKind"
+          }
         },
         {
-          "id": "13-REQ-1.2",
+          "id": "REQ-1.2",
           "pattern": "ubiquitous",
           "system": "sandboxpb package",
-          "action": "keep the protoc-gen-go and protoc-gen-go-grpc output checked in beside sandbox.proto, so that `go build ./...` and `go test ./...` succeed with no protoc and no protoc plugin on PATH"
+          "action": "keep the protoc-gen-go and protoc-gen-go-grpc output checked in beside sandbox.proto, so that `go build ./...` and `go test ./...` succeed with no protoc and no protoc plugin on PATH",
+          "contract": "both commands exit 0; sandbox.pb.go and sandbox_grpc.pb.go exist in sandbox/internal/sandboxpb beside sandbox.proto",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a PATH containing only the directory of the go binary (no protoc, protoc-gen-go or protoc-gen-go-grpc)"
+            ],
+            "pseudocode": "env = filterEnv(os.Environ(), PATH=dir(lookPath('go')))\nassert lookPathIn(env,'protoc') fails\nfor args in [['build','./...'],['vet','./sandbox/...']]: out,err = run('go',args,env); assert err == nil, out\nassert exists('sandbox/internal/sandboxpb/sandbox.pb.go') && exists('.../sandbox_grpc.pb.go')"
+          }
         },
         {
-          "id": "13-REQ-1.3",
+          "id": "REQ-1.3",
           "pattern": "event_driven",
           "condition": "a developer runs `make proto` with protoc on PATH",
           "system": "Makefile proto target",
           "action": "install protoc-gen-go v1.36.11 and protoc-gen-go-grpc v1.5.1 into build/bin with `go install`, regenerate the Go code beside sandbox.proto with protoc and those plugins, and write the SHA-256 of sandbox.proto into a checked-in file next to it",
-          "contract": "exit status 0; the generated .pb.go and _grpc.pb.go files and the hash file are rewritten"
+          "contract": "exit status 0; the generated .pb.go and _grpc.pb.go files and the hash file are rewritten",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the repository checked out cleanly",
+              "protoc on PATH (the test skips with a message when it is not)"
+            ],
+            "pseudocode": "dry = run('make','-n','proto'); assert contains(dry,'protoc-gen-go@v1.36.11') && contains(dry,'protoc-gen-go-grpc@v1.5.1') && contains(dry,'build/bin')\nif !lookPath('protoc'): t.Skip('protoc not on PATH')\nbefore = readAll(generated+hashfile)\n_,err = run('make','proto'); assert err == nil\nassert readAll(generated+hashfile) == before\nassert strings.TrimSpace(read(hashfile)) == hex(sha256(read('sandbox.proto')))"
+          }
         },
         {
-          "id": "13-REQ-1.4",
+          "id": "REQ-1.4",
           "pattern": "unwanted",
           "condition": "`make proto` runs and protoc is not on PATH",
           "system": "Makefile proto target",
           "action": "stop before generating anything and report the missing tool by name",
-          "contract": "non-zero exit status; the error output contains the word `protoc`; no checked-in file is modified"
+          "contract": "non-zero exit status; the error output contains the word `protoc`; no checked-in file is modified",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a PATH holding go, make and the POSIX shell utilities but no protoc"
+            ],
+            "pseudocode": "before = hashes(files); out,err = run('make','proto', env=PATH(without protoc))\nassert exitCode(err) != 0; assert contains(out,'protoc'); assert hashes(files) == before"
+          }
         },
         {
-          "id": "13-REQ-1.5",
+          "id": "REQ-1.5",
           "pattern": "unwanted",
           "condition": "the SHA-256 of the current sandbox.proto differs from the hash recorded in the checked-in hash file",
           "system": "sandboxpb staleness test",
           "action": "fail offline without invoking any generator",
-          "contract": "the test fails with a message that tells the developer to run `make proto`"
+          "contract": "the test fails with a message that tells the developer to run `make proto`",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the sandboxpb package's staleness check function and its in-package test"
+            ],
+            "pseudocode": "t.Setenv('PATH','')\nassert checkProtoHash(read('sandbox.proto'), read(hashFile)) == nil\nerr = checkProtoHash(append(read('sandbox.proto'), '\\n// edit'), read(hashFile))\nassert err != nil && contains(err.Error(),'make proto')"
+          }
         },
         {
-          "id": "13-REQ-1.6",
+          "id": "REQ-1.6",
           "pattern": "ubiquitous",
           "system": "sandbox package",
-          "action": "export ProtocolMajor = 1, ProtocolMinor = 0 and MaxMessageBytes = 16 MiB (16<<20, equal to wire.Defaults().MaxMessageBytes), set MaxMessageBytes as both the send and the receive message limit on the gRPC server in the agent and on the gRPC client on the host, and send tar data in TarChunk messages of at most 1 MiB of data each"
+          "action": "export ProtocolMajor = 1, ProtocolMinor = 0 and MaxMessageBytes = 16 MiB (16<<20, equal to wire.Defaults().MaxMessageBytes), set MaxMessageBytes as both the send and the receive message limit on the gRPC server in the agent and on the gRPC client on the host, and send tar data in TarChunk messages of at most 1 MiB of data each",
+          "contract": "sandbox.ProtocolMajor == 1, sandbox.ProtocolMinor == 0, sandbox.MaxMessageBytes == 16<<20 == wire.Defaults().MaxMessageBytes; the 15 MiB request reaches the agent (it answers a normal CallResponse), so the server's receive limit is above gRPC's 4 MiB default; the 17 MiB request fails with gRPC status ResourceExhausted; the proxy decodes the 10 MiB Data response with OK=true, so the host client's receive limit is above the default",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an agent service served over one end of a net.Pipe",
+              "a fake Agent server attached through the attach package",
+              "a recording fake Agent server attached through the attach package",
+              "an agent service whose workspace holds a 3 MiB file big.bin"
+            ],
+            "pseudocode": "assert sandbox.ProtocolMajor==1 && sandbox.ProtocolMinor==0 && sandbox.MaxMessageBytes==16<<20 && sandbox.MaxMessageBytes==wire.Defaults().MaxMessageBytes\nc = rawClient(agentConn, MaxCallSendMsgSize(64<<20))\nresp,err = c.Call(ctx,{Name:'write_file',Input: jsonWithContent(15<<20)}); assert err==nil\n_,err = c.Call(ctx,{Input: bytes(17<<20)}); assert status.Code(err)==codes.ResourceExhausted\nfake.callResp = {Ok:true, Data: jsonObject(10<<20)}; r = proxy.Execute(ctx,'{}'); assert r.OK\nsb.Sync(ctx, Tar{R: bytes.NewReader(tar35MiB)})\nassert fake.chunks[0].isStart; for c in fake.chunks[1:]: assert len(c.Data) <= 1<<20\nassert concat(fake.chunks[1:]) == tar35MiB\nstream = raw.ExportTar(ctx,{Path:'big.bin'}); n=0; for c in stream: assert len(c.Data)<=1<<20; n++\nassert n >= 3"
+          }
         },
         {
-          "id": "13-REQ-1.7",
+          "id": "REQ-1.7",
           "pattern": "ubiquitous",
           "system": "agentkit.sandbox.v1 protocol",
-          "action": "make CallRequest carry the tool name and the JSON input bytes, and CallResponse carry ok, JSON data bytes, error, detail, JSON metadata bytes and text, so that one CallRequest and its CallResponse hold everything a single tool call needs and reference no other message or session state"
+          "action": "make CallRequest carry the tool name and the JSON input bytes, and CallResponse carry ok, JSON data bytes, error, detail, JSON metadata bytes and text, so that one CallRequest and its CallResponse hold everything a single tool call needs and reference no other message or session state",
+          "check": {
+            "same_as": "REQ-1.1"
+          }
         }
       ]
     },
     {
-      "id": "13-REQ-2",
+      "id": "REQ-2",
       "title": "Host API and spec checking",
       "rationale": "Driving every refusal from one function over the provider's Capabilities means that what a provider advertises and what it refuses cannot drift apart.",
       "criteria": [
         {
-          "id": "13-REQ-2.1",
+          "id": "REQ-2.1",
           "pattern": "ubiquitous",
           "system": "sandbox package",
-          "action": "export AgentPath = \"/usr/local/libexec/agentkit-sandboxd\"; Spec{Image, Workdir, Env map[string]string, Resources, Network, TTL, Labels, Provider map[string]any}; Resources{CPUs, MemoryBytes, PIDs, DiskBytes}; Network{Mode NetworkMode, Allow []Endpoint} with Endpoint{Host, Port}, and NetworkNone (the zero value), NetworkAllowlist and NetworkUnrestricted; Capabilities{Provider, Isolation, Network, Resources, Image, Workdir, Notes} with IsolationNone, IsolationConfinement, IsolationContainer and IsolationMicroVM; the Provider interface (Capabilities, Create, Reap); the Sandbox interface (ID, Spec, Agent, Sync, Tools, Export, Close); AgentInfo{Version, ProtocolMajor, ProtocolMinor, Workdir, OutlineBackend, Git}; ToolOptions{Symbols tools.SymbolOptions, SpillDir, DisableSpill}; the sealed Source and Destination interfaces, implemented only by Tar{R io.Reader, Path string, Replace bool} and TarOut{W io.Writer}; SyncResult{Files int, Bytes int64}; and the errors ErrUnsupported, ErrProtocol, ErrUnavailable, ErrClosed, ErrToolMismatch, ErrToolsConfigured and ErrUnsafeArchive"
+          "action": "export AgentPath = \"/usr/local/libexec/agentkit-sandboxd\"; Spec{Image, Workdir, Env map[string]string, Resources, Network, TTL, Labels, Provider map[string]any}; Resources{CPUs, MemoryBytes, PIDs, DiskBytes}; Network{Mode NetworkMode, Allow []Endpoint} with Endpoint{Host, Port}, and NetworkNone (the zero value), NetworkAllowlist and NetworkUnrestricted; Capabilities{Provider, Isolation, Network, Resources, Image, Workdir, Notes} with IsolationNone, IsolationConfinement, IsolationContainer and IsolationMicroVM; the Provider interface (Capabilities, Create, Reap); the Sandbox interface (ID, Spec, Agent, Sync, Tools, Export, Close); AgentInfo{Version, ProtocolMajor, ProtocolMinor, Workdir, OutlineBackend, Git}; ToolOptions{Symbols tools.SymbolOptions, SpillDir, DisableSpill}; the sealed Source and Destination interfaces, implemented only by Tar{R io.Reader, Path string, Replace bool} and TarOut{W io.Writer}; SyncResult{Files int, Bytes int64}; and the errors ErrUnsupported, ErrProtocol, ErrUnavailable, ErrClosed, ErrToolMismatch, ErrToolsConfigured and ErrUnsafeArchive",
+          "contract": "sandbox.AgentPath == \"/usr/local/libexec/agentkit-sandboxd\"; Spec, Resources, Network, Endpoint, Capabilities, AgentInfo, ToolOptions, Tar, TarOut and SyncResult compile as composite literals with exactly the specified fields and types; NetworkNone is the zero value of NetworkMode, and NetworkAllowlist, NetworkUnrestricted and the four Isolation constants are distinct; Source and Destination each have an unexported method (reflect shows NumMethod counting a non-exported name), Tar implements Source and TarOut implements Destination; ErrUnsupported, ErrProtocol, ErrUnavailable, ErrClosed, ErrToolMismatch, ErrToolsConfigured and ErrUnsafeArchive are non-nil and pairwise not errors.Is-equal",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a test file in package sandbox_test that references every exported name"
+            ],
+            "pseudocode": "_ = sandbox.Spec{Image:'',Workdir:'',Env:map[string]string{},Resources:sandbox.Resources{CPUs:0,MemoryBytes:0,PIDs:0,DiskBytes:0},Network:sandbox.Network{Mode:sandbox.NetworkNone,Allow:[]sandbox.Endpoint{{Host:'h',Port:1}}},TTL:0,Labels:nil,Provider:map[string]any{}}\nvar _ sandbox.Provider; var _ sandbox.Sandbox; var _ sandbox.Source = sandbox.Tar{}; var _ sandbox.Destination = sandbox.TarOut{}\nassert sandbox.NetworkMode(0) == sandbox.NetworkNone\nassert hasUnexportedMethod(reflect.TypeOf((*sandbox.Source)(nil)).Elem())\nerrs=[...7]; for i!=j: assert !errors.Is(errs[i],errs[j])"
+          }
         },
         {
-          "id": "13-REQ-2.2",
+          "id": "REQ-2.2",
           "pattern": "event_driven",
           "condition": "CheckSpec(caps, spec) accepts a spec",
           "system": "sandbox.CheckSpec",
           "action": "return the spec with a TTL of 0 replaced by 1 hour and, only when caps.Workdir is true and spec.Workdir is empty, Workdir set to /workspace. Every other field is returned unchanged",
-          "contract": "returns (effective Spec, nil)"
+          "contract": "returns (effective Spec, nil)",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "caps covering NetworkUnrestricted, once with Workdir true and once with Workdir false"
+            ],
+            "pseudocode": "s,err = CheckSpec(capsWD, spec0); assert err==nil && s.TTL==time.Hour && s.Workdir=='/workspace'\ns,err = CheckSpec(capsNoWD, spec0); assert err==nil && s.Workdir==''\ns,_ = CheckSpec(capsWD, spec{TTL:5m,Workdir:'/src'}); assert s.TTL==5m && s.Workdir=='/src'\nassert reflect.DeepEqual(s.Env, spec.Env) && reflect.DeepEqual(s.Labels, spec.Labels)"
+          }
         },
         {
-          "id": "13-REQ-2.3",
+          "id": "REQ-2.3",
           "pattern": "unwanted",
           "condition": "the spec sets a field that caps does not cover: a Network.Mode not listed in caps.Network, a non-zero Resources field that caps cannot bound, a non-empty Image when caps.Image is false, or a non-empty Workdir when caps.Workdir is false",
           "system": "sandbox.CheckSpec",
           "action": "refuse the spec",
-          "contract": "returns a zero Spec and a *SpecError{Provider, Field, Reason} for which errors.Is(err, ErrUnsupported) is true, with a message of the form `sandbox: provider \"local\" cannot honour Spec.Network.Mode = none: <reason>`"
+          "contract": "returns a zero Spec and a *SpecError{Provider, Field, Reason} for which errors.Is(err, ErrUnsupported) is true, with a message of the form `sandbox: provider \"local\" cannot honour Spec.Network.Mode = none: <reason>`",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "caps = {Provider: \"local\", Network: [NetworkUnrestricted], no Resources, Image false, Workdir false}"
+            ],
+            "pseudocode": "for tc in cases: s,err = CheckSpec(localCaps, tc.spec)\n  assert reflect.DeepEqual(s, Spec{}); var se *SpecError; assert errors.As(err,&se) && se.Provider=='local' && se.Field==tc.field\n  assert errors.Is(err, ErrUnsupported)\nassert strings.HasPrefix(errZero.Error(), `sandbox: provider \"local\" cannot honour Spec.Network.Mode = none: `)"
+          }
         },
         {
-          "id": "13-REQ-2.4",
+          "id": "REQ-2.4",
           "pattern": "unwanted",
           "condition": "the spec has a negative TTL, a negative Resources value, an Env name that is empty or contains '=' or NUL, an Env value that contains NUL, a Labels key equal to the reserved `agentkit.sandbox`, a non-empty Network.Allow with a mode other than NetworkAllowlist, or an Endpoint with an empty Host or a Port outside 1–65535",
           "system": "sandbox.CheckSpec",
           "action": "refuse the spec whatever capabilities are passed",
-          "contract": "returns a zero Spec and a non-nil error whose message names the offending Spec field"
+          "contract": "returns a zero Spec and a non-nil error whose message names the offending Spec field",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "fullCaps covering every network mode, every Resources field, Image and Workdir"
+            ],
+            "pseudocode": "for tc in invalid: s,err = CheckSpec(fullCaps, tc.spec); assert s==Spec{} (DeepEqual) && err!=nil && contains(err.Error(), tc.field)\n_,err = CheckSpec(fullCaps, Spec{Network:{Mode:NetworkAllowlist,Allow:[{'example.com',443}]}}); assert err==nil"
+          }
         },
         {
-          "id": "13-REQ-2.5",
+          "id": "REQ-2.5",
           "pattern": "unwanted",
           "condition": "Spec.Provider contains a key that the provider does not define",
           "system": "each sandbox.Provider",
           "action": "refuse the spec in Create",
-          "contract": "Create returns a nil Sandbox and a non-nil error whose message names the unknown key; no sandbox resources are allocated"
+          "contract": "Create returns a nil Sandbox and a non-nil error whose message names the unknown key; no sandbox resources are allocated",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "TMPDIR set to a fresh t.TempDir() so local's root is isolated",
+              "the local provider"
+            ],
+            "pseudocode": "t.Setenv('TMPDIR', t.TempDir())\nsb,err = local.Unisolated().Create(ctx, Spec{Network:{Mode:NetworkUnrestricted}, Provider:{'bogus_key':1}})\nassert sb==nil && contains(err.Error(),'bogus_key')\nsb,err = Create(ctx, Spec{}); assert sb==nil && errors.Is(err,ErrUnsupported)\nassert entries(filepath.Join(os.TempDir(),'agentkit-sandbox-local')) == 0"
+          }
         },
         {
-          "id": "13-REQ-2.6",
+          "id": "REQ-2.6",
           "pattern": "ubiquitous",
           "system": "each sandbox.Provider",
-          "action": "call CheckSpec with its own Capabilities as the first step of Create, before allocating any directory, process or connection, so that a refused spec leaves nothing behind"
+          "action": "call CheckSpec with its own Capabilities as the first step of Create, before allocating any directory, process or connection, so that a refused spec leaves nothing behind",
+          "check": {
+            "same_as": "REQ-2.5"
+          }
         },
         {
-          "id": "13-REQ-2.7",
+          "id": "REQ-2.7",
           "pattern": "ubiquitous",
           "system": "sandbox.CheckSpec",
-          "action": "for any Capabilities value and any Spec that passes the provider-independent checks of 13-REQ-2.4, return an error matching ErrUnsupported exactly when the Spec sets at least one field that the Capabilities do not cover"
+          "action": "for any Capabilities value and any Spec that passes the provider-independent checks of 13-REQ-2.4, return an error matching ErrUnsupported exactly when the Spec sets at least one field that the Capabilities do not cover",
+          "contract": "errors.Is(err, ErrUnsupported) is true if and only if an independent oracle finds an uncovered field (mode not in caps.Network, a non-zero Resources field caps cannot bound, Image set without caps.Image, Workdir set without caps.Workdir); when err is nil the returned spec differs from the input only in the TTL and Workdir defaults",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a seeded generator of Capabilities (random subsets of network modes and boundable Resources fields, random Image and Workdir flags) and of Specs that pass the provider-independent checks"
+            ],
+            "pseudocode": "for i in 0..2000: caps = genCaps(r); spec = genValidSpec(r)\n  out,err = CheckSpec(caps, spec)\n  assert errors.Is(err,ErrUnsupported) == oracleUncovered(caps,spec)\n  if err==nil: assert equalExceptDefaults(out, spec, caps)"
+          }
         }
       ]
     },
     {
-      "id": "13-REQ-3",
+      "id": "REQ-3",
       "title": "Agent service",
       "rationale": "The agent is where the tools actually run, so it must build them from an explicit environment, honour cancellation, and keep its tool set fresh after a sync.",
       "criteria": [
         {
-          "id": "13-REQ-3.1",
+          "id": "REQ-3.1",
           "pattern": "unwanted",
           "condition": "the agent is constructed with a workspace path that does not exist or is not a directory",
           "system": "sandbox/internal/agent",
           "action": "refuse to start",
-          "contract": "the constructor returns a non-nil error naming the path and serves nothing"
+          "contract": "the constructor returns a non-nil error naming the path and serves nothing",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a path that does not exist and a path to a regular file"
+            ],
+            "pseudocode": "for p in [filepath.Join(t.TempDir(),'nope'), fileIn(t.TempDir())]: a,err = agent.New(agent.Config{Workdir:p, Env:env, TTL:time.Hour}); assert a==nil && err!=nil && contains(err.Error(), p)"
+          }
         },
         {
-          "id": "13-REQ-3.2",
+          "id": "REQ-3.2",
           "pattern": "event_driven",
           "condition": "the host sends a Hello RPC",
           "system": "agent service",
           "action": "answer with ProtocolMajor and ProtocolMinor; the module version from runtime/debug build info, or `(devel)` when there is none; the workspace root with symlinks resolved; the outline backend for non-Go files, which is `tree-sitter` in a cgo build and `none` otherwise; and whether `git` resolves on the PATH of the agent's explicit environment",
-          "contract": "HelloResponse carrying those five facts"
+          "contract": "HelloResponse carrying those five facts",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a workspace reached through a symlink to a real directory",
+              "explicit environment A with PATH pointing at a directory holding an executable named git",
+              "explicit environment B with PATH pointing at an empty directory"
+            ],
+            "pseudocode": "real = t.TempDir(); link = symlink(real)\nh = helloVia(agent.New({Workdir:link, Env:envA}))\nassert h.ProtocolMajor==1 && h.ProtocolMinor==0 && h.Workdir==evalSymlinks(link)\nassert h.Version == expectedVersion()  // '(devel)' fallback\nassert h.OutlineBackend == (cgo ? 'tree-sitter' : 'none')\nassert h.Git == true; assert helloVia(agent.New({Workdir:real, Env:envB})).Git == false"
+          }
         },
         {
-          "id": "13-REQ-3.3",
+          "id": "REQ-3.3",
           "pattern": "event_driven",
           "condition": "the host sends the first Tools RPC",
           "system": "agent service",
           "action": "build tools.All over the workspace with Env set to the agent's explicit environment (never the process's own), Ignore set to tools.NoGlobalExcludes(), Symbols, SpillDir and DisableSpill from the request, and no Index. An empty SpillDir defaults to `<TMPDIR of the explicit environment>/agentkit-spill`, not os.TempDir()",
-          "contract": "ToolsResponse listing each tool's name and definition digest in tools.All order"
+          "contract": "ToolsResponse listing each tool's name and definition digest in tools.All order",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "process env carrying AGENTKIT_HOST_ONLY=1 and XDG_CONFIG_HOME whose git/ignore lists secret.txt",
+              "an explicit agent env with PATH and AGENT_ONLY=1 but no AGENTKIT_HOST_ONLY",
+              "a workspace holding secret.txt, ignored.txt and a .gitignore listing ignored.txt",
+              "process TMPDIR set to dirB",
+              "explicit agent env with TMPDIR set to dirA",
+              "Tools configured with empty SpillDir"
+            ],
+            "pseudocode": "t.Setenv('AGENTKIT_HOST_ONLY','1'); t.Setenv('XDG_CONFIG_HOME', cfgWithGlobalIgnore('secret.txt'))\nresp = raw.Tools(ctx,{})\nwant = toolsAll(ws, NoGlobalExcludes()); assert names(resp)==names(want)\nfor i: assert resp.Tools[i].Digest == sandbox digest(want[i])\nls = call('list_files',{\"path\":\".\"}); assert contains(ls,'secret.txt') && !contains(ls,'ignored.txt')\nout = call('execute',{\"command\":\"env\"}); assert contains(out,'AGENT_ONLY=1') && !contains(out,'AGENTKIT_HOST_ONLY')\nt.Setenv('TMPDIR', dirB); a = agent.New({Env: [..., 'TMPDIR='+dirA]}); raw.Tools(ctx,{})\nr = call('execute', {\"command\":\"yes x | head -c 400000\"})\nmd = decodeMetadata(r.Metadata); assert strings.HasPrefix(md.SpillPath, filepath.Join(dirA,'agentkit-spill'))\nassert !exists(filepath.Join(dirB,'agentkit-spill'))"
+          }
         },
         {
-          "id": "13-REQ-3.4",
+          "id": "REQ-3.4",
           "pattern": "unwanted",
           "condition": "a Tools request carries a SpillDir that is non-empty and not absolute, or a Tools RPC arrives after an earlier successful one with different options",
           "system": "agent service",
           "action": "refuse the request and leave the configured tool set unchanged; a repeated Tools RPC with identical options returns the same names and digests as the first",
-          "contract": "gRPC status InvalidArgument for the relative SpillDir; gRPC status FailedPrecondition for differing options"
+          "contract": "gRPC status InvalidArgument for the relative SpillDir; gRPC status FailedPrecondition for differing options",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a served agent with no tool set configured"
+            ],
+            "pseudocode": "_,err = raw.Tools(ctx,{SpillDir:'rel/dir'}); assert status.Code(err)==codes.InvalidArgument\nassert call('read_file',..).Error=='unknown_tool'\na,_ = raw.Tools(ctx,{}); b,_ = raw.Tools(ctx,{}); assert proto.Equal(a,b)\n_,err = raw.Tools(ctx,{Symbols:{MaxFiles:7}}); assert status.Code(err)==codes.FailedPrecondition\nassert call('read_file',{\"path\":\"f.txt\"}).Ok"
+          }
         },
         {
-          "id": "13-REQ-3.5",
+          "id": "REQ-3.5",
           "pattern": "event_driven",
           "condition": "the host sends a Call RPC naming a tool in the current tool set",
           "system": "agent service",
           "action": "run the call on its own goroutine and pass the input bytes to that tool's Execute verbatim, with the RPC context as the tool's context, so that cancelling the RPC cancels the tool and tools.Run kills the command's process group. Data and Metadata are marshalled with encoding/json, and a nil or empty value is sent as empty bytes",
-          "contract": "CallResponse with ok, data, error, detail, metadata and text from the tool's ToolResult"
+          "contract": "CallResponse with ok, data, error, detail, metadata and text from the tool's ToolResult",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a served agent on Unix with tools configured",
+              "a workspace holding f.txt"
+            ],
+            "pseudocode": "r = raw.Call(ctx,{Name:'read_file',Input:in}); local = toolsAll(ws)['read_file'].Execute(ctx,in)\nassert r.Data == mustJSON(local.Data); assert r.Metadata == (local.Metadata==nil ? [] : mustJSON(local.Metadata))\nstart=now(); parallel(4, call('execute',{\"command\":\"sleep 1\"})); assert since(start) < 3s\ncctx,cancel = withCancel(); go raw.Call(cctx, execute(\"sleep 60 & echo $! > child.pid; wait\")); waitFile('child.pid'); cancel()\nassert status.Code(err)==codes.Canceled; eventually(5s, syscall.Kill(pid,0)==ESRCH)"
+          }
         },
         {
-          "id": "13-REQ-3.6",
+          "id": "REQ-3.6",
           "pattern": "unwanted",
           "condition": "a Call names a tool that the current set lacks or arrives before any Tools RPC, the tool's Data or Metadata fails to marshal, or the tool panics",
           "system": "agent service",
           "action": "answer with a failed tool result instead of an RPC error and keep serving",
-          "contract": "CallResponse with ok=false and error `unknown_tool` (detail lists the available tool names), `marshal_failed`, or `panic` respectively; the RPC status is OK"
+          "contract": "CallResponse with ok=false and error `unknown_tool` (detail lists the available tool names), `marshal_failed`, or `panic` respectively; the RPC status is OK",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an agent built in-package with a stub tool builder offering `badjson` (Data holds a channel), `boom` (panics) and `ok`"
+            ],
+            "pseudocode": "r,err = raw.Call(ctx,{Name:'ok'}); assert err==nil && !r.Ok && r.Error=='unknown_tool'\nraw.Tools(ctx,{})\nr,err = raw.Call(ctx,{Name:'nosuch'}); assert err==nil && r.Error=='unknown_tool' && containsAll(r.Detail,'ok','badjson','boom')\nassert call('badjson').Error=='marshal_failed'; assert call('boom').Error=='panic'\n_,err = raw.Hello(ctx,{}); assert err==nil"
+          }
         },
         {
-          "id": "13-REQ-3.7",
+          "id": "REQ-3.7",
           "pattern": "event_driven",
           "condition": "a SyncTar RPC completes successfully while a tool set is configured",
           "system": "agent service",
-          "action": "rebuild the tool set with the same options, so that find_symbol and find_references see the synced files. Calls already in flight finish on the previous set"
+          "action": "rebuild the tool set with the same options, so that find_symbol and find_references see the synced files. Calls already in flight finish on the previous set",
+          "contract": "before the sync, find_symbol for NewThing reports no match; the in-flight execute completes with ok=true and output `done`; after the sync, find_symbol for NewThing returns a match in pkg/thing.go",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a served agent with Tools configured over an empty workspace"
+            ],
+            "pseudocode": "assert noMatch(call('find_symbol',{\"name\":\"NewThing\"}))\ngo inflight = call('execute',{\"command\":\"sleep 1; echo done\"})\nsyncTar(raw, tarOf({'pkg/thing.go':'package pkg\\nfunc NewThing() {}\\n'}))\nassert match(call('find_symbol',{\"name\":\"NewThing\"}),'pkg/thing.go')\nassert (<-inflight).Ok && contains(text,'done')"
+          }
         },
         {
-          "id": "13-REQ-3.8",
+          "id": "REQ-3.8",
           "pattern": "event_driven",
           "condition": "the TTL given at construction has elapsed since the agent started",
           "system": "agent service",
           "action": "stop serving and cancel the context of every in-flight Call",
-          "contract": "Serve returns a non-nil error whose message names the TTL"
+          "contract": "Serve returns a non-nil error whose message names the TTL",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an agent constructed with TTL 300ms on Unix, served over net.Pipe"
+            ],
+            "pseudocode": "a = agent.New({TTL:300*time.Millisecond}); errc = go a.Serve(conn)\ngo call(execute(...)); waitFile('child.pid')\nerr = recvWithin(errc, 5s); assert err!=nil && contains(err.Error(),'300ms')\nassert callErr != nil; eventually(5s, kill(pid,0)==ESRCH)"
+          }
         }
       ]
     },
     {
-      "id": "13-REQ-4",
+      "id": "REQ-4",
       "title": "The agentkit-sandboxd command",
       "rationale": "The agent ships as a thin command that speaks the protocol on its stdio, so that no provider needs a network listener.",
+      "system": "agentkit-sandboxd",
       "criteria": [
         {
-          "id": "13-REQ-4.1",
+          "id": "REQ-4.1",
           "pattern": "ubiquitous",
-          "system": "agentkit-sandboxd",
-          "action": "accept the flags --workdir (default /workspace), --ttl (a time.Duration, default 1h) and --version, and build the agent service from --workdir, --ttl and os.Environ() verbatim as the tool environment"
+          "action": "accept the flags --workdir (default /workspace), --ttl (a time.Duration, default 1h) and --version, and build the agent service from --workdir, --ttl and os.Environ() verbatim as the tool environment",
+          "contract": "the parsed workdir is /workspace and the parsed ttl is 1h; the execute output contains MARKER=sandboxd-env; the execute output does not contain a variable that is set in the test process but absent from cmd.Env",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the command's flag parser exercised in-package",
+              "the built binary started with cmd.Env = [PATH=<host PATH>, MARKER=sandboxd-env] and --workdir <tempdir>"
+            ],
+            "pseudocode": "cfg,err = parseFlags([]); assert err==nil && cfg.Workdir=='/workspace' && cfg.TTL==time.Hour\nt.Setenv('HOST_ONLY_VAR','1'); p = start(bin,'--workdir',tmp, env=['PATH='+os.Getenv('PATH'),'MARKER=sandboxd-env'])\nsb = attachTo(p); tl = sb.Tools(ctx,{}); out = exec(tl,'execute','env')\nassert contains(out,'MARKER=sandboxd-env') && !contains(out,'HOST_ONLY_VAR')"
+          }
         },
         {
-          "id": "13-REQ-4.2",
+          "id": "REQ-4.2",
           "pattern": "event_driven",
           "condition": "agentkit-sandboxd is run with --version",
-          "system": "agentkit-sandboxd",
           "action": "print the agent version and the protocol version without serving",
-          "contract": "stdout contains the agent version and `1.0`; exit status 0"
+          "contract": "stdout contains the agent version and `1.0`; exit status 0",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the agentkit-sandboxd binary built into a temp directory"
+            ],
+            "pseudocode": "out,err = run(bin,'--version'); assert err==nil && contains(out, expectedVersion) && contains(out,'1.0')\nfor args in [['--ttl','0'],['--ttl','-1s'],['--ttl','bogus'],['--nosuchflag']]:\n  so,se,code = run(bin, args...); assert code != 0 && countLines(trim(se))==1 && so==''"
+          }
         },
         {
-          "id": "13-REQ-4.3",
+          "id": "REQ-4.3",
           "pattern": "unwanted",
           "condition": "--ttl is zero or negative, or the command line has another usage error",
-          "system": "agentkit-sandboxd",
           "action": "exit without serving",
-          "contract": "non-zero exit status and a one-line message on stderr"
+          "contract": "non-zero exit status and a one-line message on stderr",
+          "check": {
+            "same_as": "REQ-4.2"
+          }
         },
         {
-          "id": "13-REQ-4.4",
+          "id": "REQ-4.4",
           "pattern": "event_driven",
           "condition": "agentkit-sandboxd starts without --version and its flags are valid",
-          "system": "agentkit-sandboxd",
-          "action": "point os.Stdout at stderr before serving, then serve the Agent service as one HTTP/2 connection on a net.Conn made of stdin and stdout, opening no listening socket"
+          "action": "point os.Stdout at stderr before serving, then serve the Agent service as one HTTP/2 connection on a net.Conn made of stdin and stdout, opening no listening socket",
+          "contract": "the Println text appears on the captured stderr, and the file returned for the transport is the original stdout; Hello over the binary's stdin and stdout succeeds; no file descriptor of the running process is a socket (no `socket:` link under /proc/<pid>/fd); the check is skipped on non-Linux hosts",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the command's stdout-redirect step exercised in-package with stderr captured through a pipe",
+              "the built binary started with --workdir <tempdir> on Linux"
+            ],
+            "pseudocode": "orig = redirectStdout(); fmt.Println('stray'); assert contains(read(stderrPipe),'stray'); assert orig is original stdout\np = start(bin,'--workdir',tmp); sb = attachTo(p); assert sb.Agent().ProtocolMajor==1\nif linux: for fd in readdir('/proc/'+pid+'/fd'): assert !strings.HasPrefix(readlink(fd),'socket:')"
+          }
         },
         {
-          "id": "13-REQ-4.5",
+          "id": "REQ-4.5",
           "pattern": "event_driven",
           "condition": "the host closes its end of the stdio connection",
-          "system": "agentkit-sandboxd",
           "action": "stop serving and exit",
-          "contract": "exit status 0"
+          "contract": "exit status 0",
+          "check": {
+            "same_as": "PATH-6"
+          }
         },
         {
-          "id": "13-REQ-4.6",
+          "id": "REQ-4.6",
           "pattern": "unwanted",
           "condition": "the agent fails to start (for example, --workdir does not exist) or the TTL expires",
-          "system": "agentkit-sandboxd",
           "action": "exit",
-          "contract": "non-zero exit status and a one-line message on stderr naming the cause"
+          "contract": "non-zero exit status and a one-line message on stderr naming the cause",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the agentkit-sandboxd binary built into a temp directory"
+            ],
+            "pseudocode": "so,se,code = run(bin,'--workdir',missing); assert code!=0 && countLines(trim(se))==1 && contains(se,missing)\np = start(bin,'--workdir',tmp,'--ttl','300ms'); code = waitWithin(p,5s); assert code!=0 && countLines(trim(stderr))==1 && contains(stderr,'300ms')"
+          }
         },
         {
-          "id": "13-REQ-4.7",
+          "id": "REQ-4.7",
           "pattern": "ubiquitous",
-          "system": "agentkit-sandboxd",
-          "action": "build with CGO_ENABLED=0 for linux/amd64, linux/arm64, darwin/arm64 and windows/amd64, and build on the host with cgo enabled"
+          "action": "build with CGO_ENABLED=0 for linux/amd64, linux/arm64, darwin/arm64 and windows/amd64, and build on the host with cgo enabled",
+          "contract": "all five builds exit 0",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the go toolchain on PATH (skipped under -short, like the existing cross-target gate)"
+            ],
+            "pseudocode": "for tgt in crossTargets: assert run('go','build','-o',devnull,'./sandbox/cmd/agentkit-sandboxd', env=GOOS,GOARCH,CGO_ENABLED=0) == nil\nassert run('go','build','-o',devnull,'./sandbox/cmd/agentkit-sandboxd', env=CGO_ENABLED=1) == nil"
+          }
         }
       ]
     },
     {
-      "id": "13-REQ-5",
+      "id": "REQ-5",
       "title": "Attach, handshake and lifetime",
       "rationale": "One implementation of Sandbox for every provider gives every provider the same version check, failure classification and state machine.",
+      "system": "sandbox attach package",
       "criteria": [
         {
-          "id": "13-REQ-5.1",
+          "id": "REQ-5.1",
           "pattern": "event_driven",
           "condition": "a provider attaches to an agent through a net.Conn",
-          "system": "sandbox attach package",
-          "action": "open a gRPC client with grpc.NewClient using MaxMessageBytes as the call send and receive limits, insecure transport credentials, and a context dialer that returns the given connection on its first invocation and an error on every later one, so that it never redials. The Sandbox implementation is written against a gRPC client connection plus per-call outgoing metadata"
+          "action": "open a gRPC client with grpc.NewClient using MaxMessageBytes as the call send and receive limits, insecure transport credentials, and a context dialer that returns the given connection on its first invocation and an error on every later one, so that it never redials. The Sandbox implementation is written against a gRPC client connection plus per-call outgoing metadata",
+          "contract": "the first dialer invocation returns the given net.Conn and the second returns a non-nil error; the fake server sees x-agentkit-test=1 on both Hello and Call; after the fake server closes the connection, a further RPC fails and the server's connection count stays 1",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the attach package's one-shot dialer",
+              "a fake Agent server on one end of a net.Pipe that records incoming metadata and counts connections"
+            ],
+            "pseudocode": "d = oneShotDialer(conn); c1,err1 = d(ctx,''); c2,err2 = d(ctx,''); assert c1==conn && err1==nil && c2==nil && err2!=nil\nsb = attach(fakeConn, withMetadata('x-agentkit-test','1')); proxy.Execute(ctx,'{}')\nassert fake.md['Hello']['x-agentkit-test']==['1'] && fake.md['Call'][...]==['1']\nfake.closeConn(); proxy.Execute(ctx,'{}'); assert fake.conns==1"
+          }
         },
         {
-          "id": "13-REQ-5.2",
+          "id": "REQ-5.2",
           "pattern": "unwanted",
           "condition": "the agent's Hello reports a ProtocolMajor different from sandbox.ProtocolMajor",
-          "system": "sandbox attach package",
           "action": "refuse the sandbox and run the provider's destroy step",
-          "contract": "Create returns a nil Sandbox and an error for which errors.Is(err, ErrProtocol) is true and whose message contains both the agent's and the host's protocol versions"
+          "contract": "Create returns a nil Sandbox and an error for which errors.Is(err, ErrProtocol) is true and whose message contains both the agent's and the host's protocol versions",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a fake Agent server whose Hello reports ProtocolMajor 2, ProtocolMinor 0",
+              "a stub destroy step that counts its calls"
+            ],
+            "pseudocode": "fake.hello = {ProtocolMajor:2}; sb,err = attach.Create(ctx, conn, destroy)\nassert sb==nil && errors.Is(err,ErrProtocol) && contains(err.Error(),'2.0') && contains(err.Error(),'1.0')\nassert destroyCalls==1"
+          }
         },
         {
-          "id": "13-REQ-5.3",
+          "id": "REQ-5.3",
           "pattern": "event_driven",
           "condition": "the agent's Hello reports the host's ProtocolMajor and any ProtocolMinor",
-          "system": "sandbox attach package",
           "action": "accept the sandbox; Spec() returns the effective spec with CheckSpec's defaults applied and Workdir set to the workspace root the agent reported, and Agent() returns the Hello facts",
-          "contract": "Create returns a live Sandbox and nil"
+          "contract": "Create returns a live Sandbox and nil",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a fake Agent server whose Hello reports 1.7, Version v9.0.0, Workdir /real/ws, OutlineBackend none and Git true",
+              "a caller spec with TTL 0"
+            ],
+            "pseudocode": "fake.hello = {1,7,'v9.0.0','/real/ws','none',true}; sb,err = attach.Create(ctx, conn, checked(Spec{TTL:0}))\nassert err==nil && sb!=nil && sb.Spec().TTL==time.Hour && sb.Spec().Workdir=='/real/ws'\nassert sb.Agent()==AgentInfo{...}"
+          }
         },
         {
-          "id": "13-REQ-5.4",
+          "id": "REQ-5.4",
           "pattern": "unwanted",
           "condition": "an RPC fails while the host context is still live",
-          "system": "sandbox attach package",
           "action": "treat InvalidArgument, FailedPrecondition, NotFound and Unimplemented as deliberate refusals that leave the sandbox live. Treat any other status, or a malformed response, as a transport failure that makes the sandbox unavailable",
-          "contract": "a deliberate refusal is returned as an error and the sandbox stays live; an Unimplemented error's message names the agent's protocol version; a transport failure returns an error matching ErrUnavailable"
+          "contract": "a deliberate refusal is returned as an error and the sandbox stays live; an Unimplemented error's message names the agent's protocol version; a transport failure returns an error matching ErrUnavailable",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a fake Agent server reporting protocol 1.3 whose Tools handler returns a configurable gRPC status"
+            ],
+            "pseudocode": "for code in [InvalidArgument,FailedPrecondition,NotFound,Unimplemented]: fake.toolsErr=status.Error(code,'x')\n  n=fake.tools; _,err = sb.Tools(ctx,o); assert err!=nil && !errors.Is(err,ErrUnavailable); sb.Tools(ctx,o); assert fake.tools==n+2\n  if code==Unimplemented: assert contains(err.Error(),'1.3')\nfake.toolsErr=status.Error(codes.Internal,'x'); _,err=sb.Tools(ctx,o); assert errors.Is(err,ErrUnavailable)\nn=fake.tools; _,err=sb.Tools(ctx,o); assert errors.Is(err,ErrUnavailable) && fake.tools==n"
+          }
         },
         {
-          "id": "13-REQ-5.5",
+          "id": "REQ-5.5",
           "pattern": "event_driven",
           "condition": "the context passed to Create is cancelled after Create has returned",
-          "system": "sandbox attach package",
-          "action": "keep the sandbox live, because that context bounds creation only and not the sandbox's lifetime"
+          "action": "keep the sandbox live, because that context bounds creation only and not the sandbox's lifetime",
+          "contract": "Tools returns eleven tools and nil; list_files returns OK=true",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "TMPDIR isolated",
+              "a local sandbox created under a cancellable context"
+            ],
+            "pseudocode": "cctx,cancel = withCancel(bg); sb,_ = local.Unisolated().Create(cctx, unrestricted); cancel(); sleep(200ms)\ntl,err = sb.Tools(bg, ToolOptions{}); assert err==nil && len(tl)==11\nassert byName(tl,'list_files').Execute(bg, `{\"path\":\".\"}`).OK"
+          }
         },
         {
-          "id": "13-REQ-5.6",
+          "id": "REQ-5.6",
           "pattern": "event_driven",
           "condition": "the effective TTL elapses since creation, or the agent ends",
-          "system": "sandbox attach package",
-          "action": "mark the sandbox unavailable and, at the TTL, destroy it through a host-side timer"
+          "action": "mark the sandbox unavailable and, at the TTL, destroy it through a host-side timer",
+          "contract": "after the wait, Tools on the local sandbox returns an error matching ErrUnavailable and its directory under agentkit-sandbox-local no longer exists; within 2s of the fake agent ending, Sync on that sandbox returns an error matching ErrUnavailable",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "TMPDIR isolated",
+              "a local sandbox created with Spec.TTL 500ms",
+              "a separate sandbox attached to a fake Agent server"
+            ],
+            "pseudocode": "sb,_ = Create(ctx, Spec{Network:unrestricted, TTL:500ms}); dir = sandboxDir(sb.ID()); sleep(1.5s)\n_,err = sb.Tools(ctx,{}); assert errors.Is(err,ErrUnavailable); assert !exists(dir)\nfake.Stop(); fakeConn.Close(); eventually(2s, errors.Is(fsb.Sync(ctx,Tar{R:emptyTar}), ErrUnavailable))"
+          }
         },
         {
-          "id": "13-REQ-5.7",
+          "id": "REQ-5.7",
           "pattern": "event_driven",
           "condition": "Close is called on a sandbox",
-          "system": "sandbox attach package",
           "action": "on the first call, cancel the TTL timer, close the connection and run the provider's destroy step, then mark the sandbox closed",
-          "contract": "the first Close returns the first error from those steps, or nil; every later Close returns nil"
+          "contract": "the first Close returns the first error from those steps, or nil; every later Close returns nil",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a sandbox attached to a fake Agent server with effective TTL 300ms and a stub destroy step returning errBoom"
+            ],
+            "pseudocode": "sb = attach.Create(ctx, conn, destroy=func(){calls++; return errBoom}, ttl=300ms)\nassert errors.Is(sb.Close(ctx), errBoom); assert sb.Close(ctx)==nil; sleep(600ms); assert calls==1"
+          }
         },
         {
-          "id": "13-REQ-5.8",
+          "id": "REQ-5.8",
           "pattern": "state_driven",
           "condition": "the sandbox is unavailable or closed",
-          "system": "sandbox attach package",
           "action": "answer Tools, Sync and Export without making any RPC",
-          "contract": "an error matching ErrUnavailable when the sandbox is unavailable, and an error matching ErrClosed when it is closed"
+          "contract": "an error matching ErrUnavailable when the sandbox is unavailable, and an error matching ErrClosed when it is closed",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "two sandboxes attached to counting fake Agent servers: one made unavailable by a Call answered with codes.Internal, one Closed"
+            ],
+            "pseudocode": "for op in [Tools,Sync,Export]: assert errors.Is(op(unavail), ErrUnavailable); assert errors.Is(op(closed), ErrClosed)\nassert fakeU.counts == beforeU && fakeC.counts == beforeC"
+          }
         }
       ]
     },
     {
-      "id": "13-REQ-6",
+      "id": "REQ-6",
       "title": "Proxy tool definitions",
       "rationale": "A proxy promises the model the agent's behaviour under the host's schemas, so the definitions must be the host's own and must match the agent's exactly.",
       "criteria": [
         {
-          "id": "13-REQ-6.1",
+          "id": "REQ-6.1",
           "pattern": "event_driven",
           "condition": "Sandbox.Tools(ctx, opts) is called on a live sandbox",
           "system": "sandbox attach package",
           "action": "send the Tools RPC with opts, build the host's own tools.All definitions with the same options over a throwaway workspace, and compare the agent's tool names (same set, same order) and per-tool digests with the host's",
-          "contract": "on a match, returns one proxy tool for each tool that tools.All returns, in tools.All order, and nil"
+          "contract": "on a match, returns one proxy tool for each tool that tools.All returns, in tools.All order, and nil",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "TMPDIR isolated",
+              "a local sandbox with a synced tar of a small tree",
+              "the host's tools.All built with the same options over a separate temp workspace"
+            ],
+            "pseudocode": "proxies,err = sb.Tools(ctx, ToolOptions{}); host = tools.All({Workspace:tmpWS})\nassert err==nil && len(proxies)==len(host)\nfor i: p,h = proxies[i],host[i]; assert p.Name==h.Name && p.Description==h.Description && p.Label==h.Label && equal(p.PromptGuidelines,h.PromptGuidelines) && p.Builtin==h.Builtin && p.ExecutionMode==h.ExecutionMode\n  assert mustJSON(p.InputSchema)==mustJSON(h.InputSchema) && mustJSON(p.OutputSchema)==mustJSON(h.OutputSchema)\n  assert (p.PrepareArguments!=nil)==(h.PrepareArguments!=nil); assert p.Handler==nil && p.ReachableTools==nil && !p.Terminating && p.Execute!=nil\nsb.Close(ctx); for p: assert p.Execute(ctx,'{}').Error=='sandbox_unavailable'"
+          }
         },
         {
-          "id": "13-REQ-6.2",
+          "id": "REQ-6.2",
           "pattern": "ubiquitous",
           "system": "definition digest function",
-          "action": "for any two core.Tool values, return equal digests exactly when their name, description, input schema JSON, output schema JSON, prompt guidelines, Builtin flag and execution mode are all equal. A single function, shared by the host and the agent, computes the digest as SHA-256 over those fields"
+          "action": "for any two core.Tool values, return equal digests exactly when their name, description, input schema JSON, output schema JSON, prompt guidelines, Builtin flag and execution mode are all equal. A single function, shared by the host and the agent, computes the digest as SHA-256 over those fields",
+          "contract": "an exact copy and a copy differing only outside the seven fields have the equal digest; a copy differing in any one of the seven fields has a different digest; the host's digest of every tools.All value equals the agent's digest of the same value (same function)",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "the shared digest function",
+              "a seeded generator of core.Tool values built from random strings, random schema.Object trees, random guideline slices, a random Builtin flag and a random ExecutionMode"
+            ],
+            "pseudocode": "for i in 0..1000: t = genTool(r)\n  assert digest(t)==digest(clone(t)); assert digest(t)==digest(withOtherExecute(t))\n  for f in [Name,Description,InputSchema,OutputSchema,PromptGuidelines,Builtin,ExecutionMode]: assert digest(t)!=digest(mutate(t,f,r))"
+          }
         },
         {
-          "id": "13-REQ-6.3",
+          "id": "REQ-6.3",
           "pattern": "unwanted",
           "condition": "the agent's tool names, their order, or any per-tool digest differ from the host's",
           "system": "sandbox attach package",
           "action": "refuse to return proxy tools; the sandbox stays live",
-          "contract": "Tools returns nil and an error for which errors.Is(err, ErrToolMismatch) is true, whose message names each differing tool and both the agent version and the host version"
+          "contract": "Tools returns nil and an error for which errors.Is(err, ErrToolMismatch) is true, whose message names each differing tool and both the agent version and the host version",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a fake Agent server whose Hello reports Version v9.9.9 and whose Tools response is configurable"
+            ],
+            "pseudocode": "for tc in [alterDigest('read_file'), swap('edit_file','write_file'), drop('find_references')]: fake.tools = tc.resp\n  tl,err = sb.Tools(ctx,{}); assert tl==nil && errors.Is(err,ErrToolMismatch)\n  assert containsAll(err.Error(), tc.names..., 'v9.9.9', hostVersion())\n  n=fake.sync; sb.Sync(ctx,Tar{R:emptyTar}); assert fake.sync==n+1"
+          }
         },
         {
-          "id": "13-REQ-6.4",
+          "id": "REQ-6.4",
           "pattern": "ubiquitous",
           "system": "proxy tool",
-          "action": "copy Name, Description, InputSchema, OutputSchema, PromptGuidelines, Builtin, ExecutionMode, PrepareArguments and Label from the host's tools.All value, so that InputSchema and OutputSchema marshal to JSON byte-identical to the tools.All counterpart's. Handler and ReachableTools are left nil, Terminating false, and Execute set to the remote call, keeping no Execute closure from the host's tools.All"
+          "action": "copy Name, Description, InputSchema, OutputSchema, PromptGuidelines, Builtin, ExecutionMode, PrepareArguments and Label from the host's tools.All value, so that InputSchema and OutputSchema marshal to JSON byte-identical to the tools.All counterpart's. Handler and ReachableTools are left nil, Terminating false, and Execute set to the remote call, keeping no Execute closure from the host's tools.All",
+          "check": {
+            "same_as": "REQ-6.1"
+          }
         },
         {
-          "id": "13-REQ-6.5",
+          "id": "REQ-6.5",
           "pattern": "event_driven",
           "condition": "Sandbox.Tools is called a second time with options equal to the first call's",
           "system": "sandbox attach package",
           "action": "return proxy tools equivalent to the first call's, with the same names, order and definition fields",
-          "contract": "returns the tool slice and nil"
+          "contract": "returns the tool slice and nil",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "TMPDIR isolated",
+              "a local sandbox on which Tools(ctx, ToolOptions{}) has returned the first slice"
+            ],
+            "pseudocode": "a,_ = sb.Tools(ctx,{}); b,err = sb.Tools(ctx,{}); assert err==nil && sameDefinitions(a,b)\nc,err = sb.Tools(ctx,{DisableSpill:true}); assert c==nil && errors.Is(err,ErrToolsConfigured)\nr = byName(a,'execute').Execute(ctx, `{\"command\":\"yes x | head -c 400000\"}`); assert r.Metadata!=nil && r.Metadata.SpillPath!=''"
+          }
         },
         {
-          "id": "13-REQ-6.6",
+          "id": "REQ-6.6",
           "pattern": "unwanted",
           "condition": "Sandbox.Tools is called a second time with options different from the first call's",
           "system": "sandbox attach package",
           "action": "refuse without reconfiguring the agent",
-          "contract": "returns nil and an error for which errors.Is(err, ErrToolsConfigured) is true"
+          "contract": "returns nil and an error for which errors.Is(err, ErrToolsConfigured) is true",
+          "check": {
+            "same_as": "REQ-6.5"
+          }
         },
         {
-          "id": "13-REQ-6.7",
+          "id": "REQ-6.7",
           "pattern": "ubiquitous",
           "system": "proxy tool",
-          "action": "allow concurrent Execute calls from multiple goroutines on the same or different proxy tools without serialising them on the host and without data races under `go test -race`, so that each call receives its own result"
+          "action": "allow concurrent Execute calls from multiple goroutines on the same or different proxy tools without serialising them on the host and without data races under `go test -race`, so that each call receives its own result",
+          "contract": "every read_file result's Text contains its own file's index and every execute result's Text contains its own i; the 8 sleep calls finish in under 4 seconds in total; the race detector reports no data race",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "TMPDIR isolated",
+              "a local sandbox synced with files f0.txt..f15.txt whose contents are their indexes",
+              "the test run under go test -race"
+            ],
+            "pseudocode": "var wg; for i in 0..31: go { r = rf.Execute(ctx, path(i%16)); assert contains(r.Text, str(i%16)); e = ex.Execute(ctx, cmd('echo '+i)); assert contains(e.Text, str(i)) }\nstart=now(); parallel(8, ex.Execute(ctx, cmd('sleep 1'))); assert since(start) < 4s"
+          }
         }
       ]
     },
     {
-      "id": "13-REQ-7",
+      "id": "REQ-7",
       "title": "Proxy tool execution",
       "rationale": "A remote call must look to the driver exactly like a local one, and treat the agent's output as untrusted under the project's wire invariant.",
+      "system": "proxy tool",
       "criteria": [
         {
-          "id": "13-REQ-7.1",
+          "id": "REQ-7.1",
           "pattern": "event_driven",
           "condition": "a proxy tool's Execute(ctx, input) is called on a live sandbox and the agent answers with a well-formed response",
-          "system": "proxy tool",
           "action": "send input verbatim as the CallRequest input, then build a core.ToolResult with OK, Error, Detail and Text copied verbatim. Data is decoded with json.Decoder.UseNumber so that re-encoding it yields the agent's bytes, Metadata is decoded into a *core.ToolMetadata (nil when empty), Terminate is false and Blocks is nil",
-          "contract": "returns that core.ToolResult"
+          "contract": "returns that core.ToolResult",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a fake Agent server that records CallRequest.Input and answers {ok:true, data:`{\"n\":12345678901234567890,\"s\":\"x\"}`, error:\"\", detail:\"d\", metadata:`{\"exit_code\":0}`, text:\"t\"}"
+            ],
+            "pseudocode": "in = []byte(`{ \"path\" :  \"a.txt\" }`); r = p.Execute(ctx,in)\nassert bytes.Equal(fake.lastInput, in); assert r.OK && r.Detail=='d' && r.Text=='t' && !r.Terminate && r.Blocks==nil\n_,isNum = r.Data['n'].(json.Number); assert isNum && mustJSON(r.Data)==fake.data\nassert r.Metadata!=nil\nfake.data,fake.md = nil,nil; r = p.Execute(ctx,in); assert r.Data==nil && r.Metadata==nil"
+          }
         },
         {
-          "id": "13-REQ-7.2",
+          "id": "REQ-7.2",
           "pattern": "unwanted",
           "condition": "the CallRequest for input would exceed MaxMessageBytes",
-          "system": "proxy tool",
           "action": "return without making an RPC and leave the sandbox live",
-          "contract": "core.ToolResult with OK=false and Error `arguments_too_large`"
+          "contract": "core.ToolResult with OK=false and Error `arguments_too_large`",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a counting fake Agent server and a proxy write_file"
+            ],
+            "pseudocode": "n=fake.calls; r = p.Execute(ctx, bigJSON(sandbox.MaxMessageBytes+1)); assert !r.OK && r.Error=='arguments_too_large' && fake.calls==n\nr = p.Execute(ctx, `{}`); assert fake.calls==n+1 && r.Error!='sandbox_unavailable'"
+          }
         },
         {
-          "id": "13-REQ-7.3",
+          "id": "REQ-7.3",
           "pattern": "unwanted",
           "condition": "the response's non-empty Data fails wire.Guard with wire.Limits{} or is not a JSON object, or its non-empty Metadata fails wire.Guard or does not decode into core.ToolMetadata",
-          "system": "proxy tool",
           "action": "treat the response as a transport failure and make the sandbox unavailable",
-          "contract": "core.ToolResult with OK=false, Error `sandbox_unavailable` and a Detail naming the malformed field"
+          "contract": "core.ToolResult with OK=false, Error `sandbox_unavailable` and a Detail naming the malformed field",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a fake Agent server whose CallResponse is configurable, one fresh sandbox per case"
+            ],
+            "pseudocode": "for tc in cases: sb,p = fresh(fake{resp:tc}); r = p.Execute(ctx,'{}')\n  assert !r.OK && r.Error=='sandbox_unavailable' && contains(r.Detail, tc.field)\n  _,err = sb.Tools(ctx,{}); assert errors.Is(err,ErrUnavailable)"
+          }
         },
         {
-          "id": "13-REQ-7.4",
+          "id": "REQ-7.4",
           "pattern": "unwanted",
           "condition": "the host context ends before or during the call",
-          "system": "proxy tool",
           "action": "return at once and leave the sandbox live. The agent's tool context is cancelled with the RPC, so the process group the call started inside the sandbox is killed",
-          "contract": "core.ToolResult equal to core.ErrResult(\"aborted\", \"Operation aborted\"); no process started by the call remains"
+          "contract": "core.ToolResult equal to core.ErrResult(\"aborted\", \"Operation aborted\"); no process started by the call remains",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a fake Agent server whose Call blocks until its context is done and records ctx.Err()"
+            ],
+            "pseudocode": "c,cancel = withCancel(); cancel(); n=fake.calls; assert DeepEqual(p.Execute(c,'{}'), core.ErrResult('aborted','Operation aborted')) && fake.calls==n\nc2,cancel2 = withCancel(); go r = p.Execute(c2,'{}'); <-fake.entered; sleep(100ms); cancel2(); assert DeepEqual(recvWithin(1s), core.ErrResult('aborted','Operation aborted'))\neventually(2s, fake.lastErr==context.Canceled); fake.block=false; assert p.Execute(bg,'{}').Error!='sandbox_unavailable'"
+          }
         },
         {
-          "id": "13-REQ-7.5",
+          "id": "REQ-7.5",
           "pattern": "unwanted",
           "condition": "the call meets a transport failure",
-          "system": "proxy tool",
           "action": "make the sandbox unavailable without retrying or reconnecting",
-          "contract": "core.ToolResult with OK=false, Error `sandbox_unavailable` and a Detail naming the cause; every later call on any proxy tool of that sandbox returns Error `sandbox_unavailable` without an RPC"
+          "contract": "core.ToolResult with OK=false, Error `sandbox_unavailable` and a Detail naming the cause; every later call on any proxy tool of that sandbox returns Error `sandbox_unavailable` without an RPC",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a counting fake Agent server whose Call returns gRPC status Unavailable once",
+              "two proxies, read_file and execute, from the same sandbox"
+            ],
+            "pseudocode": "fake.callErr = status.Error(codes.Unavailable,'pipe broke'); n=fake.calls\nr = rf.Execute(ctx,'{}'); assert !r.OK && r.Error=='sandbox_unavailable' && contains(r.Detail,'pipe broke')\nassert ex.Execute(ctx,'{}').Error=='sandbox_unavailable' && rf.Execute(ctx,'{}').Error=='sandbox_unavailable'\nassert fake.calls==n+1"
+          }
         },
         {
-          "id": "13-REQ-7.6",
+          "id": "REQ-7.6",
           "pattern": "unwanted",
           "condition": "Execute is called after the sandbox has been closed",
-          "system": "proxy tool",
           "action": "return without making an RPC",
-          "contract": "core.ToolResult with OK=false, Error `sandbox_unavailable` and Detail `sandbox closed`"
+          "contract": "core.ToolResult with OK=false, Error `sandbox_unavailable` and Detail `sandbox closed`",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a counting fake Agent server answering Call with {ok:false, error:\"unknown_tool\", detail:\"available: a, b\"}"
+            ],
+            "pseudocode": "r = p.Execute(ctx,'{}'); assert !r.OK && r.Error=='unknown_tool' && r.Detail=='available: a, b'\nn=fake.tools; sb.Tools(ctx,o); assert fake.tools==n+1\nsb.Close(ctx); n=fake.calls; r = p.Execute(ctx,'{}'); assert r.Error=='sandbox_unavailable' && r.Detail=='sandbox closed' && fake.calls==n"
+          }
         },
         {
-          "id": "13-REQ-7.7",
+          "id": "REQ-7.7",
           "pattern": "event_driven",
           "condition": "the agent answers a call with error `unknown_tool`",
-          "system": "proxy tool",
           "action": "pass the response through as the call's result and leave the sandbox live",
-          "contract": "core.ToolResult with OK=false, Error `unknown_tool` and the agent's Detail"
+          "contract": "core.ToolResult with OK=false, Error `unknown_tool` and the agent's Detail",
+          "check": {
+            "same_as": "REQ-7.6"
+          }
         }
       ]
     },
     {
-      "id": "13-REQ-8",
+      "id": "REQ-8",
       "title": "Tar sync and export",
       "rationale": "Tar, using only the standard library, is how this foundation puts a project into a sandbox and gets files out, and the same entry rules apply in both directions.",
       "criteria": [
         {
-          "id": "13-REQ-8.1",
+          "id": "REQ-8.1",
           "pattern": "unwanted",
           "condition": "a Tar.Path or an Export path is absolute, or contains a `..` component after path.Clean",
           "system": "sandbox attach package",
           "action": "refuse the operation before any byte moves; `\"\"` and `.` both name the workspace root and are accepted",
-          "contract": "Sync or Export returns a non-nil error naming the path, makes no RPC, and leaves the sandbox live"
+          "contract": "Sync or Export returns a non-nil error naming the path, makes no RPC, and leaves the sandbox live",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a counting fake Agent server"
+            ],
+            "pseudocode": "for p in ['/abs','../x','a/../../x']: _,err = sb.Sync(ctx,Tar{R:emptyTar,Path:p}); assert err!=nil && contains(err.Error(),p)\nfor p in ['/etc','..']: err = sb.Export(ctx,p,TarOut{W:io.Discard}); assert contains(err.Error(),p)\nassert fake.sync==0 && fake.export==0\nfor p in ['','.','a/../b']: sb.Sync(ctx,Tar{R:emptyTar,Path:p}); sb.Export(ctx,p,TarOut{W:io.Discard}); assert fake.sync==3 && fake.export==3"
+          }
         },
         {
-          "id": "13-REQ-8.2",
+          "id": "REQ-8.2",
           "pattern": "ubiquitous",
           "system": "tar entry rules",
-          "action": "for any tar stream, accept only regular files, directories, and symlinks whose target, resolved against the link's own directory, stays inside the target directory. Refuse an absolute entry name, an entry name with a `..` component, hard links, character and block devices, FIFOs, any other entry type, a symlink whose target leaves the target directory, and an entry whose path resolves through an existing symlink to a location outside. Clear the setuid, setgid and sticky bits of every accepted entry. The same function applies on the agent's extraction and on the host's export validation"
+          "action": "for any tar stream, accept only regular files, directories, and symlinks whose target, resolved against the link's own directory, stays inside the target directory. Refuse an absolute entry name, an entry name with a `..` component, hard links, character and block devices, FIFOs, any other entry type, a symlink whose target leaves the target directory, and an entry whose path resolves through an existing symlink to a location outside. Clear the setuid, setgid and sticky bits of every accepted entry. The same function applies on the agent's extraction and on the host's export validation",
+          "contract": "both paths accept the stream if and only if an independent oracle classifies every entry as allowed; when refused, both paths stop at the same first forbidden entry and name it; every accepted file or directory ends with mode & (setuid|setgid|sticky) == 0 on disk and in the validated header; no file is created outside the target directory",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "the shared entry-rules function applied to a fresh target directory per stream",
+              "a seeded generator of tar entry sequences mixing regular files, directories, inside symlinks, outside symlinks (absolute and relative), hard links, char and block devices, FIFOs, unknown typeflags, absolute names, names with `..`, and names written through an earlier symlink, with random modes including setuid, setgid and sticky",
+              "TMPDIR isolated and a fresh local sandbox per case",
+              "a fake Agent server whose ExportTar streams a given tar"
+            ],
+            "pseudocode": "for i in 0..500: es = genEntries(r); tarb = build(es)\n  e1 = extract(tmpA, tarb); e2 = validateExport(tarb, io.Discard)\n  ok = oracle(es); assert (e1==nil)==ok && (e2==nil)==ok\n  if !ok: assert firstBad(es) named in e1 and e2\n  for f in walk(tmpA): assert mode(f)&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky)==0\n  assert outsideUnchanged()\nfor tc in hostile: _,err = fresh().Sync(ctx,Tar{R:tc.tar}); assert errors.Is(err,ErrUnsafeArchive) && contains(err.Error(), tc.entry)\n  fake.export = tc.tar; err = fsb.Export(ctx,'',TarOut{W:&buf}); assert errors.Is(err,ErrUnsafeArchive)\nok = tarOf(dir('sub/'), file('sub/file'), symlink('in','sub/file')); assert Sync ok && Export ok"
+          }
         },
         {
-          "id": "13-REQ-8.3",
+          "id": "REQ-8.3",
           "pattern": "ubiquitous",
           "system": "tar extraction",
-          "action": "perform every extraction write through an os.Root opened at the target directory, so that no write follows a symlink out of it, including an entry written through a symlink extracted earlier from the same stream"
+          "action": "perform every extraction write through an os.Root opened at the target directory, so that no write follows a symlink out of it, including an entry written through a symlink extracted earlier from the same stream",
+          "contract": "the extractor refuses esc/pwn.txt; the direct writes return non-nil errors (os.Root refuses the escape); <outside dir> contains no pwn.txt, pwn2.txt or d after all three attempts",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a target directory containing a pre-existing symlink esc -> <outside dir>",
+              "the extractor's low-level root writer callable in-package without the entry-rules check"
+            ],
+            "pseudocode": "os.Symlink(outside, filepath.Join(target,'esc'))\nassert extract(target, tarOf(file('esc/pwn.txt'))) != nil\nroot,_ = os.OpenRoot(target); assert writeFileVia(root,'esc/pwn2.txt') != nil; assert root.MkdirAll('esc/d',0o755) != nil\nassert entries(outside) == 0"
+          }
         },
         {
-          "id": "13-REQ-8.4",
+          "id": "REQ-8.4",
           "pattern": "event_driven",
           "condition": "Sync(ctx, Tar{R, Path, Replace}) is called on a live sandbox and every entry is accepted",
           "system": "sandbox attach package and agent service",
           "action": "stream a start chunk carrying Path and Replace, then R in data chunks of at most 1 MiB. The agent extracts entries as the bytes arrive and creates missing parent directories; with Replace, it first removes the existing contents of Path and keeps Path (or creates it when absent)",
-          "contract": "returns SyncResult{Files: number of regular files written, Bytes: bytes of file content written} and nil"
+          "contract": "returns SyncResult{Files: number of regular files written, Bytes: bytes of file content written} and nil",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "TMPDIR isolated and a local sandbox whose workspace already holds keep.txt and sub/old.txt"
+            ],
+            "pseudocode": "res,err = sb.Sync(ctx,Tar{R:tarOf(file('a/b/c.txt','12345'),file('d.txt','abc'),dir('e/'))}); assert err==nil && res==SyncResult{2,8}\nsb.Sync(ctx,Tar{R:tarOf(file('new.txt')),Path:'sub',Replace:true}); assert !exists(ws+'/sub/old.txt') && exists(ws+'/sub/new.txt') && exists(ws+'/keep.txt')\nsb.Sync(ctx,Tar{R:tarOf(file('x.txt')),Path:'fresh',Replace:true}); assert exists(ws+'/fresh/x.txt')\nsb.Sync(ctx,Tar{R:tarOf(file('more.txt')),Path:'sub'}); assert exists(ws+'/sub/new.txt') && exists(ws+'/sub/more.txt')"
+          }
         },
         {
-          "id": "13-REQ-8.5",
+          "id": "REQ-8.5",
           "pattern": "unwanted",
           "condition": "the synced stream contains an entry that the entry rules refuse, or a malformed entry",
           "system": "agent service",
           "action": "stop the sync at that entry and keep the entries already extracted; the sandbox stays live",
-          "contract": "the agent returns gRPC InvalidArgument naming the entry; Sync returns an error for which errors.Is(err, ErrUnsafeArchive) is true and whose message names the entry"
+          "contract": "the agent returns gRPC InvalidArgument naming the entry; Sync returns an error for which errors.Is(err, ErrUnsafeArchive) is true and whose message names the entry",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a served agent reached by a raw client",
+              "TMPDIR isolated and a local sandbox"
+            ],
+            "pseudocode": "t = tarOf(file('a.txt'), file('../evil'), file('z.txt'))\n_,err = rawSync(raw,t); assert status.Code(err)==codes.InvalidArgument && contains(status.Convert(err).Message(),'../evil')\n_,err = sb.Sync(ctx,Tar{R:t}); assert errors.Is(err,ErrUnsafeArchive) && contains(err.Error(),'../evil')\nassert exists(ws+'/a.txt') && !exists(ws+'/z.txt'); assert rf.Execute(ctx, path('a.txt')).OK"
+          }
         },
         {
-          "id": "13-REQ-8.6",
+          "id": "REQ-8.6",
           "pattern": "unwanted",
           "condition": "reading R returns an error, or ctx is cancelled, during Sync",
           "system": "sandbox attach package",
           "action": "cancel the SyncTar RPC and leave the sandbox live",
-          "contract": "Sync returns a non-nil error wrapping the read error or ctx.Err()"
+          "contract": "Sync returns a non-nil error wrapping the read error or ctx.Err()",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a fake Agent server whose SyncTar records whether its stream context was cancelled"
+            ],
+            "pseudocode": "_,err = sb.Sync(ctx,Tar{R:io.MultiReader(partialTar2MiB, errReader{errBoom})}); assert errors.Is(err,errBoom); eventually(fake.syncCtxCancelled)\nc,cancel = context.WithTimeout(bg,100ms); pr,_ = io.Pipe(); _,err = sb.Sync(c,Tar{R:pr}); assert errors.Is(err,context.Canceled) || errors.Is(err, context.DeadlineExceeded) per ctx.Err()\n_,err = sb.Sync(bg,Tar{R:validTar}); assert err==nil"
+          }
         },
         {
-          "id": "13-REQ-8.7",
+          "id": "REQ-8.7",
           "pattern": "event_driven",
           "condition": "Export(ctx, path, TarOut{W}) is called on a live sandbox for an existing path",
           "system": "agent service and sandbox attach package",
           "action": "have the agent archive the subtree verbatim, including hidden and ignored files, storing symlinks as symlinks without following them, skipping entry types other than regular files, directories and symlinks, and naming entries relative to path (a path naming a single file archives that file). The host then reads the stream with archive/tar, applies the entry rules, and writes each validated entry to W",
-          "contract": "returns nil after W has received a tar stream of every validated entry"
+          "contract": "returns nil after W has received a tar stream of every validated entry",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "TMPDIR isolated and a local sandbox on Unix whose workspace holds out/result.txt, out/.hidden, out/.gitignore listing *.log, out/build.log, out/link -> result.txt, and a FIFO out/pipe"
+            ],
+            "pseudocode": "var buf; err = sb.Export(ctx,'out',TarOut{W:&buf}); assert err==nil\nhs = readTar(buf); assert names(hs) ⊇= {'result.txt','.hidden','.gitignore','build.log','link'} and no 'pipe' and no 'out/' prefix\nassert hs['link'].Typeflag==tar.TypeSymlink && hs['link'].Linkname=='result.txt'\nbuf2; sb.Export(ctx,'out/result.txt',TarOut{W:&buf2}); assert names(readTar(buf2))==['result.txt']"
+          }
         },
         {
-          "id": "13-REQ-8.8",
+          "id": "REQ-8.8",
           "pattern": "unwanted",
           "condition": "the Export path does not exist in the workspace, or the exported stream contains an entry that the entry rules refuse",
           "system": "sandbox attach package",
           "action": "stop the export and leave the sandbox live",
-          "contract": "for a missing path, the agent returns gRPC NotFound and Export returns a non-nil error naming the path; for a refused entry, Export returns an error for which errors.Is(err, ErrUnsafeArchive) is true and writes nothing from that entry onward to W"
+          "contract": "for a missing path, the agent returns gRPC NotFound and Export returns a non-nil error naming the path; for a refused entry, Export returns an error for which errors.Is(err, ErrUnsafeArchive) is true and writes nothing from that entry onward to W",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a served agent reached by a raw client",
+              "TMPDIR isolated and a local sandbox",
+              "a fake Agent server whose ExportTar streams good.txt, then symlink bad -> /etc/passwd, then after.txt"
+            ],
+            "pseudocode": "s = raw.ExportTar(ctx,{Path:'missing'}); _,err = s.Recv(); assert status.Code(err)==codes.NotFound\nerr = sb.Export(ctx,'missing',TarOut{W:io.Discard}); assert contains(err.Error(),'missing')\nerr = fsb.Export(ctx,'',TarOut{W:&buf}); assert errors.Is(err,ErrUnsafeArchive); assert namesReadable(buf)==['good.txt']\n_,err = sb.Tools(ctx,{}); assert err==nil"
+          }
         }
       ]
     },
     {
-      "id": "13-REQ-9",
+      "id": "REQ-9",
       "title": "The local provider",
       "rationale": "An in-process provider exercises the production protocol and transport in tests, without claiming any isolation that it lacks.",
       "criteria": [
         {
-          "id": "13-REQ-9.1",
+          "id": "REQ-9.1",
           "pattern": "ubiquitous",
           "system": "local.Unisolated()",
-          "action": "report Capabilities{Provider: \"local\", Isolation: IsolationNone, Network: [NetworkUnrestricted]}, with no boundable Resources field, Image false, Workdir false, and Notes stating that tools run in the embedder's process with its privileges"
+          "action": "report Capabilities{Provider: \"local\", Isolation: IsolationNone, Network: [NetworkUnrestricted]}, with no boundable Resources field, Image false, Workdir false, and Notes stating that tools run in the embedder's process with its privileges",
+          "contract": "Provider is \"local\", Isolation is IsolationNone and Network is exactly [NetworkUnrestricted]; no Resources field is boundable, Image is false and Workdir is false; Notes is non-empty and states that tools run in the embedder's process with its privileges (contains `process` and `privileges`)",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "local.Unisolated()"
+            ],
+            "pseudocode": "c = local.Unisolated().Capabilities(); assert c.Provider=='local' && c.Isolation==IsolationNone && slices.Equal(c.Network,[NetworkUnrestricted])\nassert c.Resources == zero && !c.Image && !c.Workdir && contains(c.Notes,'process') && contains(c.Notes,'privileges')"
+          }
         },
         {
-          "id": "13-REQ-9.2",
+          "id": "REQ-9.2",
           "pattern": "unwanted",
           "condition": "Create receives a Spec with Network.Mode NetworkNone (including the zero Spec) or NetworkAllowlist, any non-zero Resources field, a non-empty Image, a non-empty Workdir, or any Spec.Provider key",
           "system": "local provider",
           "action": "refuse through CheckSpec, or through its own option check for Spec.Provider keys, before creating any directory",
-          "contract": "Create returns a nil Sandbox and an error naming provider \"local\" and the offending field or key; for capability refusals, errors.Is(err, ErrUnsupported) is true; no directory is created under agentkit-sandbox-local"
+          "contract": "Create returns a nil Sandbox and an error naming provider \"local\" and the offending field or key; for capability refusals, errors.Is(err, ErrUnsupported) is true; no directory is created under agentkit-sandbox-local",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "TMPDIR isolated"
+            ],
+            "pseudocode": "for tc in cases: sb,err = local.Unisolated().Create(ctx, tc.spec); assert sb==nil && contains(err.Error(),`\"local\"`) && contains(err.Error(), tc.field)\n  if tc.capability: assert errors.Is(err,ErrUnsupported)\nassert entries(localRoot) == 0"
+          }
         },
         {
-          "id": "13-REQ-9.3",
+          "id": "REQ-9.3",
           "pattern": "event_driven",
           "condition": "Create accepts a Spec",
           "system": "local provider",
           "action": "create <os.TempDir()>/agentkit-sandbox-local/<id>/, where <id> is 16 random hex characters, containing workspace/, home/ and tmp/ each with mode 0700, and a marker file recording the creating process's pid, the labels, the creation time and the TTL",
-          "contract": "Create returns a live Sandbox whose ID() is <id> and whose Agent().Workdir is the resolved workspace/ path"
+          "contract": "Create returns a live Sandbox whose ID() is <id> and whose Agent().Workdir is the resolved workspace/ path",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "TMPDIR isolated",
+              "Spec{Network: Unrestricted, Labels: {\"team\": \"core\"}}"
+            ],
+            "pseudocode": "sb,err = Create(ctx, spec); assert err==nil && regexp('^[0-9a-f]{16}$').MatchString(sb.ID())\nd = filepath.Join(os.TempDir(),'agentkit-sandbox-local',sb.ID()); for s in [workspace,home,tmp]: assert stat(d/s).Mode().Perm()==0o700\nm = readMarker(d); assert m.PID==os.Getpid() && m.Labels['team']=='core' && within(m.Created) && m.TTL==time.Hour\nassert sb.Agent().Workdir == evalSymlinks(d+'/workspace'); assert sb.Close(ctx)==nil && !exists(d)"
+          }
         },
         {
-          "id": "13-REQ-9.4",
+          "id": "REQ-9.4",
           "pattern": "ubiquitous",
           "system": "local provider",
-          "action": "give the agent the environment Spec.Env, plus PATH, LANG and TERM copied from the host for each one Spec.Env lacks, plus HOME set to the sandbox's home/ and TMPDIR set to the sandbox's tmp/"
+          "action": "give the agent the environment Spec.Env, plus PATH, LANG and TERM copied from the host for each one Spec.Env lacks, plus HOME set to the sandbox's home/ and TMPDIR set to the sandbox's tmp/",
+          "contract": "the output contains FOO=bar, TERM=dumb (Spec.Env wins), LANG=C.UTF-8 and the host's PATH; HOME is <sandbox dir>/home and TMPDIR is <sandbox dir>/tmp; HOST_SECRET does not appear",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "TMPDIR isolated",
+              "host env with LANG=C.UTF-8, TERM=xterm and HOST_SECRET=1 set via t.Setenv",
+              "Spec.Env {FOO: bar, TERM: dumb}"
+            ],
+            "pseudocode": "t.Setenv('LANG','C.UTF-8'); t.Setenv('TERM','xterm'); t.Setenv('HOST_SECRET','1')\nsb = Create(ctx, Spec{Network:unrestricted, Env:{'FOO':'bar','TERM':'dumb'}}); out = exec(sb,'execute','env')\nassert containsAll(out,'FOO=bar','TERM=dumb','LANG=C.UTF-8','PATH='+os.Getenv('PATH'),'HOME='+d+'/home','TMPDIR='+d+'/tmp') && !contains(out,'HOST_SECRET')"
+          }
         },
         {
-          "id": "13-REQ-9.5",
+          "id": "REQ-9.5",
           "pattern": "ubiquitous",
           "system": "local provider",
-          "action": "run the agent service in-process over two os.Pipe pairs wrapped by the same net.Conn adapter that agentkit-sandboxd uses, and apply no confinement of any kind"
+          "action": "run the agent service in-process over two os.Pipe pairs wrapped by the same net.Conn adapter that agentkit-sandboxd uses, and apply no confinement of any kind",
+          "contract": "bytes written on one adapter end are read on the other, Close of one end yields io.EOF on the peer, and LocalAddr and RemoteAddr are non-nil; both packages' dependency lists include the same adapter package; the execute call returns OK true with the host file's content (no confinement)",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the shared stdio net.Conn adapter package",
+              "TMPDIR isolated and a local sandbox",
+              "a host file outside the sandbox workspace"
+            ],
+            "pseudocode": "a,b = adapterPair(os.Pipe(),os.Pipe()); a.Write('hi'); assert readN(b,2)=='hi'; a.Close(); _,err = b.Read(buf); assert err==io.EOF; assert a.LocalAddr()!=nil\nassert contains(goListDeps('./sandbox/local'), adapterPkg) && contains(goListDeps('./sandbox/cmd/agentkit-sandboxd'), adapterPkg)\nr = exec(sb,'execute','cat '+hostFile); assert r.OK && contains(r.Text, hostContent)"
+          }
         },
         {
-          "id": "13-REQ-9.6",
+          "id": "REQ-9.6",
           "pattern": "event_driven",
           "condition": "Close is called on a local sandbox",
           "system": "local provider",
           "action": "stop the in-process agent and remove the sandbox's directory",
-          "contract": "Close returns nil and <os.TempDir()>/agentkit-sandbox-local/<id> no longer exists"
+          "contract": "Close returns nil and <os.TempDir()>/agentkit-sandbox-local/<id> no longer exists",
+          "check": {
+            "same_as": "REQ-9.3"
+          }
         },
         {
-          "id": "13-REQ-9.7",
+          "id": "REQ-9.7",
           "pattern": "event_driven",
           "condition": "Reap(ctx) is called",
           "system": "local provider",
           "action": "remove every sandbox directory under agentkit-sandbox-local whose marker names a pid that is not running (checked with signal 0 on Unix). On a platform with no liveness probe, remove nothing",
-          "contract": "returns the ids it removed and nil; directories of running pids are untouched"
+          "contract": "returns the ids it removed and nil; directories of running pids are untouched",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "TMPDIR isolated on Unix",
+              "two local sandboxes A and B created and not closed",
+              "A's marker rewritten with the pid of a child process that has already exited"
+            ],
+            "pseudocode": "a,b = Create(...),Create(...); c = exec.Command('true'); c.Run(); rewriteMarkerPID(a, c.ProcessState.Pid())\nids,err = local.Unisolated().Reap(ctx); assert err==nil && ids==[a.ID()]\nassert !exists(dir(a)) && exists(dir(b))"
+          }
         },
         {
-          "id": "13-REQ-9.8",
+          "id": "REQ-9.8",
           "pattern": "optional",
           "condition": "a test uses the local provider's unexported or internal connection-cut hook",
           "system": "local provider",
-          "action": "close the pipe connection between host and agent at that moment, including while a Call is in flight, so that the host sees a transport failure"
+          "action": "close the pipe connection between host and agent at that moment, including while a Call is in flight, so that the host sees a transport failure",
+          "check": {
+            "same_as": "PATH-4"
+          }
         }
       ]
     },
     {
-      "id": "13-REQ-10",
+      "id": "REQ-10",
       "title": "Integration, dependencies and build gates",
       "rationale": "The driver, guard and code mode must work over proxy tools unchanged, and the new dependencies and code must stay within the module's existing gates.",
       "criteria": [
         {
-          "id": "13-REQ-10.1",
+          "id": "REQ-10.1",
           "pattern": "event_driven",
           "condition": "agentkit.New is called with proxy tools that include execute or run_command and a nil Config.Guard",
           "system": "agentkit.New",
           "action": "refuse the configuration exactly as it does for local shell tools",
-          "contract": "returns a nil *Agent and an error for which errors.Is(err, core.ErrUnguardedExecute) is true"
+          "contract": "returns a nil *Agent and an error for which errors.Is(err, core.ErrUnguardedExecute) is true",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "TMPDIR isolated and a local sandbox with proxy tools",
+              "provider/faux as the provider"
+            ],
+            "pseudocode": "a,err = agentkit.New(Config{Provider:faux.New(), Model:m, Tools:proxies}); assert a==nil && errors.Is(err, core.ErrUnguardedExecute)\na,err = agentkit.New(Config{..., Tools:[byName(proxies,'run_command')]}); assert a==nil && errors.Is(err, core.ErrUnguardedExecute)\na,err = agentkit.New(Config{..., Tools:proxies, Guard: guardFn}); assert a!=nil && err==nil"
+          }
         },
         {
-          "id": "13-REQ-10.2",
+          "id": "REQ-10.2",
           "pattern": "event_driven",
           "condition": "a provider/faux-driven run through agentkit.New executes a code-mode script over proxy read_file, search_files and execute, and Config.Guard blocks one of the script's calls",
           "system": "agentkit driver with codemode over proxy tools",
           "action": "return a tool error to the script for the blocked call and complete its other calls in the sandbox",
-          "contract": "the script receives an error result for the blocked call; every other nested call returns ok; every nested call's tool execution events name the code_mode call as parent"
+          "contract": "the script receives an error result for the blocked call; every other nested call returns ok; every nested call's tool execution events name the code_mode call as parent",
+          "check": {
+            "same_as": "PATH-2"
+          }
         },
         {
-          "id": "13-REQ-10.3",
+          "id": "REQ-10.3",
           "pattern": "ubiquitous",
           "system": "proxy tools over local",
-          "action": "make every file effect of a proxy tool (write_file, edit_file, execute and run_command writing a file) land under the sandbox's workspace and nothing under the host process's working directory"
+          "action": "make every file effect of a proxy tool (write_file, edit_file, execute and run_command writing a file) land under the sandbox's workspace and nothing under the host process's working directory",
+          "contract": "each call returns OK true; w.txt (with the edit applied), e.txt and r.txt exist under the sandbox's workspace; the host directory is still empty",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "TMPDIR isolated",
+              "the test process chdir'd (t.Chdir) into an empty host directory",
+              "a local sandbox with proxy tools"
+            ],
+            "pseudocode": "t.Chdir(hostDir)\nassert exec(p,'write_file',{path:'w.txt',content:'a'}).OK && exec(p,'edit_file',{path:'w.txt',...'a'->'b'}).OK\nassert exec(p,'execute',{command:'echo e > e.txt'}).OK && exec(p,'run_command',{argv:['sh','-c','echo r > r.txt']}).OK\nfor f in ['w.txt','e.txt','r.txt']: assert exists(ws+'/'+f); assert read(ws+'/w.txt')=='b'\nassert entries(hostDir)==0"
+          }
         },
         {
-          "id": "13-REQ-10.4",
+          "id": "REQ-10.4",
           "pattern": "ubiquitous",
           "system": "internal/toolconformance",
-          "action": "hold the spec 06 conformance case table (each built-in tool's success Data validated against its OutputSchema, and its documented error codes). The tools tests run it against tools.All with unchanged outcomes, and the sandbox tests run it against proxy tools over local, where every case passes"
+          "action": "hold the spec 06 conformance case table (each built-in tool's success Data validated against its OutputSchema, and its documented error codes). The tools tests run it against tools.All with unchanged outcomes, and the sandbox tests run it against proxy tools over local, where every case passes",
+          "contract": "every case passes against tools.All, and the set of case names equals the TS-06 cases tools/conformance_test.go held before the move; every case passes against the proxy tools, including Data validated against each OutputSchema on success and each documented error code",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "internal/toolconformance exporting the spec 06 case table and a runner that takes a builder from a workspace tree to []core.Tool"
+            ],
+            "pseudocode": "// tools/conformance_test.go\ntoolconformance.Run(t, func(t, root) []core.Tool { return tools.All({Workspace:ws(root), Ignore:tools.NoGlobalExcludes()}) })\n// sandbox/..._test.go\ntoolconformance.Run(t, func(t, root) []core.Tool { sb = localCreate(t); sb.Sync(ctx,Tar{R:tarDir(root)}); return sb.Tools(ctx,{}) })\nassert toolconformance.CaseNames() ⊇ previousTS06Names"
+          }
         },
         {
-          "id": "13-REQ-10.5",
+          "id": "REQ-10.5",
           "pattern": "ubiquitous",
           "system": "root go.mod",
-          "action": "list google.golang.org/grpc v1.64.1 and google.golang.org/protobuf v1.36.11 as direct requirements and gain no other direct requirement, keep golang.org/x/net indirect, leave the output of `go list -m all` unchanged, and approve both modules in internal/policy approvedDeps with a reason each"
+          "action": "list google.golang.org/grpc v1.64.1 and google.golang.org/protobuf v1.36.11 as direct requirements and gain no other direct requirement, keep golang.org/x/net indirect, leave the output of `go list -m all` unchanged, and approve both modules in internal/policy approvedDeps with a reason each",
+          "contract": "go.mod requires google.golang.org/grpc v1.64.1 and google.golang.org/protobuf v1.36.11 without `// indirect`, and golang.org/x/net only as indirect; approvedDeps contains both module paths, each preceded by a non-empty comment, and validateAllowlist passes on the direct set; the direct set equals the pre-spec direct set plus exactly those two modules; the `go list -m all` output equals the snapshot recorded from the pre-spec tree under internal/policy/testdata",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "internal/policy tests reading go.mod, deps_test.go and the go toolchain"
+            ],
+            "pseudocode": "req = parseGoMod(); assert req['google.golang.org/grpc']=={v1.64.1,direct} && req['google.golang.org/protobuf']=={v1.36.11,direct} && req['golang.org/x/net'].indirect\nfor m in [grpc,protobuf]: assert inApprovedDepsWithComment(m)\ndirect = goList(direct); assert validateAllowlist(direct, approvedDeps)==nil && set(direct)==preSpecDirect ∪ {grpc,protobuf}\nassert goList('-m','all') == read('internal/policy/testdata/go-list-m-all.txt')"
+          }
         },
         {
-          "id": "13-REQ-10.6",
+          "id": "REQ-10.6",
           "pattern": "ubiquitous",
           "system": "root module",
-          "action": "pass the cross-target gate (build and vet for linux/amd64, linux/arm64, darwin/arm64 and windows/amd64 with cgo off, and a host build with cgo on) and TS-12-14's budget of 20,000 non-test Go lines with the generated sandboxpb code counted, so that `make check` exits 0"
+          "action": "pass the cross-target gate (build and vet for linux/amd64, linux/arm64, darwin/arm64 and windows/amd64 with cgo off, and a host build with cgo on) and TS-12-14's budget of 20,000 non-test Go lines with the generated sandboxpb code counted, so that `make check` exits 0",
+          "contract": "the four cross targets build and vet with CGO_ENABLED=0 and the host builds and vets with CGO_ENABLED=1; no go.mod exists under sandbox/, and the code-line counter run over sandbox/internal/sandboxpb counts more than zero lines; the root module's counted lines are at most 20,000; `make check` exits 0",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the sandbox tree, including sandbox/internal/sandboxpb, inside the root module with no nested go.mod"
+            ],
+            "pseudocode": "assert !exists('sandbox/go.mod'); assert codeLines(t, root+'/sandbox/internal/sandboxpb', true) > 0\nassert codeLines(t, root, true) <= 20000\nrun TestCrossTargetBuildAndVet, TestHostCgoBuildAndVet, TestMakeCheckSucceeds_TS09_20 -> pass"
+          }
         },
         {
-          "id": "13-REQ-10.7",
+          "id": "REQ-10.7",
           "pattern": "ubiquitous",
           "system": "repository layout",
-          "action": "place all new production code under sandbox/, have only examples/sandbox and test helpers under internal/ import sandbox packages from outside that tree, and leave every exported identifier of the agentkit, core, tools and codemode packages unchanged"
+          "action": "place all new production code under sandbox/, have only examples/sandbox and test helpers under internal/ import sandbox packages from outside that tree, and leave every exported identifier of the agentkit, core, tools and codemode packages unchanged",
+          "contract": "every importer lies under sandbox/ or examples/sandbox/, or is a file under internal/ that is a _test.go file or belongs to a test-helper package imported only by tests; no non-test file outside sandbox/ and examples/sandbox/ imports google.golang.org/grpc; the exported identifiers and their signatures for agentkit, core, tools and codemode equal the golden list",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a policy test walking every Go file of the root module with go/parser",
+              "a golden list of exported identifiers of agentkit, core, tools and codemode recorded from the pre-spec tree"
+            ],
+            "pseudocode": "for file, imps in importsOf(root): for imp in imps: if strings.HasPrefix(imp, mod+'/sandbox'): assert under(file,'sandbox/') || under(file,'examples/sandbox/') || (under(file,'internal/') && isTestHelper(file))\nfor pkg in ['.','core','tools','codemode']: assert exportedAPI(pkg) == golden[pkg]"
+          }
         },
         {
-          "id": "13-REQ-10.8",
+          "id": "REQ-10.8",
           "pattern": "event_driven",
           "condition": "`go test ./examples/sandbox` runs",
           "system": "examples/sandbox",
           "action": "run the example program against local.Unisolated() and provider/faux offline, with no network access and no API key",
-          "contract": "the example's main_test.go passes and the program exits 0"
+          "contract": "the example's main_test.go passes and the program exits 0",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "examples/sandbox/main_test.go",
+              "ANTHROPIC_API_KEY unset and no network required"
+            ],
+            "pseudocode": "t.Setenv('ANTHROPIC_API_KEY',''); out,err = exec.Command('go','run','.').CombinedOutput(); assert err==nil && contains(out, completionLine)\nvar b strings.Builder; assert run(context.Background(), &b)==nil && contains(b.String(), expectedToolOutput)"
+          }
         }
       ]
     }
   ],
   "execution_paths": [
     {
-      "id": "13-PATH-1",
+      "id": "PATH-1",
       "title": "An embedder creates a local sandbox, syncs a project, and runs a proxy tool",
       "steps": [
         {
@@ -683,10 +1207,32 @@
           "actor": "embedder",
           "action": "calls Close, and the local provider stops the agent and removes the sandbox directory"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "local provider",
+          "sandbox attach package",
+          "agent service (sandbox/internal/agent)",
+          "sandboxpb gRPC client and server",
+          "stdio net.Conn adapter over os.Pipe",
+          "tar entry rules and os.Root extractor",
+          "tools.All"
+        ],
+        "setup": [
+          "TMPDIR isolated",
+          "a tar holding hello.txt (\"hi there\\n\") and src/main.go"
+        ],
+        "end_state": [
+          "Create returns a live sandbox whose directory holds workspace/, home/, tmp/ and the marker",
+          "Sync returns SyncResult{Files: 2} and Tools returns the eleven tool names in tools.All order",
+          "read_file returns OK true, Text containing `hi there`, a non-nil Data object and decoded Metadata",
+          "Close returns nil and the sandbox directory is gone"
+        ],
+        "pseudocode": "sb = Create(ctx, Spec{Network:{Mode:NetworkUnrestricted}}); res = sb.Sync(ctx,Tar{R:tar}); assert res.Files==2\ntl = sb.Tools(ctx,{}); assert names(tl)==names(tools.All(...))\nr = byName(tl,'read_file').Execute(ctx, `{\"path\":\"hello.txt\"}`); assert r.OK && contains(r.Text,'hi there') && r.Data!=nil\nassert sb.Close(ctx)==nil && !exists(dir)"
+      }
     },
     {
-      "id": "13-PATH-2",
+      "id": "PATH-2",
       "title": "A faux-driven code-mode run over proxy tools has one call blocked by the guard",
       "steps": [
         {
@@ -713,10 +1259,35 @@
           "actor": "agentkit driver",
           "action": "emits tool execution events for every nested call naming the code_mode call as parent, and finishes the run with the script's output"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "agentkit.New driver and batch executor",
+          "nested caller",
+          "codemode",
+          "provider/faux",
+          "Config.Guard",
+          "proxy tools",
+          "local provider",
+          "agent service"
+        ],
+        "setup": [
+          "TMPDIR isolated and a local sandbox synced with notes.txt containing `needle`",
+          "codemode.New over the proxy read_file, search_files and execute",
+          "a Config.Guard that blocks execute commands containing `forbidden`",
+          "provider/faux scripted with a code_mode call whose script calls read_file, search_files, execute `echo ok` and execute `echo forbidden`, then a final text turn"
+        ],
+        "end_state": [
+          "the script's output records an error result for the `forbidden` execute call",
+          "read_file, search_files and execute `echo ok` return ok results carrying sandbox data (notes.txt content, a needle match, `ok`)",
+          "every ToolExecutionStart and ToolExecutionEnd event for a nested call has ParentToolUseID equal to the code_mode call's ToolUseID",
+          "the run ends with the faux final text and no error"
+        ],
+        "pseudocode": "cm,_,_ = codemode.New([rf,sf,ex], codemode.Options{}); a,_ = agentkit.New(Config{Provider:faux.New(turns...), Tools:[cm], Guard:blockForbidden})\nevents = collect(a.Stream(ctx, prompt)); out = codeModeResult(events)\nassert hasError(out,'forbidden'); assert okResults(out, ['read_file','search_files','echo ok'])\nfor e in nestedExecEvents(events): assert e.ParentToolUseID == codeModeCallID\nassert finalText(events)==fauxFinal"
+      }
     },
     {
-      "id": "13-PATH-3",
+      "id": "PATH-3",
       "title": "A cancelled proxy execute call aborts and kills its sandbox process",
       "steps": [
         {
@@ -735,10 +1306,28 @@
           "actor": "embedder",
           "action": "calls another proxy tool on the same sandbox, which still succeeds"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "proxy tools",
+          "sandbox attach package",
+          "agent service",
+          "tools.Run process-group kill",
+          "local provider"
+        ],
+        "setup": [
+          "TMPDIR isolated and a local sandbox on Unix with proxy tools"
+        ],
+        "end_state": [
+          "Execute returns within 1s a result equal to core.ErrResult(\"aborted\", \"Operation aborted\")",
+          "kill(childPid, 0) returns ESRCH within 5s",
+          "list_files afterwards returns OK true"
+        ],
+        "pseudocode": "c,cancel = withCancel(); go r = ex.Execute(c, cmd('sleep 60 & echo $! > child.pid; wait')); waitFile(ws+'/child.pid'); cancel()\nassert DeepEqual(recvWithin(1s), core.ErrResult('aborted','Operation aborted')); eventually(5s, kill(pid,0)==ESRCH)\nassert ls.Execute(bg, `{\"path\":\".\"}`).OK"
+      }
     },
     {
-      "id": "13-PATH-4",
+      "id": "PATH-4",
       "title": "A transport failure makes the sandbox sticky-unavailable",
       "steps": [
         {
@@ -757,10 +1346,30 @@
           "actor": "test",
           "action": "calls another proxy tool and Sync on the same sandbox, and gets sandbox_unavailable and ErrUnavailable without any RPC"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "local provider and its connection-cut hook",
+          "sandbox attach package",
+          "proxy tools",
+          "agent service",
+          "stdio net.Conn adapter over os.Pipe"
+        ],
+        "setup": [
+          "TMPDIR isolated and a local sandbox with proxy tools",
+          "the local provider's internal connection-cut hook"
+        ],
+        "end_state": [
+          "the in-flight Execute returns OK false, Error `sandbox_unavailable` and a non-empty Detail naming the cause",
+          "the later read_file returns `sandbox_unavailable` immediately without reaching the agent",
+          "Sync and Tools return errors matching ErrUnavailable",
+          "Close then returns and the sandbox directory is removed"
+        ],
+        "pseudocode": "go r = ex.Execute(ctx, cmd('echo $$ > p; sleep 60')); waitFile(ws+'/p'); localtest.Cut(sb)\nr = recv(); assert r.Error=='sandbox_unavailable' && r.Detail!=''\nassert rf.Execute(ctx, path('a')).Error=='sandbox_unavailable'\n_,err = sb.Sync(ctx,Tar{R:emptyTar}); assert errors.Is(err,ErrUnavailable); _,err = sb.Tools(ctx,{}); assert errors.Is(err,ErrUnavailable)\nsb.Close(ctx); assert !exists(dir)"
+      }
     },
     {
-      "id": "13-PATH-5",
+      "id": "PATH-5",
       "title": "An embedder exports a workspace subtree as a validated tar",
       "steps": [
         {
@@ -779,10 +1388,29 @@
           "actor": "embedder",
           "action": "reads buf with archive/tar and finds result.txt with the content the tool wrote"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "local provider",
+          "sandbox attach package",
+          "agent service export",
+          "tar entry rules on the host",
+          "archive/tar",
+          "proxy tools"
+        ],
+        "setup": [
+          "TMPDIR isolated and a local sandbox with proxy tools on Unix"
+        ],
+        "end_state": [
+          "Export returns nil",
+          "reading buf with archive/tar yields result.txt with content `done`",
+          "it yields link as a TypeSymlink with Linkname result.txt, and no name starts with out/"
+        ],
+        "pseudocode": "wf.Execute(ctx, `{\"path\":\"out/result.txt\",\"content\":\"done\"}`); ex.Execute(ctx, cmd('ln -s result.txt out/link'))\nerr = sb.Export(ctx,'out',TarOut{W:&buf}); assert err==nil\nhs = readTar(buf); assert hs['result.txt'].content=='done' && hs['link'].Typeflag==tar.TypeSymlink && hs['link'].Linkname=='result.txt'"
+      }
     },
     {
-      "id": "13-PATH-6",
+      "id": "PATH-6",
       "title": "The agentkit-sandboxd binary serves the protocol on its stdio",
       "steps": [
         {
@@ -801,7 +1429,27 @@
           "actor": "test",
           "action": "closes the connection, and agentkit-sandboxd exits with status 0"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "agentkit-sandboxd binary",
+          "stdio net.Conn adapter",
+          "sandbox attach package",
+          "agent service",
+          "sandboxpb gRPC over HTTP/2",
+          "tools.All"
+        ],
+        "setup": [
+          "agentkit-sandboxd built with go build into a temp directory",
+          "a workdir holding seed.txt"
+        ],
+        "end_state": [
+          "Agent() reports ProtocolMajor 1 and Workdir equal to EvalSymlinks(workdir)",
+          "Tools returns the eleven tools and list_files returns OK true with seed.txt in its Text",
+          "after the close, the process exits with status 0 within 5s"
+        ],
+        "pseudocode": "p = exec.Command(bin,'--workdir',wd,'--ttl','1m'); in,_ = p.StdinPipe(); out,_ = p.StdoutPipe(); p.Start()\nconn = stdioconn.New(out, in); sb = attach.Create(ctx, conn, ...); assert sb.Agent().ProtocolMajor==1 && sb.Agent().Workdir==evalSymlinks(wd)\ntl = sb.Tools(ctx,{}); assert len(tl)==11; r = byName(tl,'list_files').Execute(ctx, `{\"path\":\".\"}`); assert r.OK && contains(r.Text,'seed.txt')\nsb.Close(ctx); assert waitWithin(p,5s)==0"
+      }
     }
   ]
 }

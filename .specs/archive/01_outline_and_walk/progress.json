@@ -1,0 +1,53 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/progress.v3.json",
+  "spec_id": "01",
+  "spec_name": "outline_and_walk",
+  "schema_version": 3,
+  "updated_at": "2026-10-01T15:19:08.067618Z",
+  "tasks": [
+    {
+      "id": 1,
+      "state": "done"
+    },
+    {
+      "id": 2,
+      "state": "done"
+    },
+    {
+      "id": 3,
+      "state": "done"
+    },
+    {
+      "id": 4,
+      "state": "done"
+    },
+    {
+      "id": 5,
+      "state": "done"
+    },
+    {
+      "id": 6,
+      "state": "done"
+    },
+    {
+      "id": 7,
+      "state": "done"
+    },
+    {
+      "id": 8,
+      "state": "done"
+    },
+    {
+      "id": 9,
+      "state": "done"
+    },
+    {
+      "id": 10,
+      "state": "done"
+    },
+    {
+      "id": 11,
+      "state": "done"
+    }
+  ]
+}

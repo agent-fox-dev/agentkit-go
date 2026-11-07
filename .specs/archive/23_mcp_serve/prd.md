@@ -4,9 +4,8 @@ spec_name: "mcp_serve"
 title: "mcpserve: serve a Runner's tools over MCP to another harness"
 status: "active"
 created_at: "2026-10-16T06:17:08.118995Z"
-updated_at: "2026-10-16T06:17:08.118995Z"
 intent_hash: "0d6efcb108090b10df5286e6f5a30ee196857f93be5ef0bf095c32f1fee816cf"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/12-simplify-the-embedder-contract.md"
 ---
 ## Intent
@@ -269,3 +268,14 @@ Symbols from earlier specs of this split that are not yet in the tree (**NOT FOU
 - `agentkit.NewRunner(ts Toolset) (*Runner, error)`, `(*Runner).Tools() []core.Tool` and `(*Runner).Call(ctx, name string, input json.RawMessage) core.ToolResult` (spec 21);
 - `sandbox.Open(ctx, p Provider, spec Spec, src Source, opts ToolOptions) (Sandbox, []core.Tool, error)`, `guard.Allow(programs ...string) core.BeforeToolCall`, `faux.ToolCall(id, name, args string) Turn` and `faux.Text(s string) Turn` (spec 22);
 - `workspace.Open(root string, opts workspace.Options) (*workspace.Workspace, error)` and `tools.For(ws, tools.Options) ([]core.Tool, error)` (spec 20).
+
+## Glossary
+
+- **Endpoint**: The value ServeLoopback returns: the loopback URL (http://127.0.0.1:<port>/mcp) and the bearer token a client must send. It also has Close, ClaudeConfig and PiConfig.
+- **LLMText**: core.ToolResult.LLMText(): the text AgentKit's driver shows a model for a result. For a failure this is the error envelope with the error code and detail.
+- **Runner**: agentkit.Runner from spec 21_toolset_runner: holds a toolset, exposes Tools() []core.Tool, and runs every call through preparation, the Guard and hooks via Call(ctx, name, json.RawMessage) core.ToolResult, which never errors or panics.
+- **harness**: An agent loop that is not AgentKit's own driver (Claude Code, Pi, or a scripted MCP client). It connects to mcpserve to use an AgentKit toolset.
+- **nested module**: A directory of this repository with its own go.mod (for example sandbox/gatewayd or mcpserve). It is built and tested through the Makefile's MODULES list.
+- **no-listen check**: Policy test TS-19-63 in internal/policy. It fails when a non-test file of the root or sandbox module calls a socket-listen API. Directories that have their own go.mod are skipped.
+- **stateful HTTP session**: The default mode of the MCP Go SDK's NewStreamableHTTPHandler: the server issues an Mcp-Session-Id, and a client may hold open a standalone SSE stream.
+- **wire limits**: The bounds wire.Defaults() returns (16 MiB per message, depth 64, container and node caps, no duplicate keys). wire.Guard enforces them on every inbound frame or body before the SDK decodes it.

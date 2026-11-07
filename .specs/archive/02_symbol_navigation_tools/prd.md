@@ -4,9 +4,8 @@ spec_name: "symbol_navigation_tools"
 title: "file_outline and find_symbol tools with a lazily built, always-fresh symbol table"
 status: "active"
 created_at: "2026-10-01T15:28:28.598588Z"
-updated_at: "2026-10-01T15:28:28.598588Z"
 intent_hash: "cd51fe7229fa66315c4d5d08fc0511d2918ab3455f85f11c090b4ff6664d9a73"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/04-add-symbol-navigation-tools.md"
 ---
 ## Intent
@@ -189,3 +188,17 @@ All external symbols are standard library (`context`, `encoding/json`, `io/fs`, 
 | `outline.OutlineMany(ctx context.Context, srcs []Source, opts Options) ([]File, Stats, error)`, `outline.Source{Abs string; Src []byte}`, `outline.Options{Root string; MaxFileBytes int64; Runner func(context.Context, []string) ([]byte, error)}` | per `01_outline_and_walk` PRD and tasks | NOT FOUND in the working tree; assumed from the spec. The type of `MaxFileBytes` is not stated there and is irrelevant here because this spec leaves it at its default. |
 | `tools.Walk(ctx context.Context, ws *Workspace, root string, opts WalkOptions, fn func(rel string, d fs.DirEntry) error) error`, `WalkOptions{Ignore IgnoreOptions; IncludeHidden bool}` | per `01_outline_and_walk` PRD | NOT FOUND in the working tree (the three private `filepath.WalkDir` loops still exist); assumed from the spec. |
 | `tools.CtagsRunner(env []string) func(ctx context.Context, args []string) ([]byte, error)`, `tools.ErrCtagsUnavailable` | per `01_outline_and_walk` PRD | NOT FOUND in the working tree; assumed from the spec. Whether it probes eagerly or lazily is not guaranteed, so this spec wraps its construction in a lazy call. |
+
+## Glossary
+
+- **CtagsRunner**: The function from spec 01 that runs universal-ctags and returns ErrCtagsUnavailable when it is absent.
+- **backend**: The outline strategy that produced a file's declarations: go/ast, ctags, heuristic or none. Reported in Data and in the Text header of every result.
+- **dirty path**: A workspace-relative path marked by write_file or edit_file because the file may have changed since it was indexed.
+- **generation counter**: A counter advanced by every mark. A pass clears only marks that predate its start.
+- **partial**: A find_symbol answer produced after a build or refresh pass stopped at the MaxFiles or MaxDuration bound. It carries partial: true and partial_reason `files` or `time`.
+- **racy window**: The 2 s period after a file was indexed during which an unchanged size and mtime do not prove the file is unchanged, so revalidation always re-outlines it.
+- **revalidation**: A walk of the scope that compares size and mtime for each file, re-outlines changed or new files and drops files not seen in a completed walk.
+- **smart-case**: Matching rule where an all-lowercase query matches case-insensitively and any uppercase rune makes it case-sensitive.
+- **symbol table**: The in-memory per-file store of outline.File, size, modification time and index time behind find_symbol. It is created empty with the tool set, built on the first find_symbol call and discarded with the tool set.
+- **test file**: A file classified as a test by the fixed rule in 02-REQ-4.2; test files rank after non-test files.
+- **whole-table mark**: A flag set after execute, run_command or powershell returns. It means every indexed file must be revalidated before the next answer.

@@ -4,9 +4,8 @@ spec_name: "provider_catalog_tiers"
 title: "Catalog rows and model tiers for Anthropic, OpenRouter and Ollama"
 status: "active"
 created_at: "2026-10-21T10:27:53.198261Z"
-updated_at: "2026-10-21T10:27:53.198261Z"
 intent_hash: "2dc7b6db62c7fd7839968527f9b8bc589b08d8cc9cf758a91c0dca0abfef313f"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/14-run-the-agent-on-anthropic-openrouter-or-ollama.md"
 ---
 ## Intent
@@ -215,3 +214,14 @@ The embedded `catalog.json` gains two vendor sections, keyed by provider name. E
 | Spec | Relationship | Reason |
 |---|---|---|
 | `10_anthropic_wire` | modifies | 10-REQ-3.1 required a Claude-only `catalog.json`. This spec adds `openrouter` and `ollama` sections (still no OpenAI or Google), so TS-10-11 and `TestCatalogAccessors` are restated. 10-REQ-3.3 to 3.6 (`Lookup`, the Anthropic fallback, no model metadata in `provider/anthropic`) stay as they are. |
+
+## Glossary
+
+- **Selection**: The result of `catalog.Select`: canonical `Provider`, `Tier`, `Model` (a deep-copied `core.Model`), `Effort` and `Listed`.
+- **effort**: One of the five `core.Effort` levels low, medium, high, xhigh, max. `Selection.Effort` is the effort to request; whether it reaches the wire is the provider's reading of `Model.Efforts`.
+- **fallback descriptor**: The `core.Model` served for an id the catalog does not list for a provider: that provider's fixed window and output cap, all prices zero, `ThinkingKindAdaptive` and a nil `Efforts` map.
+- **listed**: Whether the resolved model id is a row of the chosen provider in the catalog (`Selection.Listed`).
+- **provider**: One of the three backends this build can run: `anthropic`, `openrouter` or `ollama`. Fixed in Go code; each name equals the catalog vendor id of the same spelling.
+- **row**: A model entry under a vendor in `catalog.json`, turned into a `core.Model` with window, output cap, prices and an `Efforts` map.
+- **tier**: One of the names SIMPLE, STANDARD or ADVANCED. Given as the model string, it picks a model id and an effort for the chosen provider from the catalog's fixed tier table.
+- **tier table**: The optional per-vendor `tiers` object in `catalog.json`, mapping each tier name to `{model, effort}`; fixed per release.
