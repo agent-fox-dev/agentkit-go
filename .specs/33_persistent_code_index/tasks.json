@@ -1,0 +1,140 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
+  "spec_id": "33",
+  "spec_name": "persistent_code_index",
+  "schema_version": 3,
+  "test_commands": {
+    "all_tests": "make check",
+    "linter": "make lint",
+    "spec_tests": "go -C codesearch test -short -count=1 ./..."
+  },
+  "dependencies": [
+    {
+      "spec": "32",
+      "reason": "the --index-dir flag and AGENTKIT_INDEX_DIR land in the agentkit-tools command it adds, and the end-to-end tests drive that command"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "title": "Store a completed build under Options.IndexDir",
+      "criteria": [
+        "REQ-1"
+      ],
+      "steps": [
+        "Add IndexDir to codesearch.Options with a doc comment: empty keeps the run directory under TempDir that Close deletes; set, the index of a workspace is stored under <IndexDir>/agentkit-codesearch-<sha256 of the root>/ and kept on Close",
+        "In New, refuse an IndexDir that is the workspace root or lies inside it, comparing ws.Root() with the IndexDir made absolute and with the symbolic links of its existing parts resolved; return a nil interface and an error saying it must be outside; touch no disk",
+        "Define the stored form: a manifest (JSON) with the workspace root, a format version constant and the partial flag and reason, beside the shards and a file holding the indexed files, the outlines, each file's size, modification time, indexing time and content hash, and the build statistics",
+        "After a completed build with IndexDir set, write the stored form under a temporary name in the per-workspace directory and rename it into place over the previous one, so a loader sees either the old index or the new one, never a half-written one; add a test hook between writing and the rename",
+        "If the per-workspace directory cannot be created or written, keep serving from the run directory under TempDir, store nothing, and change nothing in the result",
+        "Write the behaviours of REQ-1 into codesearch/index_test.go beside TestShardsLiveInARunDirectoryPerIndex and TestNewRefusesANilWorkspaceWithANilInterface, with IndexDir fixtures in codesearch/helpers_test.go; keep TestCloseWaitsForTheFirstBuildAndRemovesItsRunDirectory passing unchanged"
+      ],
+      "touches": [
+        "codesearch/index.go",
+        "codesearch/store.go",
+        "codesearch/index_test.go",
+        "codesearch/helpers_test.go"
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Load a stored index in a later process and revalidate it",
+      "criteria": [
+        "REQ-2"
+      ],
+      "steps": [
+        "Make the stored content hash process-independent: replace the per-process maphash seed of contentHash with a hash of fixed definition (SHA-256, truncated as the record needs), for the in-memory records and the stored ones alike",
+        "On the first query of an Index with IndexDir set and nothing built, load the stored index when its manifest names this root and the current format version, it is not partial, and its files read back; set the index state from it exactly as a build would, without counting a build",
+        "After loading, mark the whole index for revalidation, so the first query walks the tree and picks up changed sizes and modification times, new files, deleted files and content changes of racy files before it answers",
+        "Treat a missing, foreign-root, other-version or unreadable stored index as absent: build, store in its place, and answer as a first build",
+        "Store the result of the dirty-threshold rebuild in place of the stored index, through the same temporary-name-and-rename write",
+        "Write the behaviours of REQ-2 into codesearch/tool_test.go (beside TestTheFirstCodeSearchBuildsTheIndexOnce and TestMoreThanFivePercentDirtyRebuildsTheIndex), codesearch/dirty_test.go (beside TestRevalidationFindsChangesMadeBehindTheToolsBack and TestRevalidationInsideTheRacyWindowMarksOnlyRealEdits) and codesearch/index_test.go"
+      ],
+      "touches": [
+        "codesearch/index.go",
+        "codesearch/store.go",
+        "codesearch/dirty.go",
+        "codesearch/tool.go",
+        "codesearch/tool_test.go",
+        "codesearch/dirty_test.go",
+        "codesearch/index_test.go"
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Build once when two processes need the index at once, and retry partial builds",
+      "criteria": [
+        "REQ-3"
+      ],
+      "steps": [
+        "Before loading or building with IndexDir set, take an advisory lock on a lock file in the per-workspace directory (flock on the platforms codesearch builds for; windows/amd64 has the stub), and release it after the store",
+        "A process that finds the lock held waits for it, abandonably with its context, up to 1.25 times MaxBuildTime plus 5 seconds, then loads what the holder stored; past the bound it builds in its own run directory under TempDir and stores nothing; keep the bound behind a test seam",
+        "Store a build stopped by MaxFiles, MaxBytes or MaxBuildTime as partial, with its reason in the manifest; the building process keeps serving it with the partial marker as today, and a later process that finds a partial manifest builds again and replaces it",
+        "Write the behaviours of REQ-3 into codesearch/index_test.go beside TestCallsBehindTheFirstBuildShareIt and TestBuildBoundsGiveAPartialIndexThatIsNotRetried; the killed-holder test re-runs the test binary as a helper process"
+      ],
+      "touches": [
+        "codesearch/index.go",
+        "codesearch/store.go",
+        "codesearch/lock_unix.go",
+        "codesearch/index_test.go"
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Answer find_symbol from a complete stored index",
+      "criteria": [
+        "REQ-4"
+      ],
+      "steps": [
+        "In Symbols, when nothing is built in the process and IndexDir is set, load a complete stored index through the same path code_search uses (lock, manifest, revalidation), never building; then answer from its outlines",
+        "Decline as today, with ok false and no error, when the stored index is partial or absent, without building",
+        "Update Symbols' doc comment to say it answers from a stored index too",
+        "Write the behaviours of REQ-4 into codesearch/symbols_test.go, extending TestFindSymbolGivesTheSameMatchesThroughTheIndex and TestSymbolsDeclinesWhenItCannotAnswerInFull"
+      ],
+      "touches": [
+        "codesearch/symbols.go",
+        "codesearch/symbols_test.go"
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Give the command --index-dir and AGENTKIT_INDEX_DIR",
+      "criteria": [
+        "REQ-5"
+      ],
+      "steps": [
+        "Add --index-dir to every subcommand of agentkit-tools; when it is absent or empty, read AGENTKIT_INDEX_DIR; an empty value means unset, and there is no default",
+        "Before building the tool set, resolve the index directory and the served directory (symbolic links of existing parts resolved); one inside the other or equal exits 2 with one stderr line saying the index directory must be outside the served directory, creating nothing",
+        "Create the index directory when missing and probe it by writing and removing a file; on failure write one stderr line naming it and build the index with no IndexDir; on success pass it as codesearch.Options.IndexDir",
+        "Without an index directory, keep the temporary index removed at exit, as before",
+        "Write the behaviours of REQ-5 and the flows of PATH-1, PATH-2 and PATH-3 into cmd/agentkit-tools/index_test.go (new), with the 10 000-file wall-time test skipped under -short"
+      ],
+      "touches": [
+        "cmd/agentkit-tools/main.go",
+        "cmd/agentkit-tools/toolset.go",
+        "cmd/agentkit-tools/index_test.go"
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Document the stored index, IndexDir, --index-dir and AGENTKIT_INDEX_DIR",
+      "criteria": [
+        "REQ-6"
+      ],
+      "steps": [
+        "docs/codesearch.md: a section on the stored index: where it lives, the manifest and format version, the lock and the waiting bound, reuse and revalidation, partial builds, and what is never written back",
+        "docs/configuration.md: codesearch.Options.IndexDir, and AGENTKIT_INDEX_DIR in the table of variables as read by agentkit-tools only",
+        "docs/cli.md: --index-dir and AGENTKIT_INDEX_DIR in the agentkit-tools section, with the exit 2 for a directory inside the served one and the stderr line for one that cannot be written",
+        "docs/guide.md: a relay that names an index directory so its single calls reuse the index",
+        "Run `make doc` and commit docs/generated as it writes it; bring each touched Contents index in step"
+      ],
+      "touches": [
+        "docs/codesearch.md",
+        "docs/configuration.md",
+        "docs/cli.md",
+        "docs/guide.md",
+        "docs/generated/"
+      ]
+    }
+  ]
+}

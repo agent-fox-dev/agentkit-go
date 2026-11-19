@@ -1,0 +1,464 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
+  "spec_id": "33",
+  "spec_name": "persistent_code_index",
+  "schema_version": 3,
+  "requirements": [
+    {
+      "id": "REQ-1",
+      "title": "A persistent index directory in the library",
+      "rationale": "A caller that runs one process per call must be able to keep the index where the next process finds it, without changing anything for an embedder that does not ask.",
+      "system": "codesearch",
+      "criteria": [
+        {
+          "id": "REQ-1.1",
+          "pattern": "optional",
+          "condition": "Options.IndexDir is empty",
+          "action": "keep the index in a run directory under TempDir that Close deletes, as before this package",
+          "contract": "after Close, the run directory and the per-workspace directory under TempDir are gone and nothing was written anywhere else",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in codesearch/index_test.go: TestCloseWaitsForTheFirstBuildAndRemovesItsRunDirectory and TestShardsLiveInARunDirectoryPerIndex keep passing unchanged with the zero IndexDir"
+          }
+        },
+        {
+          "id": "REQ-1.2",
+          "pattern": "optional",
+          "condition": "Options.IndexDir is set and a build completes",
+          "action": "store the index under <IndexDir>/agentkit-codesearch-<sha256 of the workspace root>/: the shards, the indexed files, the outlines, each file's size, modification time, indexing time and content hash, the build statistics and the partial flag and reason, with a manifest naming the workspace root and the format version, and keep it on Close",
+          "contract": "after a code_search and Close, the per-workspace directory holds the manifest and the shards; two workspaces sharing one IndexDir get two directories, each with its own root in its manifest",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "two temporary workspaces A and B and one temporary IndexDir, outside both"
+            ],
+            "pseudocode": "in codesearch/index_test.go, a new test beside TestShardsLiveInARunDirectoryPerIndex: for ws in {A, B}: idx = indexFor(t, ws, {IndexDir: D}); find(t, idx, 'needle'); idx.Close(); dir = D/agentkit-codesearch-<sha256(ws.Root())>; assert dir holds a manifest naming ws.Root() and the format version, and at least one shard; assert the two directories differ"
+          }
+        },
+        {
+          "id": "REQ-1.3",
+          "pattern": "unwanted",
+          "condition": "Options.IndexDir is the workspace root or lies inside it, after resolving the symbolic links of the parts that exist",
+          "action": "refuse to create the index, touching no disk",
+          "contract": "New returns a nil tools.Index and an error saying the index directory must be outside the workspace; nothing is created",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in codesearch/index_test.go, beside TestNewRefusesANilWorkspaceWithANilInterface, a table over IndexDir in {root, root/sub, root/missing/deeper, a symlink outside that points into root}: idx, err = New(ws, {IndexDir: d}); assert idx == nil (the interface itself); assert err mentions 'outside'; assert the tree under root is unchanged and d/missing was not created"
+          }
+        },
+        {
+          "id": "REQ-1.4",
+          "pattern": "ubiquitous",
+          "action": "for any build that stores an index, make it visible only when complete, by writing it under a temporary name in the per-workspace directory and renaming it into place over the previous one",
+          "contract": "while a build is between writing its shards and storing, the per-workspace directory holds no manifest for it and a loader finds no index; after the rename the manifest and shards are present and no temporary name remains",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a test hook that blocks a build after its shards are written and before the rename"
+            ],
+            "pseudocode": "in codesearch/index_test.go: start a code_search on idx with IndexDir D; when the hook fires, assert the per-workspace directory has no complete index (the load function reports none) and only temporary names; release; after the call, assert the manifest exists and no temporary name is left"
+          }
+        },
+        {
+          "id": "REQ-1.5",
+          "pattern": "unwanted",
+          "condition": "the index directory cannot be created or written",
+          "action": "use the build from a run directory under TempDir for the process, store nothing, and answer as usual",
+          "contract": "code_search is ok: true with the same files as without IndexDir and no field it would not otherwise carry; nothing is written under IndexDir",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "skipped as root and on Windows"
+            ],
+            "pseudocode": "in codesearch/index_test.go, a table over IndexDir in {a path below a regular file, a directory with mode 0500}: idx = indexFor(t, ws, {IndexDir: d, TempDir: T}); r = find(t, idx, 'needle'); assert r.OK and paths(r) == the paths without IndexDir; assert r.Data has the same keys; assert idx.RunDir() is under T; assert nothing new under d"
+          }
+        }
+      ]
+    },
+    {
+      "id": "REQ-2",
+      "title": "Reuse and revalidation in a later process",
+      "rationale": "Reuse is only worth having if the answer is the one a fresh build of the current tree would give.",
+      "system": "codesearch",
+      "criteria": [
+        {
+          "id": "REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "the first code_search of an Index finds a complete stored index for its workspace root in the current format",
+          "action": "load it instead of building, and revalidate the whole tree against it before answering",
+          "contract": "BuildCount() is 0 after the query; RevalCount() is at least 1; the result lists the same files as the process that built it",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in codesearch/tool_test.go, beside TestTheFirstCodeSearchBuildsTheIndexOnce: a = indexFor(t, ws, {IndexDir: D}); ra = find(t, a, 'needle'); a.Close(); b = indexFor(t, ws, {IndexDir: D}); rb = find(t, b, 'needle'); assert b.BuildCount() == 0; assert b.RevalCount() >= 1; assert paths(rb) == paths(ra)"
+          }
+        },
+        {
+          "id": "REQ-2.2",
+          "pattern": "ubiquitous",
+          "action": "for any set of changes made to the tree between the process that stored the index and a later one (an edit that changes a file's size, one that changes only its modification time, a new file, a deleted file), answer in the later process as a fresh build over the current tree would",
+          "contract": "for each query, the later Index's result lists the same files, in the same order, as a new Index without IndexDir built over the same tree",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in codesearch/dirty_test.go, beside TestRevalidationFindsChangesMadeBehindTheToolsBack, a table over the change kinds of the action (each written with os functions, not through the tools, after a.Close()): b = indexFor(t, ws, {IndexDir: D}); fresh = indexFor(t, ws, {}); for q in the queries that match the changed, new and deleted files: assert paths(find(t, b, q)) == paths(find(t, fresh, q)); assert b.BuildCount() == 0 unless the change set passes the rebuild threshold"
+          }
+        },
+        {
+          "id": "REQ-2.3",
+          "pattern": "ubiquitous",
+          "action": "compare by content, in a later process too, a file that was indexed within the timestamp granule of its last modification, using a stored content hash that does not depend on the process that wrote it",
+          "contract": "an edit that keeps a file's size and modification time, made within the granule after it was indexed, is found by the next process",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in codesearch/dirty_test.go, beside TestRevalidationInsideTheRacyWindowMarksOnlyRealEdits: write f, index it with a (IndexDir D) at once, a.Close(); rewrite f with same-length content holding 'fresh_marker' and restore its modification time with os.Chtimes; b = indexFor(t, ws, {IndexDir: D}); assert 'f' in paths(find(t, b, 'fresh_marker')); and the stored hash of a file equals the hash function's value for its bytes in a separate call, independent of the process seed"
+          }
+        },
+        {
+          "id": "REQ-2.4",
+          "pattern": "unwanted",
+          "condition": "the per-workspace directory holds no index, an index whose manifest names another root, one written in another format version, or one that cannot be read",
+          "action": "build a new index, store it in place of what was there, and answer as for a first build",
+          "contract": "BuildCount() is 1; the result is the normal result with no extra field; afterwards the manifest names this root and the current format version",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in codesearch/index_test.go, a table over the states {empty directory; manifest with another root; manifest with format version + 1; manifest that is not JSON; manifest present and a shard truncated to 0 bytes}: prepare D's per-workspace directory; idx = indexFor(t, ws, {IndexDir: D}); r = find(t, idx, 'needle'); assert r.OK and idx.BuildCount() == 1; assert r.Data's keys are those of any first build; assert the manifest now names ws.Root() and the current version"
+          }
+        },
+        {
+          "id": "REQ-2.5",
+          "pattern": "event_driven",
+          "condition": "a process finds more than five percent of the indexed files changed against a stored index",
+          "action": "run the full rebuild it runs today and store its result in place of the stored index",
+          "contract": "the rebuild happens once; afterwards the stored manifest is newer and a further process loads the rebuilt index without building",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in codesearch/tool_test.go, extending TestMoreThanFivePercentDirtyRebuildsTheIndex to IndexDir D: a builds and closes; change more than 5% of the files; b = indexFor(... D); find(t, b, q); assert the rebuild ran once and the stored manifest changed; b.Close(); c = indexFor(... D); find(t, c, q); assert c.BuildCount() == 0"
+          }
+        }
+      ]
+    },
+    {
+      "id": "REQ-3",
+      "title": "Two processes at once and partial builds",
+      "rationale": "A relay may start two calls on one checkout at the same moment, and neither may read a half-written index or build twice.",
+      "system": "codesearch",
+      "criteria": [
+        {
+          "id": "REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "two Index values, in one process or in two, need the index of the same workspace in the same IndexDir at once and none is stored",
+          "action": "let one build while holding an advisory file lock in the per-workspace directory, and let the other wait for the lock and then load what the first stored",
+          "contract": "both results list the same files; the builds of the two add up to 1",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in codesearch/index_test.go, beside TestCallsBehindTheFirstBuildShareIt: a, b = indexFor(... D) twice over the same ws; run find(t, a, q) and find(t, b, q) concurrently; assert paths equal; assert a.BuildCount() + b.BuildCount() == 1"
+          }
+        },
+        {
+          "id": "REQ-3.2",
+          "pattern": "unwanted",
+          "condition": "the lock is still held when the waiter has waited 1.25 times MaxBuildTime plus 5 seconds",
+          "action": "build for itself in its own run directory under TempDir and store nothing",
+          "contract": "the waiter's result is ok: true; its BuildCount() is 1; the stored index, and the lock holder, are untouched",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a test hook that holds the lock as another builder would, and a wait bound shortened through a test seam so the test does not wait the real bound"
+            ],
+            "pseudocode": "in codesearch/index_test.go: hold the lock; idx = indexFor(... D); r = find(t, idx, q); assert r.OK and idx.BuildCount() == 1; assert idx.RunDir() is under TempDir; assert the per-workspace directory holds what it held before"
+          }
+        },
+        {
+          "id": "REQ-3.3",
+          "pattern": "ubiquitous",
+          "action": "release the lock when its holder exits, however it exits",
+          "contract": "after a process holding the lock is killed, a new Index takes the lock without waiting the bound",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the test binary re-run as a helper process that takes the lock and sleeps; skipped on Windows"
+            ],
+            "pseudocode": "in codesearch/index_test.go: start the helper (the test binary with a flag in its environment); wait until it holds the lock; kill it with SIGKILL; idx = indexFor(... D, MaxBuildTime: 60s); r = find(t, idx, q) under testutil.Within's bound, far below the 80 s wait; assert r.OK and idx.BuildCount() == 1"
+          }
+        },
+        {
+          "id": "REQ-3.4",
+          "pattern": "unwanted",
+          "condition": "a build that stores its index is stopped by MaxFiles, MaxBytes or MaxBuildTime",
+          "action": "store the partial index marked as partial with its reason, serve it in the process that built it as today, and build again in a later process that finds it",
+          "contract": "the building process's results carry partial: true and partial_reason; a later Index finds the partial manifest, has BuildCount() == 1, and replaces the stored index",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in codesearch/index_test.go, extending TestBuildBoundsGiveAPartialIndexThatIsNotRetried to IndexDir D with MaxFiles below the file count: r = find(t, a, q); assert r.Data.partial and r.Data.partial_reason == 'files'; assert the manifest is marked partial; a.Close(); b = indexFor(... D, no bound); find(t, b, q); assert b.BuildCount() == 1 and the manifest is no longer partial"
+          }
+        }
+      ]
+    },
+    {
+      "id": "REQ-4",
+      "title": "find_symbol from the stored index",
+      "rationale": "A single find_symbol call must not build a symbol table when a complete index of the tree is already stored.",
+      "system": "codesearch Index.Symbols",
+      "criteria": [
+        {
+          "id": "REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "Symbols is called on an Index with a complete stored index and no code_search has run in its process",
+          "action": "load and revalidate the stored index without building, and answer from its outlines",
+          "contract": "ok is true; the matches equal those an Index that built the index returns; BuildCount() is 0; find_symbol through tools.For returns the same matches as without an index",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in codesearch/symbols_test.go, extending TestFindSymbolGivesTheSameMatchesThroughTheIndex: a builds with IndexDir D and closes; edit one file to add func Fresh; b = indexFor(... D); ans, ok = b.Symbols(ctx, {Name: 'Fresh'}); assert ok and ans has Fresh in the edited file; assert b.BuildCount() == 0; and find_symbol through tools.For with b as Options.Index returns the matches tools.For without an index returns"
+          }
+        },
+        {
+          "id": "REQ-4.2",
+          "pattern": "unwanted",
+          "condition": "Symbols is called on an Index whose stored index is partial or absent and no code_search has run in its process",
+          "action": "decline without building, so find_symbol uses its own table as today",
+          "contract": "ok is false, the error is nil and BuildCount() is 0",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in codesearch/symbols_test.go, extending TestSymbolsDeclinesWhenItCannotAnswerInFull with the cases {IndexDir D empty; D holding a partial stored index}: _, ok, err = idx.Symbols(ctx, q); assert !ok and err == nil and idx.BuildCount() == 0"
+          }
+        }
+      ]
+    },
+    {
+      "id": "REQ-5",
+      "title": "The command's index directory",
+      "rationale": "The relay names the index directory on the command line or in the environment of the process it starts, and must never get an index inside the work it checkpoints.",
+      "system": "agentkit-tools",
+      "criteria": [
+        {
+          "id": "REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "a subcommand runs with --index-dir set to a non-empty path, or without it and with AGENTKIT_INDEX_DIR set to a non-empty path",
+          "action": "create that directory when it is missing and give it to the index as its IndexDir, the flag winning over the variable",
+          "contract": "after a code_search call, the per-workspace directory with its manifest exists under the flag's directory when both are set, and under the variable's when only it is set; a missing directory has been created",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in cmd/agentkit-tools/index_test.go (new), a table over {flag F only (F missing); variable V only; both F and V; flag '' with V}: run(['call','--dir',D,'--request',R(code_search)] + flags, env); assert exit 0 and res.ok; assert a manifest exists under the expected directory (F, V, F, V) and nothing under the other"
+          }
+        },
+        {
+          "id": "REQ-5.2",
+          "pattern": "optional",
+          "condition": "neither --index-dir nor AGENTKIT_INDEX_DIR names a directory",
+          "action": "keep the index in a temporary directory that is removed when the process ends",
+          "contract": "after a code_search call exits 0, no agentkit-codesearch- directory is left under the process's TMPDIR",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in cmd/agentkit-tools/index_test.go: run(['call','--dir',D,'--request',R(code_search)], env with TMPDIR=T and no AGENTKIT_INDEX_DIR); assert exit 0 and res.ok; assert no entry of T starts with 'agentkit-codesearch-'"
+          }
+        },
+        {
+          "id": "REQ-5.3",
+          "pattern": "unwanted",
+          "condition": "the index directory is the served directory or lies inside it, after resolving symbolic links",
+          "action": "serve nothing and say the index directory must be outside the served directory",
+          "contract": "exit 2, nothing on stdout, one line on stderr containing 'outside'; nothing is created under the served directory",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in cmd/agentkit-tools/index_test.go, a table over {--index-dir D; --index-dir D/.index; AGENTKIT_INDEX_DIR=D/x; --index-dir L where L is a symlink to D/y} x the subcommands {call, tools, mcp}: out = run(...); assert exit 2; assert stdout == ''; assert stderr is one line containing 'outside'; assert D's tree is unchanged"
+          }
+        },
+        {
+          "id": "REQ-5.4",
+          "pattern": "unwanted",
+          "condition": "the index directory cannot be created or written",
+          "action": "say so once on stderr, naming the directory, and serve code_search with a temporary index for that process",
+          "contract": "exit 0; the code_search result is ok: true; stderr holds exactly one line naming the directory",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "skipped as root and on Windows"
+            ],
+            "pseudocode": "in cmd/agentkit-tools/index_test.go, a table over {--index-dir below a regular file; --index-dir a directory with mode 0500}: out = run(['call','--dir',D,'--index-dir',X,'--request',R(code_search)]); assert exit 0 and parse(out.stdout).ok; assert stderr has one line and it contains X"
+          }
+        },
+        {
+          "id": "REQ-5.5",
+          "pattern": "ubiquitous",
+          "action": "answer a code_search single call that finds a complete index and no changed file, on a generated tree of 10 000 source files, in at most one fifth of the wall time of the single call that built the index on the same machine",
+          "contract": "wall time of the second `call` process <= wall time of the first / 5",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a generated tree of 10 000 small Go source files",
+              "a slow test: skipped under -short, so it runs in make check-release, the owner's run, and never in make check"
+            ],
+            "pseudocode": "in cmd/agentkit-tools/index_test.go: t1 = wall time of run(['call','--dir',T,'--index-dir',X,'--request',R(code_search 'needle')]); t2 = wall time of the same command again; assert both exit 0 with the same files; assert t2 * 5 <= t1"
+          }
+        }
+      ]
+    },
+    {
+      "id": "REQ-6",
+      "title": "The stored index documented",
+      "rationale": "Steering treats an undocumented option, flag or variable as a regression.",
+      "system": "documentation",
+      "criteria": [
+        {
+          "id": "REQ-6.1",
+          "pattern": "ubiquitous",
+          "action": "describe the stored index in docs/codesearch.md (layout, manifest, lock, reuse, revalidation, partial builds), codesearch.Options.IndexDir and AGENTKIT_INDEX_DIR in docs/configuration.md, --index-dir and the variable in docs/cli.md, and a relay that names an index directory in docs/guide.md, each Contents index matching its headings, with docs/generated refreshed by make doc",
+          "contract": "each of the four documents names what the action lists; `make doc` leaves `git status --porcelain` empty",
+          "check": {
+            "same_as": "PATH-4"
+          }
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "PATH-1",
+      "title": "A relay makes two single calls and the second reuses the index",
+      "steps": [
+        {
+          "actor": "relay",
+          "action": "writes a code_search request file and runs `agentkit-tools call --dir <checkout> --index-dir <dir> --request <file>`"
+        },
+        {
+          "actor": "agentkit-tools",
+          "action": "builds the index, stores it under <dir>, answers and exits 0"
+        },
+        {
+          "actor": "relay",
+          "action": "runs the same call again"
+        },
+        {
+          "actor": "agentkit-tools",
+          "action": "loads the stored index, revalidates, answers without building and exits 0"
+        }
+      ],
+      "smoke": {
+        "real_components": [
+          "the agentkit-tools binary, one process per call",
+          "the codesearch index on zoekt",
+          "the index directory on disk"
+        ],
+        "setup": [
+          "a temporary checkout holding needle in a.go, and an empty index directory outside it",
+          "the binary built from cmd/agentkit-tools; skipped where codesearch.New returns ErrUnsupported"
+        ],
+        "end_state": [
+          "both results are ok: true and name the same files, a.go among them",
+          "the index directory holds one per-workspace directory with a manifest naming the checkout",
+          "the manifest's bytes and modification time, and the shards', are unchanged by the second call"
+        ],
+        "pseudocode": "in cmd/agentkit-tools/index_test.go: r1 = parse(run(call code_search with --index-dir X).stdout); m1 = stat and read X's manifest and shards; r2 = parse(run(the same).stdout); assert r1.ok and r2.ok and files(r1) == files(r2); assert X's manifest and shards equal m1"
+      }
+    },
+    {
+      "id": "PATH-2",
+      "title": "A change made in a session is seen by a later single call",
+      "steps": [
+        {
+          "actor": "harness",
+          "action": "starts `agentkit-tools mcp --dir <checkout> --index-dir <dir>`, calls code_search, then edit_file to add fresh_marker to b.go, and closes the session"
+        },
+        {
+          "actor": "agentkit-tools",
+          "action": "builds and stores the index on the first search, and exits 0 when the session closes"
+        },
+        {
+          "actor": "relay",
+          "action": "runs `agentkit-tools call` for code_search of fresh_marker with the same --dir and --index-dir"
+        },
+        {
+          "actor": "agentkit-tools",
+          "action": "loads the stored index, revalidates, and returns b.go"
+        }
+      ],
+      "smoke": {
+        "real_components": [
+          "the agentkit-tools binary in mcp mode and in call mode",
+          "the MCP Go SDK client over CommandTransport",
+          "the codesearch index on zoekt",
+          "the index directory on disk"
+        ],
+        "setup": [
+          "a temporary checkout of a few Go files and an empty index directory outside it",
+          "skipped where codesearch.New returns ErrUnsupported"
+        ],
+        "end_state": [
+          "the session's code_search found needle and its process exited 0",
+          "the later single call's result is ok: true and names b.go for fresh_marker",
+          "the stored manifest is the one the session's build wrote: the single call did not rebuild"
+        ],
+        "pseudocode": "in cmd/agentkit-tools/index_test.go: cs = client over CommandTransport(bin mcp --dir D --index-dir X); cs.CallTool(code_search 'needle'); cs.CallTool(edit_file add fresh_marker to b.go); cs.Close(); m = read X's manifest; res = parse(run(['call','--dir',D,'--index-dir',X,'--request',R(code_search 'fresh_marker')]).stdout); assert res.ok and 'b.go' in res.text; assert X's manifest == m"
+      }
+    },
+    {
+      "id": "PATH-3",
+      "title": "Two single calls start at once on a fresh index directory",
+      "steps": [
+        {
+          "actor": "relay",
+          "action": "starts two `agentkit-tools call` processes for code_search at the same moment, with the same --dir and --index-dir"
+        },
+        {
+          "actor": "agentkit-tools",
+          "action": "in one process takes the lock, builds and stores the index; in the other waits for the lock and loads it"
+        },
+        {
+          "actor": "relay",
+          "action": "reads both results"
+        }
+      ],
+      "smoke": {
+        "real_components": [
+          "two agentkit-tools processes",
+          "the advisory file lock",
+          "the codesearch index on zoekt",
+          "the index directory on disk"
+        ],
+        "setup": [
+          "a temporary checkout and an empty index directory outside it; skipped on Windows and where codesearch.New returns ErrUnsupported"
+        ],
+        "end_state": [
+          "both processes exit 0 with ok: true and the same files",
+          "the per-workspace directory holds exactly one stored index with its manifest and no temporary name"
+        ],
+        "pseudocode": "in cmd/agentkit-tools/index_test.go: start p1 and p2 = run(call code_search --index-dir X) without waiting; wait both; assert both exit 0 and their results' files are equal; assert X's per-workspace directory lists one manifest and no temporary entry"
+      }
+    },
+    {
+      "id": "PATH-4",
+      "title": "A maintainer checks the change and reads its docs",
+      "steps": [
+        {
+          "actor": "maintainer",
+          "action": "runs `make check` and `make doc` at the repository root"
+        },
+        {
+          "actor": "Makefile",
+          "action": "runs fmt, vet, lint and the short tests in every module MODULES lists, codesearch and cmd/agentkit-tools among them, and writes the generated docs"
+        },
+        {
+          "actor": "maintainer",
+          "action": "reads docs/codesearch.md, docs/configuration.md, docs/cli.md and docs/guide.md for the stored index, IndexDir, --index-dir and AGENTKIT_INDEX_DIR"
+        }
+      ],
+      "smoke": {
+        "real_components": [
+          "the Makefile",
+          "the go toolchain",
+          "golangci-lint",
+          "git",
+          "the docs"
+        ],
+        "setup": [
+          "a checkout of the branch; provider credentials scrubbed from the environment (env -u ANTHROPIC_API_KEY -u OPENROUTER_API_KEY)"
+        ],
+        "end_state": [
+          "`make check` exits 0",
+          "`make doc` leaves `git status --porcelain` empty and docs/generated/codesearch documents Options.IndexDir",
+          "docs/codesearch.md, docs/configuration.md, docs/cli.md and docs/guide.md each name what REQ-6.1 lists, and their Contents links resolve"
+        ],
+        "pseudocode": "a shell session, not a committed test: `env -u ANTHROPIC_API_KEY -u OPENROUTER_API_KEY make check` exits 0; `make doc && git status --porcelain` is empty; grep docs/generated/codesearch/codesearch.txt for IndexDir; grep the four docs for IndexDir, AGENTKIT_INDEX_DIR and --index-dir"
+      }
+    }
+  ]
+}
