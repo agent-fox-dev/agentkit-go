@@ -1,10 +1,8 @@
 package testutil
 
 import (
-	"archive/tar"
 	"bytes"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,25 +64,6 @@ func TestJSONHelpers(t *testing.T) {
 		if got := SameJSON([]byte(c.a), []byte(c.b)); got != c.same {
 			t.Errorf("SameJSON(%s, %s) = %v", c.a, c.b, got)
 		}
-	}
-}
-
-func TestTarHoldsTheFilesInNameOrder(t *testing.T) {
-	tr := tar.NewReader(bytes.NewReader(Tar(t, map[string]string{"b": "2", "a/x": "1"})))
-	var names []string
-	for {
-		h, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		body, _ := io.ReadAll(tr)
-		names = append(names, h.Name+"="+string(body))
-	}
-	if got := strings.Join(names, " "); got != "a/x=1 b=2" {
-		t.Errorf("entries = %s", got)
 	}
 }
 

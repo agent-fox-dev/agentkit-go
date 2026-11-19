@@ -9,7 +9,6 @@
 package toolconformance
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -55,29 +54,6 @@ func (tr Tree) Write(t testing.TB, dir string) {
 			t.Fatal(err)
 		}
 	}
-}
-
-// Tar returns tree as a tar stream.
-func (tr Tree) Tar(t testing.TB) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	for _, e := range tr {
-		h := &tar.Header{Typeflag: tar.TypeReg, Name: e.Path, Mode: int64(e.Mode), Size: int64(len(e.Body))}
-		if e.Dir {
-			h = &tar.Header{Typeflag: tar.TypeDir, Name: e.Path + "/", Mode: 0o755}
-		}
-		if err := tw.WriteHeader(h); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tw.Write([]byte(e.Body)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
 }
 
 // BaseTree is the small tree every conformance case runs against: a Go

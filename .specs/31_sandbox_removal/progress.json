@@ -3,11 +3,143 @@
   "spec_id": "31",
   "spec_name": "sandbox_removal",
   "schema_version": 3,
-  "updated_at": "",
+  "updated_at": "2026-11-19T16:12:16Z",
   "tasks": [
     {
       "id": 1,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-1.1",
+          "no_red": "the owner waived the v0.9.1 tags for this run; the criterion is unmet and tracked as an open item; this test only proves the remaining modules build",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T16:12:02Z",
+                "tree": "c50e483cd2b96cc06fd75ea75b418fcbbee672eb"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.1",
+          "no_red": "the removed trees are a property of the tree, not of running code; steering forbids committing tests of files, so PATH-1's shell smoke check verifies it; this test proves every module MODULES lists still builds and vets after the removal",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T16:12:02Z",
+                "tree": "c50e483cd2b96cc06fd75ea75b418fcbbee672eb"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.2",
+          "no_red": "the test already builds and vets every module MODULES lists; the change shortens the list it reads, so it passes before and after",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T16:12:02Z",
+                "tree": "c50e483cd2b96cc06fd75ea75b418fcbbee672eb"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.3",
+          "no_red": "go.mod requirements are a property of the tree, not of running code; steering forbids committing tests of files, so PATH-1's shell smoke check verifies it; this test proves every module MODULES lists still builds and vets after the removal",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T16:12:02Z",
+                "tree": "c50e483cd2b96cc06fd75ea75b418fcbbee672eb"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.4",
+          "no_red": "make tidy leaving go.mod and go.sum unchanged is a property of the tree, not of running code; steering forbids committing tests of files, so PATH-1's shell smoke check verifies it; this test proves every module MODULES lists still builds and vets after the removal",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T16:12:02Z",
+                "tree": "c50e483cd2b96cc06fd75ea75b418fcbbee672eb"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.5",
+          "no_red": "the case table already runs against tools.For; deleting the Tar helpers only the sandbox used must leave it passing, which is the behaviour this checks",
+          "tests": [
+            {
+              "test": "./tools:TestToolsConformToTheSharedCaseTable",
+              "passed": {
+                "at": "2026-11-19T16:12:02Z",
+                "tree": "c50e483cd2b96cc06fd75ea75b418fcbbee672eb"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.1",
+          "no_red": "Makefile targets and variables are a property of the tree, not of running code; steering forbids committing tests of files, so PATH-1's shell smoke check verifies it; this test proves every module MODULES lists still builds and vets after the removal",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T16:12:02Z",
+                "tree": "c50e483cd2b96cc06fd75ea75b418fcbbee672eb"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.2",
+          "no_red": "make doc's output is a property of the tree, not of running code; steering forbids committing tests of files, so PATH-1's shell smoke check verifies it; this test proves every module MODULES lists still builds and vets after the removal",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T16:12:02Z",
+                "tree": "c50e483cd2b96cc06fd75ea75b418fcbbee672eb"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.3",
+          "no_red": "the workflows staying byte-identical is a property of the tree, not of running code; steering forbids committing tests of files, so PATH-1's shell smoke check verifies it; this test proves every module MODULES lists still builds and vets after the removal",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T16:12:02Z",
+                "tree": "c50e483cd2b96cc06fd75ea75b418fcbbee672eb"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.4",
+          "no_red": "make check passing is the gate's own verdict, run after the task; this test is the module build it depends on",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T16:12:02Z",
+                "tree": "c50e483cd2b96cc06fd75ea75b418fcbbee672eb"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 2,
