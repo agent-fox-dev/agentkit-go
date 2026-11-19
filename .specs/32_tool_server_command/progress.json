@@ -3,7 +3,7 @@
   "spec_id": "32",
   "spec_name": "tool_server_command",
   "schema_version": 3,
-  "updated_at": "2026-11-19T18:33:32Z",
+  "updated_at": "2026-11-19T18:38:57Z",
   "tasks": [
     {
       "id": 1,
@@ -415,7 +415,25 @@
     },
     {
       "id": 5,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-6.2",
+          "tests": [
+            {
+              "test": "./examples/toolserver:TestTheProgramDrivesTheCommandInBothModes",
+              "failed": {
+                "at": "2026-11-19T18:34:43Z",
+                "tree": "2444a63716fcf74de02bc3bf69734915ee08d880"
+              },
+              "passed": {
+                "at": "2026-11-19T18:38:51Z",
+                "tree": "585a4c318d7dc824d2ac2f4ba8fabb91f94684a0"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 6,

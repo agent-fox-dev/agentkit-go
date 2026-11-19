@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 # MODULES are the repository's Go modules: the root and its nested modules.
-MODULES := . codesearch mcpserve cmd/agentkit-tools examples/indexedsearch
+MODULES := . codesearch mcpserve cmd/agentkit-tools examples/indexedsearch examples/toolserver
 DOC_DIR ?= docs/generated
 
 .PHONY: help
