@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -148,19 +147,14 @@ func TestTheShellToolsGetTheReducedEnvironment(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("needs a POSIX shell")
 	}
-	t.Setenv("ANTHROPIC_API_KEY", "sk-fake")
-	s, err := open(settings{dir: sampleTree(t)}, os.Stderr)
-	if err != nil {
-		t.Fatal(err)
+	req := writeRequest(t, `{"name":"execute","input":{"command":"env"}}`)
+	res := runIn(t, "", testEnv("ANTHROPIC_API_KEY=sk-fake"), "call", "--dir", sampleTree(t), "--request", req)
+	if res.exit != 0 {
+		t.Fatalf("exit %d, stderr %s", res.exit, res.stderr)
 	}
-	defer s.close()
-	res := s.runner.Call(context.Background(), "execute", json.RawMessage(`{"command":"env"}`))
-	if !res.OK {
-		t.Fatalf("execute env: %s %s", res.Error, res.Detail)
-	}
-	text := res.LLMText()
-	if !strings.Contains(text, "PATH=") || strings.Contains(text, "ANTHROPIC_API_KEY") {
-		t.Fatalf("the shell's environment is not the reduced one:\n%s", text)
+	got := parseCall(t, res.stdout)
+	if !got.OK || !strings.Contains(got.Text, "PATH=") || strings.Contains(got.Text, "ANTHROPIC_API_KEY") {
+		t.Fatalf("the shell's environment is not the reduced one: ok %v\n%s", got.OK, got.Text)
 	}
 }
 
@@ -210,22 +204,22 @@ func TestTheGuardFlagChoosesHowTheShellIsAuthorized(t *testing.T) {
 		t.Skip("needs a POSIX shell")
 	}
 	dir := sampleTree(t)
+	req := writeRequest(t, `{"name":"execute","input":{"command":"echo hi"}}`)
 	for _, c := range []struct {
-		guard string
+		flags []string
 		ok    bool
-	}{{"", true}, {"allow-all", true}, {"restricted", false}} {
-		t.Run("guard="+c.guard, func(t *testing.T) {
-			s, err := open(settings{dir: dir, guard: c.guard}, os.Stderr)
-			if err != nil {
-				t.Fatal(err)
+	}{{nil, true}, {[]string{"--guard", "allow-all"}, true}, {[]string{"--guard", "restricted"}, false}} {
+		t.Run(strings.Join(append([]string{"guard"}, c.flags...), " "), func(t *testing.T) {
+			res := run(t, append([]string{"call", "--dir", dir, "--request", req}, c.flags...)...)
+			if res.exit != 0 {
+				t.Fatalf("exit %d, stderr %s", res.exit, res.stderr)
 			}
-			defer s.close()
-			res := s.runner.Call(context.Background(), "execute", json.RawMessage(`{"command":"echo hi"}`))
-			if c.ok && (!res.OK || !strings.Contains(res.LLMText(), "hi")) {
-				t.Fatalf("echo hi under %q: %v %s %s", c.guard, res.OK, res.Error, res.LLMText())
+			got := parseCall(t, res.stdout)
+			if c.ok && (!got.OK || !strings.Contains(got.Text, "hi")) {
+				t.Fatalf("echo hi: ok %v, error %q, text %q", got.OK, got.Error, got.Text)
 			}
-			if !c.ok && (res.OK || res.Error != "blocked_by_policy") {
-				t.Fatalf("echo hi under %q: ok %v, error %q; want blocked_by_policy", c.guard, res.OK, res.Error)
+			if !c.ok && (got.OK || got.Error != "blocked_by_policy") {
+				t.Fatalf("echo hi: ok %v, error %q; want blocked_by_policy", got.OK, got.Error)
 			}
 		})
 	}
@@ -284,14 +278,13 @@ func TestCodeModeIsBoundToExactlyTheServedTools(t *testing.T) {
 		}
 	}
 
-	s, err := open(settings{dir: dir, tools: new("read_file,code_mode")}, os.Stderr)
-	if err != nil {
-		t.Fatal(err)
+	body, _ := json.Marshal(map[string]any{"name": "code_mode", "input": map[string]string{"script": `result = write_file(path="made.txt", content="x")`}})
+	call := run(t, "call", "--dir", dir, "--tools", "read_file,code_mode", "--request", writeRequest(t, string(body)))
+	if call.exit != 0 {
+		t.Fatalf("exit %d, stderr %s", call.exit, call.stderr)
 	}
-	defer s.close()
-	script, _ := json.Marshal(map[string]string{"script": `result = write_file(path="made.txt", content="x")`})
-	if r := s.runner.Call(context.Background(), "code_mode", script); r.OK {
-		t.Fatalf("a script calling write_file succeeded: %s", r.LLMText())
+	if got := parseCall(t, call.stdout); got.OK {
+		t.Fatalf("a script calling write_file succeeded: %s", got.Text)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "made.txt")); err == nil {
 		t.Fatal("the script wrote a file through a tool that is not served")
