@@ -10,8 +10,9 @@ provider SDKs come with the model loop, and with nothing else.
 
 ## Goals
 
-1. A program that imports the runner, `codemode` and `core`, and nothing
-   else of AgentKit, builds with `CGO_ENABLED=0` on Linux and macOS.
+1. A program that imports the runner, `codemode`, `core` and `mcpserve`,
+   and nothing else of AgentKit, builds with `CGO_ENABLED=0` on Linux and
+   macOS.
 2. The packages that program links include no tree-sitter module, none of
    `anthropic-sdk-go`, `OpenRouterTeam/go-sdk`, `ollama/ollama`, and no AWS
    or Google module.
@@ -53,8 +54,9 @@ Two import chains make a tools-only program expensive today.
   A Go program links a package whole, so importing the runner links all of
   them.
 
-`mcpserve` takes an `*agentkit.Runner`, and `Agent.Runner()` returns one, so
-the runner's type is part of both.
+`mcpserve` takes an `*agentkit.Runner` and so imports the root package: a
+program that serves its tools over MCP links the providers through it as
+well. `Agent.Runner()` returns the same type.
 
 The first consumer is Parley's CLI, a pure-Go binary installed on
 developers' machines, which is to serve its commands as tools with code
@@ -76,6 +78,8 @@ and no package that needs cgo. `runner.New(Toolset)` builds one.
 - Every refusal of `NewRunner` is the same error with the same text, for
   example `core.ErrUnguardedExecute` for a reachable shell tool without a
   guard.
+- `mcpserve` takes its runner from the new package and no longer imports
+  the root package. `mcpserve.New` accepts every value it accepts today.
 - The generated docs list the new package, and `docs/api.md`,
   `docs/architecture.md` and `docs/guide.md` name it as where a
   tools-only program starts.
@@ -94,7 +98,7 @@ for it as the same types and constants.
 
 The build has a check, part of `make check`, that fails when the packages
 a program needs for the runner and code mode (`runner`, `codemode`, `core`,
-`schema`, `guard`) come to depend on a tree-sitter module, a provider
+`schema`, `guard`, and `mcpserve` in its own module) come to depend on a tree-sitter module, a provider
 package or a provider's SDK, and names the package that brought it in.
 
 - The check also builds those packages with `CGO_ENABLED=0`.
