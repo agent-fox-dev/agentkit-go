@@ -432,7 +432,17 @@ agentkit-tools call --dir /work/checkout --request /tmp/request.json
 ```
 
 It prints one JSON object, the result with the text a session would serve,
-and exits 0 whether the tool succeeded or not. The shell guard defaults to
+and exits 0 whether the tool succeeded or not. A relay that makes many calls
+on one checkout names an index directory outside it, so only the first call
+builds the `code_search` index and the later ones load it and pick up what
+changed since:
+
+```bash
+export AGENTKIT_INDEX_DIR=/var/cache/agentkit-index   # or --index-dir on each call
+agentkit-tools call --dir /work/checkout --request /tmp/request.json
+```
+
+The shell guard defaults to
 `allow-all`, since the sandbox is the boundary; on a bare host pass
 `--guard restricted`. `--tools` and `--read-only` narrow what is served. Every
 flag and exit code is in [cli.md](cli.md#agentkit-tools), and

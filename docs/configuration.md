@@ -55,6 +55,7 @@ configured by:
 | `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL` | the `openrouter` provider | [`openrouter.Options`](#openrouteroptions) |
 | `OLLAMA_HOST` (and `OLLAMA_AUTH`, read by Ollama's own package) | the `ollama` provider | [`ollama.Options`](#ollamaoptions) |
 | `AGENTKIT_PROVIDER`, `AGENTKIT_MODEL`, `AGENTKIT_EFFORT`, `AGENTKIT_LIVE` | the examples and the live tests only | [Other variables](#other-variables) |
+| `AGENTKIT_INDEX_DIR` | the `agentkit-tools` command only (the library reads no `AGENTKIT_` variable) | [cli.md](cli.md#flags) |
 | `AGENTKIT_BASH_DIFF` | opt-in tests only | [development.md](development.md#tests) |
 
 ## `agentkit.Config`
@@ -993,6 +994,7 @@ workspace's ignore rules; `codesearch.Options` has no ignore setting:
 | `MaxBytes` | 1 GiB | Total indexed content bound. |
 | `MaxBuildTime` | 60 s | Wall-time bound for the build; files already walked get a grace window of a quarter of it. |
 | `TempDir` | `os.TempDir()` | Where shard files are written. |
+| `IndexDir` | empty: no stored index | Keeps the index under `IndexDir/agentkit-codesearch-<sha256 of the root>/` for later processes; `Close` keeps it. Must lie outside the workspace, or `New` refuses it. See [the stored index](codesearch.md#the-stored-index). |
 
 ## Subprocess runner (`tools.Run`, `tools.RunArgv`)
 

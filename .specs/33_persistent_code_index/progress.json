@@ -3,7 +3,7 @@
   "spec_id": "33",
   "spec_name": "persistent_code_index",
   "schema_version": 3,
-  "updated_at": "2026-11-19T21:15:50Z",
+  "updated_at": "2026-11-19T21:18:22Z",
   "tasks": [
     {
       "id": 1,
@@ -359,7 +359,22 @@
     },
     {
       "id": 6,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-6.1",
+          "no_red": "documentation is text, which steering forbids testing; PATH-4's shell check verifies it; this test proves the modules the docs describe build",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T21:18:07Z",
+                "tree": "d0e72b50f3f17860736cb21461b3cd1bb72f03bd"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 7,
