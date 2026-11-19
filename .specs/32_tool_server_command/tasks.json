@@ -1,0 +1,163 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
+  "spec_id": "32",
+  "spec_name": "tool_server_command",
+  "schema_version": 3,
+  "test_commands": {
+    "all_tests": "make check",
+    "linter": "make lint",
+    "spec_tests": "go -C cmd/agentkit-tools test -short -count=1 ./..."
+  },
+  "dependencies": [
+    {
+      "spec": "31",
+      "reason": "the command lands after the sandbox removal: into the MODULES list, docs/cli.md and examples/README.md it leaves, with examples/toolserver replacing the examples/harness it deletes"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "title": "Create the cmd/agentkit-tools module and serve the directory's tool set with its listing",
+      "criteria": [
+        "REQ-1",
+        "REQ-5"
+      ],
+      "steps": [
+        "Create the nested module github.com/agent-fox-dev/agentkit-go/cmd/agentkit-tools in cmd/agentkit-tools: a go.mod requiring the root, codesearch and mcpserve modules with replace directives to ../.., ../../codesearch and ../../mcpserve, and a module comment saying it is separate so the root module's graph does not grow; add cmd/agentkit-tools to MODULES and to the module loop of the doc target in the Makefile",
+        "Add cmd/agentkit-tools/helpers_test.go: build the binary once for the package's tests into a temporary directory, and a run helper that starts it with arguments, an environment and a working directory and returns stdout, stderr and the exit code; use testutil.Tree and testutil.Environ",
+        "Parse `agentkit-tools <mcp|call|tools> [flags]`, with --dir on every subcommand and --version on its own; no subcommand, an unknown one or a flag the subcommand does not take prints usage naming mcp, call and tools to stderr and exits 2. mcp and call may answer 'not yet implemented' with exit 2 until their tasks",
+        "Resolve --dir (default the working directory) and refuse a path that does not exist or is not a directory with one stderr line naming it and exit 2, before anything is built; workspace.Open does not do this check",
+        "Build the tool set in one function the three subcommands share: workspace.Open, then the code_search index from an index constructor held in a package variable (codesearch.New by default, so a test can make it return codesearch.ErrUnsupported), tools.For with that index and a nil Env (tools.ReducedEnv of the process environment), then codemode.New over all of them, and agentkit.NewRunner with guard.AllowAll",
+        "On codesearch.ErrUnsupported, build without the index and write one stderr line saying code_search is not served on this platform",
+        "Close the index when the command ends, so its temporary directory is removed",
+        "Implement `tools`: one JSON array of {name, description, input_schema, output_schema} in serving order from the runner's Tools(); input_schema is the marshalled schema or {\"type\":\"object\"}, output_schema the marshalled schema or null",
+        "Implement --version from the binary's build information: the version of the cmd/agentkit-tools module when it is the main module or a dependency (the replacement's when replaced), else (devel), with the algorithm of mcpserve's versionFrom",
+        "Write the behaviours of REQ-1 and REQ-5 into cmd/agentkit-tools/toolset_test.go and cmd/agentkit-tools/list_test.go and make them pass"
+      ],
+      "touches": [
+        "cmd/agentkit-tools/go.mod",
+        "cmd/agentkit-tools/go.sum",
+        "cmd/agentkit-tools/main.go",
+        "cmd/agentkit-tools/toolset.go",
+        "cmd/agentkit-tools/list.go",
+        "cmd/agentkit-tools/helpers_test.go",
+        "cmd/agentkit-tools/toolset_test.go",
+        "cmd/agentkit-tools/list_test.go",
+        "Makefile"
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Choose the guard and the served tools from the command line",
+      "criteria": [
+        "REQ-2"
+      ],
+      "steps": [
+        "Add --guard to every subcommand: allow-all (the default) gives the runner guard.AllowAll, restricted gives it guard.Restricted(guard.Options{}); any other value exits 2 with one stderr line naming allow-all and restricted",
+        "Add --tools (a comma-separated list, spaces around names trimmed) and --read-only to every subcommand; --read-only leaves out write_file, edit_file, execute and run_command; with both, a tool is served when both allow it; the served order is always the serving order",
+        "Apply the selection to the tools of tools.For and code_search before code mode is built, then build code_mode over exactly the selected tools, and serve it only when --tools is absent or names it and at least one other tool is selected",
+        "A --tools name that is no tool exits 2 with one stderr line quoting it and listing every tool name; a selection that leaves no tool exits 2 with one stderr line saying no tool is selected",
+        "Write the behaviours of REQ-2 into cmd/agentkit-tools/toolset_test.go as tables and make them pass"
+      ],
+      "touches": [
+        "cmd/agentkit-tools/main.go",
+        "cmd/agentkit-tools/toolset.go",
+        "cmd/agentkit-tools/toolset_test.go"
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Make one tool call from a request file",
+      "criteria": [
+        "REQ-4",
+        "REQ-3.4"
+      ],
+      "steps": [
+        "Add `call` with --request (required) and --timeout (default 10m); a --timeout that does not parse or is not positive exits 2 with one stderr line",
+        "Read the request file, refusing more than 16 MiB without reading past it; a missing, unreadable or oversized file, content that is not a JSON object, or a name that is absent, not a string or empty exits 2 with nothing on stdout and one stderr line",
+        "Pass an absent input as {} and any present input verbatim to Runner.Call, so a non-object input is the runner's invalid_arguments result and a name the selection left out is its unknown_tool result",
+        "Write the result as one JSON object: core.ToolResult's own marshalling (ok, data, error, detail, metadata) plus text, the result's LLMText followed by the text of each core.TextBlock in Blocks, joined with a newline; exit 0 whenever a result is written",
+        "Run the call under a context with the --timeout deadline; when the deadline passes, cancel it and write {ok: false, error: timeout, detail naming the duration} as soon as the call returns or 5 seconds after the deadline, whichever comes first",
+        "On SIGINT or SIGTERM cancel the call, write nothing to stdout and exit 130 or 143",
+        "Write the behaviours of REQ-4 into cmd/agentkit-tools/call_test.go, with the relay flow of PATH-2 and the code_mode script of PATH-3 as tests there, and the call rows of REQ-3.4's signal table into cmd/agentkit-tools/mcp_test.go; make them pass"
+      ],
+      "touches": [
+        "cmd/agentkit-tools/main.go",
+        "cmd/agentkit-tools/call.go",
+        "cmd/agentkit-tools/call_test.go",
+        "cmd/agentkit-tools/mcp_test.go"
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Serve one MCP session on stdin and stdout",
+      "criteria": [
+        "REQ-3"
+      ],
+      "steps": [
+        "Add `mcp`: build the runner as the other subcommands do, then mcpserve.New with Name agentkit-tools, Version the command's version and a Logger writing to stderr, and ServeStdio under a context that SIGINT and SIGTERM cancel",
+        "Keep the index open for the whole session and close it after ServeStdio returns",
+        "Exit 0 when ServeStdio returns nil; exit 130 or 143 when a signal ended it; for any other error write one line, `agentkit-tools: mcp session ended: frame rejected: <rule>` when errors.As finds a wire.Error, else `agentkit-tools: mcp session ended: session error`, never the error's own text, and exit 1",
+        "Write nothing to stdout outside ServeStdio",
+        "Write into cmd/agentkit-tools/mcp_test.go the session of PATH-1 through the MCP Go SDK client over mcp.CommandTransport, the rejected-frame test of REQ-3.3 mirroring mcpserve's TestAFrameThatBreaksTheWireLimitsEndsTheSessionUnserved, and the mcp rows of REQ-3.4's signal table; make them pass"
+      ],
+      "touches": [
+        "cmd/agentkit-tools/main.go",
+        "cmd/agentkit-tools/mcp.go",
+        "cmd/agentkit-tools/mcp_test.go",
+        "cmd/agentkit-tools/go.mod",
+        "cmd/agentkit-tools/go.sum"
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Add the examples/toolserver example that drives the command in both modes",
+      "criteria": [
+        "REQ-6.2"
+      ],
+      "steps": [
+        "Create examples/toolserver as its own module requiring cmd/agentkit-tools, the root module and the MCP Go SDK, with replace directives to the local modules; add it to MODULES",
+        "The program writes a small sample project to a temporary directory, builds agentkit-tools from its module into a temporary directory with the go toolchain, and removes both when it ends",
+        "It prints the tool names from `agentkit-tools tools`, then starts `agentkit-tools mcp --dir <sample>` through the MCP Go SDK client over mcp.CommandTransport and prints a code_search hit and an edit found by a second search, then runs `agentkit-tools call` with a request file for code_search and for a code_mode script and prints the results, then a completion line",
+        "Where code_search is not served on the platform, it says so and runs the rest; it needs no API key and no network beyond the module cache",
+        "Write examples/toolserver/README.md (what it shows, how to run it, what it prints), and examples/toolserver/main_test.go running the program with testutil.GoRun as examples/indexedsearch/main_test.go does; make it pass"
+      ],
+      "touches": [
+        "examples/toolserver/go.mod",
+        "examples/toolserver/go.sum",
+        "examples/toolserver/main.go",
+        "examples/toolserver/sample.go",
+        "examples/toolserver/README.md",
+        "examples/toolserver/main_test.go",
+        "Makefile"
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Document the command and the new modules",
+      "criteria": [
+        "REQ-6.1",
+        "REQ-6.3"
+      ],
+      "steps": [
+        "Confirm MODULES names cmd/agentkit-tools and examples/toolserver, the doc target documents cmd/agentkit-tools, and the root go.mod and go.sum carry no change; run `make doc` and commit docs/generated as it writes it",
+        "docs/cli.md: an agentkit-tools section with installing it (`go install github.com/agent-fox-dev/agentkit-go/cmd/agentkit-tools@<version>`), the mcp, call and tools subcommands, every flag with its default, the request file and result object, and the exit codes 0, 1, 2, 130 and 143, with the Contents index in step",
+        "docs/guide.md: a section on serving the tools to another harness or a relay with the command, with an MCP configuration that runs `agentkit-tools mcp --dir <checkout>`; README.md: the command in what AgentKit provides and in the docs table; examples/README.md: the toolserver row",
+        "docs/architecture.md: the cmd/agentkit-tools module in the module layout and how it wires tools.For, codesearch, codemode, the runner and mcpserve; docs/development.md: the modules MODULES lists; docs/DEPS.md: the list also covers cmd/agentkit-tools, which adds no third-party direct requirement; docs/releasing.md: the cmd/agentkit-tools/ tag with every release",
+        "Bring each touched document's Contents index in step with its headings"
+      ],
+      "touches": [
+        "Makefile",
+        "docs/generated/",
+        "docs/cli.md",
+        "docs/guide.md",
+        "README.md",
+        "examples/README.md",
+        "docs/architecture.md",
+        "docs/development.md",
+        "docs/DEPS.md",
+        "docs/releasing.md"
+      ]
+    }
+  ]
+}
