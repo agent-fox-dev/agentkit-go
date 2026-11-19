@@ -13,7 +13,9 @@ import (
 	"testing"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
 	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/workspace"
 )
 
 // symbolNames is the Container.Name of each match, sorted.
@@ -217,5 +219,84 @@ func TestFindSymbolGivesTheSameMatchesThroughTheIndex(t *testing.T) {
 		if g, w := got.Data["symbols"].([]tools.SymbolMatch), want.Data["symbols"].([]tools.SymbolMatch); !slices.Equal(g, w) {
 			t.Errorf("%v: through the index %+v, from the table %+v", q, g, w)
 		}
+	}
+}
+
+func TestSymbolsAnswersFromAStoredIndexWithoutBuilding(t *testing.T) {
+	ws := openWorkspace(t, testutil.Tree(t, needleFiles))
+	indexDir := t.TempDir()
+	a := indexFor(t, ws, Options{IndexDir: indexDir})
+	find(t, a, "needle")
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	testutil.WriteTree(t, ws.Root(), map[string]string{"b.go": "package p\n\n// Other does not.\nfunc Other() int { return 2 }\n\nfunc Fresh() {}\n"})
+
+	b := indexFor(t, ws, Options{IndexDir: indexDir})
+	ans, ok, err := b.Symbols(context.Background(), tools.SymbolQuery{Name: "Fresh"})
+	if err != nil || !ok {
+		t.Fatalf("Symbols = ok:%v err:%v, want an answer from the stored index", ok, err)
+	}
+	if len(ans.Matches) != 1 || ans.Matches[0].Path != "b.go" || ans.Matches[0].Name != "Fresh" {
+		t.Fatalf("matches = %+v, want Fresh in b.go", ans.Matches)
+	}
+	if n := b.BuildCount(); n != 0 {
+		t.Fatalf("BuildCount = %d, want 0", n)
+	}
+
+	c := indexFor(t, ws, Options{IndexDir: indexDir})
+	findSymbol := func(opts tools.Options) core.Tool {
+		all, err := tools.For(ws, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tl := range all {
+			if tl.Name == "find_symbol" {
+				return tl
+			}
+		}
+		t.Fatal("no find_symbol")
+		return core.Tool{}
+	}
+	in, _ := json.Marshal(map[string]any{"name": "Needle"})
+	got := findSymbol(tools.Options{Index: c}).Execute(context.Background(), in)
+	want := findSymbol(tools.Options{}).Execute(context.Background(), in)
+	if !got.OK || !strings.Contains(got.Text, "codesearch") {
+		t.Fatalf("find_symbol was not answered by the stored index:\n%s", got.Text)
+	}
+	if g, w := got.Data["symbols"].([]tools.SymbolMatch), want.Data["symbols"].([]tools.SymbolMatch); len(g) == 0 || !slices.Equal(g, w) {
+		t.Errorf("matches through the stored index %v, through the table %v", g, w)
+	}
+	if n := c.BuildCount(); n != 0 {
+		t.Errorf("find_symbol built the index: BuildCount %d", n)
+	}
+}
+
+func TestSymbolsDeclinesAStoreItCannotAnswerFrom(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		prepare func(t *testing.T, ws *workspace.Workspace, indexDir string)
+	}{
+		{"no stored index", func(*testing.T, *workspace.Workspace, string) {}},
+		{"a partial stored index", func(t *testing.T, ws *workspace.Workspace, indexDir string) {
+			a := indexFor(t, ws, Options{IndexDir: indexDir, MaxFiles: 2})
+			find(t, a, "needle")
+			if err := a.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ws := openWorkspace(t, testutil.Tree(t, needleFiles))
+			indexDir := t.TempDir()
+			c.prepare(t, ws, indexDir)
+			idx := indexFor(t, ws, Options{IndexDir: indexDir})
+			if _, ok, err := idx.Symbols(context.Background(), tools.SymbolQuery{Name: "Needle"}); ok || err != nil {
+				t.Errorf("Symbols = ok:%v err:%v, want false and nil", ok, err)
+			}
+			if n := idx.BuildCount(); n != 0 {
+				t.Errorf("BuildCount = %d: Symbols built", n)
+			}
+		})
 	}
 }

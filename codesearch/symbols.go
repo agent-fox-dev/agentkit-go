@@ -22,8 +22,9 @@ const maxSymbolMatches = 1000
 // data collected by the build, using the matching rules of
 // 02_symbol_navigation_tools Requirement 2 (smart-case prefix, exact,
 // qualified names, kind, path). It returns ok=true only when the index has
-// been built by an earlier code_search, is not partial and not closed, and
-// the matches number at most 1000. It never starts a build.
+// been built by an earlier code_search, or, with Options.IndexDir, loaded from
+// a complete stored index, and is not partial and not closed, and the
+// matches number at most 1000. It never starts a build.
 func (idx *Index) Symbols(ctx context.Context, q tools.SymbolQuery) (tools.SymbolAnswer, bool, error) {
 	// Check context first.
 	if ctx.Err() != nil {
@@ -40,7 +41,20 @@ func (idx *Index) Symbols(ctx context.Context, q tools.SymbolQuery) (tools.Symbo
 		return tools.SymbolAnswer{}, false, nil
 	}
 	if !built {
-		return tools.SymbolAnswer{}, false, nil
+		// A complete stored index answers without a code_search first; it is
+		// loaded, never built.
+		if idx.opts.IndexDir == "" {
+			return tools.SymbolAnswer{}, false, nil
+		}
+		if err := idx.loadStored(ctx); err != nil {
+			if ctx.Err() != nil {
+				return tools.SymbolAnswer{}, false, ctx.Err()
+			}
+			return tools.SymbolAnswer{}, false, nil
+		}
+		idx.mu.RLock()
+		partial = idx.partial
+		idx.mu.RUnlock()
 	}
 
 	// A query of a live index keeps its run directory young for a sibling

@@ -591,6 +591,19 @@ func (idx *Index) Build(ctx context.Context) error {
 // one it waited for; a build that failed or was cancelled leaves the waiter
 // free to build for itself.
 func (idx *Index) build(ctx context.Context, onlyIfUnbuilt bool) error {
+	return idx.buildOrLoad(ctx, onlyIfUnbuilt, false)
+}
+
+// loadStored loads a complete stored index into an index that has none
+// built, and never builds one: it returns nil when the index is built after
+// it, by this call or another, and errNoStore when there is nothing to load.
+func (idx *Index) loadStored(ctx context.Context) error {
+	return idx.buildOrLoad(ctx, true, true)
+}
+
+// buildOrLoad is build, which with loadOnly loads a stored index or does
+// nothing.
+func (idx *Index) buildOrLoad(ctx context.Context, onlyIfUnbuilt, loadOnly bool) error {
 	// Claim the build slot, waiting abandonably while another call holds it.
 	for {
 		idx.mu.Lock()
@@ -679,6 +692,11 @@ func (idx *Index) build(ctx context.Context, onlyIfUnbuilt bool) error {
 			idx.dirty.markRevalidateAll()
 			return nil
 		}
+	}
+
+	if loadOnly {
+		os.RemoveAll(runDir)
+		return errNoStore
 	}
 
 	// The wall-time bound starts with the build, not with a wait for the lock.
