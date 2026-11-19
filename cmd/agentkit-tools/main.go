@@ -83,24 +83,6 @@ func parse(fs *flag.FlagSet, args []string, stderr io.Writer) error {
 	return nil
 }
 
-// runCall makes one tool call.
-func runCall(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("call", flag.ContinueOnError)
-	var s settings
-	s.register(fs)
-	fs.String("request", "", "")
-	fs.Duration("timeout", 0, "")
-	if parse(fs, args, stderr) != nil {
-		return 2
-	}
-	if err := s.checkDir(); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 2
-	}
-	fmt.Fprintln(stderr, "agentkit-tools call: not implemented")
-	return 2
-}
-
 // runMCP serves one MCP session.
 func runMCP(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)

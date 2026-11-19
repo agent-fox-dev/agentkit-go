@@ -167,3 +167,40 @@ func parseListing(t testing.TB, stdout string) listing {
 	}
 	return l
 }
+
+// started is the built command, started in the background with env and args,
+// its stdout and stderr captured.
+type started struct {
+	cmd            *exec.Cmd
+	stdout, stderr *bytes.Buffer
+}
+
+// start starts the built command without waiting for it.
+func start(t testing.TB, env []string, args ...string) *started {
+	t.Helper()
+	cmd := exec.Command(binary(t), args...)
+	cmd.Env = env
+	s := &started{cmd: cmd, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
+	cmd.Stdout, cmd.Stderr = s.stdout, s.stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	return s
+}
+
+// wait waits for the command, at most d, and returns its exit code, or -1
+// when it is still running.
+func (s *started) wait(d time.Duration) int {
+	done := make(chan struct{})
+	go func() {
+		_ = s.cmd.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return s.cmd.ProcessState.ExitCode()
+	case <-time.After(d):
+		return -1
+	}
+}
