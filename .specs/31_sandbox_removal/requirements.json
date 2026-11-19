@@ -1,0 +1,303 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
+  "spec_id": "31",
+  "spec_name": "sandbox_removal",
+  "schema_version": 3,
+  "requirements": [
+    {
+      "id": "REQ-1",
+      "title": "The last release with sandboxes",
+      "rationale": "Go resolves a nested module only from a version tag, so a consumer pinned to the sandbox module needs one on the last commit that has it.",
+      "system": "release",
+      "criteria": [
+        {
+          "id": "REQ-1.1",
+          "pattern": "ubiquitous",
+          "action": "carry the four tags v0.9.1, codesearch/v0.9.1, sandbox/v0.9.1 and mcpserve/v0.9.1, all on the commit the removal branch starts from, whose tree still holds sandbox/go.mod",
+          "contract": "for each of the four tags, `git rev-parse <tag>^{commit}` prints the removal's base commit; `git ls-tree --name-only sandbox/v0.9.1 -- sandbox/go.mod` prints sandbox/go.mod",
+          "check": {
+            "same_as": "PATH-2"
+          }
+        },
+        {
+          "id": "REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "docs/releasing.md",
+          "action": "name v0.9.1 as the last release with sandboxes and sandbox/v0.9.1 as the version to pin for them, give the root, codesearch/ and mcpserve/ tags as the tags of a release, and describe no image and no gateway",
+          "contract": "the file holds sandbox/v0.9.1 in its statement of the last release with sandboxes; its tag commands name v<X>, codesearch/v<X> and mcpserve/v<X> and no sandbox/ tag; it has no section on an image, its workflow, its tags, its registry secrets, building it, or the gateway",
+          "check": {
+            "same_as": "PATH-2"
+          }
+        }
+      ]
+    },
+    {
+      "id": "REQ-2",
+      "title": "Sandbox code and modules removed",
+      "rationale": "Parley owns sandboxes now; code nobody uses is code someone still has to build, test and keep in step.",
+      "system": "repository",
+      "criteria": [
+        {
+          "id": "REQ-2.1",
+          "pattern": "ubiquitous",
+          "action": "track no file under sandbox/, containers/agentkit-sandbox/, examples/sandbox/, examples/gateway/ or examples/harness/, no .dockerignore, and no /agentkit-sandboxd line in .gitignore",
+          "contract": "`git ls-files sandbox containers/agentkit-sandbox examples/sandbox examples/gateway examples/harness .dockerignore` prints nothing; `grep -x /agentkit-sandboxd .gitignore` exits 1",
+          "check": {
+            "same_as": "PATH-1"
+          }
+        },
+        {
+          "id": "REQ-2.2",
+          "pattern": "ubiquitous",
+          "system": "Makefile",
+          "action": "list exactly the modules ., codesearch, mcpserve and examples/indexedsearch in MODULES, each of which builds and vets for every cross target and for the host",
+          "contract": "the Makefile line reads `MODULES := . codesearch mcpserve examples/indexedsearch`; TestCrossTargetBuildAndVet and TestHostCgoBuildAndVet pass over those four modules",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the go toolchain, with cross compilation for linux/amd64, linux/arm64, darwin/arm64 and windows/amd64",
+              "go test run without -short, as make check-release runs it; that run is the owner's, not the implementer's"
+            ],
+            "pseudocode": "in internal/policy/builds_test.go, unchanged: modules(t) reads the four directories from the Makefile's MODULES; TestCrossTargetBuildAndVet runs `go build ./...` and `go vet ./...` in each for every cross target, TestHostCgoBuildAndVet for the host with cgo; both pass. Under -short (make check) both skip, so the implementer runs `go build ./... && go vet ./...` in each of the four modules and asserts exit 0"
+          }
+        },
+        {
+          "id": "REQ-2.3",
+          "pattern": "ubiquitous",
+          "action": "for any go.mod in the repository, require neither github.com/gokrazy/rsync nor github.com/landlock-lsm/go-landlock, and require google.golang.org/grpc and google.golang.org/protobuf only as indirect requirements",
+          "contract": "`go list -m all` in each of the four modules lists neither github.com/gokrazy/rsync nor github.com/landlock-lsm/go-landlock; every line of every go.mod that names google.golang.org/grpc or google.golang.org/protobuf ends in `// indirect`",
+          "check": {
+            "same_as": "PATH-1"
+          }
+        },
+        {
+          "id": "REQ-2.4",
+          "pattern": "event_driven",
+          "condition": "make tidy runs on the removal tree",
+          "action": "leave every go.mod and go.sum as committed",
+          "contract": "`git status --porcelain` prints nothing after `make tidy`",
+          "check": {
+            "same_as": "PATH-1"
+          }
+        },
+        {
+          "id": "REQ-2.5",
+          "pattern": "ubiquitous",
+          "system": "internal test helpers",
+          "action": "keep no helper that only the removed code called, while toolconformance's case table stays and the tools package still runs it",
+          "contract": "testutil.Tar, its test TestTarHoldsTheFilesInNameOrder and toolconformance's Tree.Tar are gone and no Go file calls them; TestToolsConformToTheSharedCaseTable passes",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in tools/for_test.go: TestToolsConformToTheSharedCaseTable, unchanged but for its comment, builds tools.For over each toolconformance tree and runs every case of toolconformance.CaseNames(); all pass. `go vet ./...` in the root module passes with the two Tar helpers deleted"
+          }
+        }
+      ]
+    },
+    {
+      "id": "REQ-3",
+      "title": "Build tooling without sandbox targets",
+      "rationale": "A make target or a generated doc for a module that no longer exists fails the first person who runs it.",
+      "system": "Makefile",
+      "criteria": [
+        {
+          "id": "REQ-3.1",
+          "pattern": "ubiquitous",
+          "action": "define none of the targets proto, build-containers, build-sandbox-container, sandbox-podman-test, sandbox-landlock-test, sandbox-gateway and sandbox-gateway-test, and none of the variables VERSION, COMMIT, BUILD_TIME, LDFLAGS, CONTAINER_REGISTRY, SANDBOX_IMAGE, SANDBOX_IMAGE_TAG, SANDBOX_TEST_ENV, AGENTKIT_SANDBOX_GIT_URL, PROTO_DIR, PROTOC_GEN_GO and PROTOC_GEN_GO_GRPC",
+          "contract": "`make help` lists none of those targets; `make proto` exits non-zero with make's `No rule to make target` message",
+          "check": {
+            "same_as": "PATH-1"
+          }
+        },
+        {
+          "id": "REQ-3.2",
+          "pattern": "event_driven",
+          "condition": "make doc runs",
+          "action": "write the generated docs of the root, codesearch and mcpserve modules only",
+          "contract": "docs/generated/ holds no sandbox/ directory; after `make doc`, `git status --porcelain -- docs/generated` prints nothing",
+          "check": {
+            "same_as": "PATH-1"
+          }
+        },
+        {
+          "id": "REQ-3.3",
+          "pattern": "ubiquitous",
+          "system": "repository",
+          "action": "for any file under .github/workflows, keep it byte-identical to the removal's base commit",
+          "contract": "`git diff --stat <base> -- .github/workflows` prints nothing",
+          "check": {
+            "same_as": "PATH-1"
+          }
+        },
+        {
+          "id": "REQ-3.4",
+          "pattern": "event_driven",
+          "condition": "make check runs at the root of the removal tree",
+          "action": "run fmt, vet, lint and the short tests in each of the four remaining modules and pass",
+          "contract": "make check exits 0",
+          "check": {
+            "same_as": "PATH-1"
+          }
+        }
+      ]
+    },
+    {
+      "id": "REQ-4",
+      "title": "Docs and doc comments that say what is true",
+      "rationale": "Steering treats an outdated doc as a regression, and a doc that still promises sandboxes sends a reader to code that is gone.",
+      "system": "documentation",
+      "criteria": [
+        {
+          "id": "REQ-4.1",
+          "pattern": "ubiquitous",
+          "action": "describe no sandbox module, provider, agent, gateway, sandbox image or proto target as part of AgentKit in README.md, examples/README.md, examples/codingagent/README.md, docs/DEPS.md, docs/cli.md, docs/api.md, docs/architecture.md, docs/guide.md, docs/configuration.md, docs/development.md and docs/releasing.md, with each one's Contents index matching its headings",
+          "contract": "a case-insensitive search of those files for agentkit-sandboxd, agentkit-gateway, gatewayd, landlock, podman and `sandbox/`, and a case-sensitive one for a Go identifier of the sandbox package (`sandbox\\.[A-Z]`), match only docs/releasing.md's statement of the last release with sandboxes; every Contents link in those files names a heading of the same file",
+          "check": {
+            "same_as": "PATH-1"
+          }
+        },
+        {
+          "id": "REQ-4.2",
+          "pattern": "ubiquitous",
+          "system": "docs/DEPS.md",
+          "action": "hold no ruling and no allowlist row for google.golang.org/grpc, google.golang.org/protobuf, github.com/gokrazy/rsync or github.com/landlock-lsm/go-landlock, and name only the root and mcpserve modules as the modules its list covers",
+          "contract": "no heading and no allowlist row of docs/DEPS.md names any of the four modules; the paragraph after the allowlist names neither the sandbox nor the sandbox/gatewayd module",
+          "check": {
+            "same_as": "PATH-1"
+          }
+        },
+        {
+          "id": "REQ-4.3",
+          "pattern": "ubiquitous",
+          "system": "docs/cli.md",
+          "action": "say in one line that the repository ships no command-line program, with no section on agentkit-sandboxd, agentkit-gateway or regenerating the protocols",
+          "contract": "the file holds its title and that one line, and no second-level heading",
+          "check": {
+            "same_as": "PATH-1"
+          }
+        },
+        {
+          "id": "REQ-4.4",
+          "pattern": "ubiquitous",
+          "system": "Go doc comments",
+          "action": "name no identifier, package or command of the removed module in the comments of workspace/workspace.go, guard/guard.go, mcpserve/doc.go, mcpserve/buildinfo.go, mcpserve/go.mod, internal/toolconformance/toolconformance.go and tools/for_test.go, and say that the shell guard is the only boundary on a host without a sandbox and that guard.AllowAll fits a process already inside an isolation boundary someone else owns",
+          "contract": "those files match none of `sandbox\\.[A-Z]` (a Go identifier of the sandbox package), `sandbox/`, IsolationContainer, IsolationMicroVM, NetworkNone, AgentInfo, agentkit-sandboxd and buildver; docs/generated/ equals the output of `make doc` over them",
+          "check": {
+            "same_as": "PATH-1"
+          }
+        }
+      ]
+    },
+    {
+      "id": "REQ-5",
+      "title": "The decision recorded in an ADR",
+      "rationale": "ADR 05 and ADR 06 describe rules for code that no longer exists; the reason it is gone belongs where the next reader looks for decisions.",
+      "system": "ADR record",
+      "criteria": [
+        {
+          "id": "REQ-5.1",
+          "pattern": "ubiquitous",
+          "action": "hold docs/adr/08-leave-sandboxes-to-the-platform-that-runs-them.md with status Accepted, recording that the sandbox module was deleted whole, why (Parley owns sandboxes; PRD 10's rule), and the consequences: the shell guard is the only boundary on a host without a sandbox, v0.9.1 is the last release with sandboxes, examples/harness is gone until agentkit-tools replaces it, and build-sandbox-containers.yaml stays in .github/workflows",
+          "contract": "the file opens with `# ADR 08: Leave sandboxes to the platform that runs them` and `- **Status:** Accepted`, and has the sections Context, Decision and Consequences, as ADRs 01 to 07 do",
+          "check": {
+            "same_as": "PATH-1"
+          }
+        },
+        {
+          "id": "REQ-5.2",
+          "pattern": "ubiquitous",
+          "action": "keep ADR 05 and ADR 06 with their bodies unchanged and a status line saying each is superseded by ADR 08, with a link to it",
+          "contract": "each file's status line reads `- **Status:** Superseded by [ADR 08](08-leave-sandboxes-to-the-platform-that-runs-them.md)`; `git diff <base>` of each file changes that line only",
+          "check": {
+            "same_as": "PATH-1"
+          }
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "PATH-1",
+      "title": "A maintainer checks the tree after the removal",
+      "steps": [
+        {
+          "actor": "maintainer",
+          "action": "runs `make check` at the root of the removal tree"
+        },
+        {
+          "actor": "Makefile",
+          "action": "runs fmt, vet, lint and the short tests in ., codesearch, mcpserve and examples/indexedsearch"
+        },
+        {
+          "actor": "maintainer",
+          "action": "runs `make doc` and `make tidy`, then `make help` and `make proto`"
+        },
+        {
+          "actor": "git",
+          "action": "reports the working tree unchanged and lists no tracked file under the removed trees"
+        },
+        {
+          "actor": "maintainer",
+          "action": "searches the docs, the doc comments and every go.mod for the names of the removed module, and reads ADR 05, 06 and 08"
+        }
+      ],
+      "smoke": {
+        "real_components": [
+          "Makefile",
+          "go toolchain",
+          "golangci-lint",
+          "git",
+          "the repository's docs and go.mod files"
+        ],
+        "setup": [
+          "a checkout of the removal branch with the v0.9.1 tags fetched, and <base> the commit the branch starts from",
+          "provider credentials scrubbed from the environment (env -u ANTHROPIC_API_KEY -u OPENROUTER_API_KEY), as for any run of the tests"
+        ],
+        "end_state": [
+          "make check exits 0, having run in exactly the four modules MODULES lists",
+          "`make doc` and `make tidy` leave `git status --porcelain` empty, and docs/generated/ holds no sandbox/ directory",
+          "`make help` lists no removed target and `make proto` fails with `No rule to make target`",
+          "`git ls-files sandbox containers/agentkit-sandbox examples/sandbox examples/gateway examples/harness .dockerignore` prints nothing and .gitignore has no /agentkit-sandboxd line",
+          "`go list -m all` in each module lists neither rsync nor go-landlock, and every go.mod line naming grpc or protobuf ends in `// indirect`",
+          "`git diff --stat <base> -- .github/workflows` prints nothing",
+          "the search of REQ-4.1's files and REQ-4.4's comments for the removed names matches only docs/releasing.md's statement of the last release with sandboxes; docs/DEPS.md names none of the four removed dependencies; docs/cli.md is its title and one line",
+          "docs/adr/08-leave-sandboxes-to-the-platform-that-runs-them.md exists with status Accepted, and ADR 05 and ADR 06 differ from <base> only in a status line pointing to it"
+        ],
+        "pseudocode": "a shell session, not a committed test (steering forbids tests of artefacts): `env -u ANTHROPIC_API_KEY -u OPENROUTER_API_KEY make check`; assert exit 0 and that its `go test -short ./... (<m>)` lines name exactly the four modules; `make doc && make tidy && git status --porcelain` is empty; `make help | grep -Ei 'sandbox|gateway|container|proto'` is empty; `make proto` exits non-zero; `git ls-files <removed paths>` is empty; for m in the four modules: `(cd $m && go list -m all) | grep -E 'gokrazy/rsync|go-landlock'` is empty; `grep -hE 'google.golang.org/(grpc|protobuf) ' $(git ls-files '*go.mod') | grep -v '// indirect'` is empty; `git diff --stat <base> -- .github/workflows` is empty; `grep -niE 'agentkit-sandboxd|agentkit-gateway|gatewayd|landlock|podman|sandbox/' <REQ-4.1 docs> <REQ-4.4 files>` and `grep -nE 'sandbox\\.[A-Z]' <the same files>` match only the releasing.md statement, so prose such as 'not a sandbox.' is not a match; `git diff <base> -- docs/adr/05-* docs/adr/06-*` changes one status line each"
+      }
+    },
+    {
+      "id": "PATH-2",
+      "title": "A pinned consumer finds the last release with sandboxes",
+      "steps": [
+        {
+          "actor": "consumer",
+          "action": "reads docs/releasing.md and finds v0.9.1 named as the last release with sandboxes"
+        },
+        {
+          "actor": "consumer",
+          "action": "resolves sandbox/v0.9.1 with git"
+        },
+        {
+          "actor": "git",
+          "action": "shows the tagged tree, which holds sandbox/go.mod, on the commit the removal follows"
+        }
+      ],
+      "smoke": {
+        "real_components": [
+          "git",
+          "the v0.9.1 tags",
+          "docs/releasing.md"
+        ],
+        "setup": [
+          "a checkout of the removal branch with the tags fetched from origin (`git fetch --tags origin`), and <base> the commit the branch starts from"
+        ],
+        "end_state": [
+          "docs/releasing.md names v0.9.1 as the last release with sandboxes and sandbox/v0.9.1 as the version to pin, and its tag commands name no sandbox/ tag",
+          "v0.9.1, codesearch/v0.9.1, sandbox/v0.9.1 and mcpserve/v0.9.1 each resolve to <base>",
+          "`git ls-tree --name-only sandbox/v0.9.1 -- sandbox/go.mod` prints sandbox/go.mod"
+        ],
+        "pseudocode": "a shell session: `grep -n 'sandbox/v0.9.1' docs/releasing.md` matches the statement; for t in v0.9.1 codesearch/v0.9.1 sandbox/v0.9.1 mcpserve/v0.9.1: assert `git rev-parse $t^{commit}` == <base>; assert `git ls-tree --name-only sandbox/v0.9.1 -- sandbox/go.mod` == 'sandbox/go.mod'"
+      }
+    }
+  ]
+}

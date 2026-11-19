@@ -1,0 +1,153 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
+  "spec_id": "31",
+  "spec_name": "sandbox_removal",
+  "schema_version": 3,
+  "test_commands": {
+    "all_tests": "make check",
+    "linter": "make lint",
+    "spec_tests": "go test -short -count=1 ./tools/... ./internal/..."
+  },
+  "dependencies": [],
+  "tasks": [
+    {
+      "id": 1,
+      "title": "Confirm the v0.9.1 tags, then delete the sandbox trees, modules and make targets",
+      "criteria": [
+        "REQ-1.1",
+        "REQ-2",
+        "REQ-3"
+      ],
+      "steps": [
+        "Fetch the tags from origin and confirm that v0.9.1, codesearch/v0.9.1, sandbox/v0.9.1 and mcpserve/v0.9.1 exist and each resolves to the commit the branch starts from; if any is missing or points elsewhere, stop before deleting anything and report each such tag by name. Never create or move a tag",
+        "Delete the trees sandbox/ (sandbox/gatewayd with it), containers/agentkit-sandbox/, examples/sandbox/, examples/gateway/ and examples/harness/, and the file .dockerignore; drop the /agentkit-sandboxd line of .gitignore",
+        "Set MODULES in the Makefile to `. codesearch mcpserve examples/indexedsearch`, and the module loop of the doc target to `. codesearch mcpserve`",
+        "Remove from the Makefile the targets proto, build-containers, build-sandbox-container, sandbox-podman-test, sandbox-landlock-test, sandbox-gateway and sandbox-gateway-test, the variables VERSION, COMMIT, BUILD_TIME, LDFLAGS, CONTAINER_REGISTRY, SANDBOX_IMAGE, SANDBOX_IMAGE_TAG, SANDBOX_TEST_ENV, AGENTKIT_SANDBOX_GIT_URL, PROTO_DIR, PROTOC_GEN_GO and PROTOC_GEN_GO_GRPC, and the comments that describe them",
+        "Delete testutil.Tar with its test TestTarHoldsTheFilesInNameOrder, and toolconformance's Tree.Tar, with the imports they leave unused; keep the rest of toolconformance, which tools/for_test.go runs",
+        "Run `make tidy`, then confirm that no go.mod requires github.com/gokrazy/rsync or github.com/landlock-lsm/go-landlock and that every go.mod line naming google.golang.org/grpc or google.golang.org/protobuf ends in `// indirect`",
+        "Run `make doc`, so docs/generated/sandbox/ goes; the comments it copies are reworded in the next task",
+        "Leave every file under .github/workflows untouched, build-sandbox-containers.yaml included",
+        "Run `go build ./... && go vet ./...` in each of the four modules, then `env -u ANTHROPIC_API_KEY -u OPENROUTER_API_KEY make check`; the slow TestCrossTargetBuildAndVet and TestHostCgoBuildAndVet are the owner's make check-release run, not this task's"
+      ],
+      "touches": [
+        "sandbox/",
+        "containers/agentkit-sandbox/",
+        "examples/sandbox/",
+        "examples/gateway/",
+        "examples/harness/",
+        ".dockerignore",
+        ".gitignore",
+        "Makefile",
+        "internal/testutil/testutil.go",
+        "internal/testutil/testutil_test.go",
+        "internal/toolconformance/toolconformance.go",
+        "go.mod",
+        "go.sum",
+        "codesearch/go.mod",
+        "codesearch/go.sum",
+        "mcpserve/go.mod",
+        "mcpserve/go.sum",
+        "examples/indexedsearch/go.mod",
+        "examples/indexedsearch/go.sum",
+        "docs/generated/"
+      ],
+      "done_when": [
+        "`git ls-files sandbox containers/agentkit-sandbox examples/sandbox examples/gateway examples/harness .dockerignore` prints nothing",
+        "`make help` lists no removed target and `make proto` fails with `No rule to make target`",
+        "`make tidy` and `make doc` leave `git status --porcelain` empty"
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Make the doc comments true after the removal and regenerate the generated docs",
+      "criteria": [
+        "REQ-4.4"
+      ],
+      "steps": [
+        "Reword the package doc of workspace/workspace.go: the workspace is built for the tools and the code-search index, and the paragraph on a sandbox agent's Landlock ruleset and the local provider goes; the example of passing the ignore matcher on names no sandbox identifier",
+        "Reword guard/guard.go: Restricted is a floor, not a sandbox, and it is the only boundary on a host without one; AllowAll fits a process already inside an isolation boundary someone else owns. Drop every mention of sandbox.IsolationContainer, sandbox.IsolationMicroVM, sandbox.NetworkNone, sandbox/podman and sandbox/local",
+        "Reword mcpserve/doc.go (its own module keeps the root module listening on no socket), mcpserve/buildinfo.go (versionFrom without the sandbox/internal/buildver reference) and the module comment of mcpserve/go.mod (no mention of sandbox/gatewayd)",
+        "Reword the package doc of internal/toolconformance/toolconformance.go and the comment of TestToolsConformToTheSharedCaseTable in tools/for_test.go: the tools package runs the case table against tools.For; there are no proxy tools",
+        "Search the Go files of the four modules for `sandbox\\.[A-Z]` (a Go identifier of the sandbox package), `sandbox/`, IsolationContainer, IsolationMicroVM, NetworkNone, AgentInfo, agentkit-sandboxd and buildver, and reword any comment still found; leave \"sandbox\" in its general sense, as codemode and examples/codingagent use it",
+        "Run `make doc` and commit docs/generated/ as it writes it"
+      ],
+      "touches": [
+        "workspace/workspace.go",
+        "guard/guard.go",
+        "mcpserve/doc.go",
+        "mcpserve/buildinfo.go",
+        "mcpserve/go.mod",
+        "internal/toolconformance/toolconformance.go",
+        "tools/for_test.go",
+        "docs/generated/"
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Record the decision in ADR 08 and mark ADR 05 and ADR 06 superseded",
+      "criteria": [
+        "REQ-5"
+      ],
+      "steps": [
+        "Write docs/adr/08-leave-sandboxes-to-the-platform-that-runs-them.md in the shape of ADRs 01 to 07: the title line `# ADR 08: Leave sandboxes to the platform that runs them`, `- **Status:** Accepted`, today's date, then Context, Decision and Consequences",
+        "Context: AgentKit's own sandboxes (PRD 11, specs 13 to 19 and 25), about 15 000 lines of production Go, used inside the repository only by three examples; Parley now owns sandboxes on OpenShell; PRD 10's rule that the tools are kept because the model is bad at judgment and sandboxes only because AgentKit chose to own the whole stack",
+        "Decision: the sandbox module, the gateway, the sandbox image and their examples are deleted whole, in one cut, with no Landlock library kept; v0.9.1, with its codesearch/, sandbox/ and mcpserve/ tags, is the last release with sandboxes",
+        "Consequences: the shell guard is the only boundary on a host without a sandbox, as before PRD 11; a consumer pins sandbox/v0.9.1; examples/harness is gone until the agentkit-tools command replaces it; grpc and protobuf remain only as indirect requirements; build-sandbox-containers.yaml stays in .github/workflows by the owner's decision and fails until the owner changes it",
+        "In ADR 05 and ADR 06 replace the status line with `- **Status:** Superseded by [ADR 08](08-leave-sandboxes-to-the-platform-that-runs-them.md)` and change nothing else"
+      ],
+      "touches": [
+        "docs/adr/08-leave-sandboxes-to-the-platform-that-runs-them.md",
+        "docs/adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md",
+        "docs/adr/06-authenticate-every-gateway-rpc-before-reading-it.md"
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Take the sandbox out of the architecture, configuration, guide and API docs",
+      "criteria": [
+        "REQ-4.1"
+      ],
+      "steps": [
+        "docs/architecture.md: remove the Sandboxes section with its subsections on the sandbox image, the Podman and Docker provider, the Landlock provider and the gateway, and every other passage that describes the sandbox, its agent or its protocols; where the module layout is described, list the root, codesearch and mcpserve modules; link ADR 08 where the removal is the reason a passage changed",
+        "docs/configuration.md: remove the section on sandboxes (sandbox.Spec, Landlock, sandbox.ToolOptions, sandbox.Open, the transfers, the Podman and Docker provider, sandbox.GitRepo, the Landlock provider, the gateway, the sandbox images) and every environment variable and make variable only they read",
+        "docs/guide.md: remove the sections on sandboxes, choosing a provider and the gateway, and reword any passage that sends the reader to a sandbox for isolation: the shell guard is the boundary on a bare host, and isolation is the platform's that runs the process",
+        "docs/api.md: remove the Sandboxes section, the sandbox and sandbox/gatewayd rows of the nested modules, and the gateway from the network services",
+        "In each of the four, bring the Contents index in step with the headings, and search the file case-insensitively for agentkit-sandboxd, agentkit-gateway, gatewayd, landlock, podman and `sandbox/`, and case-sensitively for `sandbox\\.[A-Z]`, until nothing is found"
+      ],
+      "touches": [
+        "docs/architecture.md",
+        "docs/configuration.md",
+        "docs/guide.md",
+        "docs/api.md"
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Rewrite the READMEs, the dependency rulings, the CLI, development and release docs",
+      "criteria": [
+        "REQ-1.2",
+        "REQ-4.1",
+        "REQ-4.2",
+        "REQ-4.3"
+      ],
+      "steps": [
+        "README.md: drop sandboxes from the opening, the table of what AgentKit provides, the module table, the paragraph on the gateway server and the rows of the docs table that promise sandboxes, the gateway or the sandbox image; keep the README to what AgentKit is, an example and where to read more, as steering asks",
+        "examples/README.md: remove the sandbox, gateway and harness rows and the sentence that names them as their own modules; examples/codingagent/README.md: replace the link to the sandbox example with the advice to run the tools inside a sandbox the platform provides, with no link",
+        "docs/DEPS.md: remove the rulings and allowlist rows of google.golang.org/grpc, google.golang.org/protobuf, github.com/gokrazy/rsync and github.com/landlock-lsm/go-landlock, their Contents entries, and the sentences that extend the list to the sandbox and sandbox/gatewayd modules; the list covers the root and mcpserve modules, and codesearch stays outside it",
+        "docs/cli.md: replace the whole body with its title and one line saying the repository ships no command-line program; the agentkit-tools package adds its section later",
+        "docs/development.md: remove the section on container, Landlock and gateway tests, and every removed make target from the make target table; name the four modules MODULES now lists",
+        "docs/releasing.md: say a release is the Go modules' tags alone; tag the root, codesearch/ and mcpserve/ modules in the release steps; remove the sections on the image workflow, image tags, registry and secrets, building the image locally and the gateway; add one statement that v0.9.1 is the last release with sandboxes and sandbox/v0.9.1 the version to pin for them, with a link to ADR 08",
+        "In each of these files, bring the Contents index in step with the headings, and search case-insensitively for agentkit-sandboxd, agentkit-gateway, gatewayd, landlock, podman and `sandbox/`, and case-sensitively for `sandbox\\.[A-Z]`, until only docs/releasing.md's statement of the last release with sandboxes is found"
+      ],
+      "touches": [
+        "README.md",
+        "examples/README.md",
+        "examples/codingagent/README.md",
+        "docs/DEPS.md",
+        "docs/cli.md",
+        "docs/development.md",
+        "docs/releasing.md"
+      ]
+    }
+  ]
+}
