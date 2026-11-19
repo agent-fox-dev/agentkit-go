@@ -3,11 +3,94 @@
   "spec_id": "33",
   "spec_name": "persistent_code_index",
   "schema_version": 3,
-  "updated_at": "",
+  "updated_at": "2026-11-19T20:58:11Z",
   "tasks": [
     {
       "id": 1,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-1.1",
+          "no_red": "the behaviour with no IndexDir exists already; these tests must keep passing unchanged once IndexDir does",
+          "tests": [
+            {
+              "test": "./codesearch:TestCloseWaitsForTheFirstBuildAndRemovesItsRunDirectory",
+              "passed": {
+                "at": "2026-11-19T20:58:09Z",
+                "tree": "4d6f990f9cee04473170896e9329997b6a098db2"
+              }
+            },
+            {
+              "test": "./codesearch:TestShardsLiveInARunDirectoryPerIndex",
+              "passed": {
+                "at": "2026-11-19T20:58:09Z",
+                "tree": "4d6f990f9cee04473170896e9329997b6a098db2"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.2",
+          "tests": [
+            {
+              "test": "./codesearch:TestABuildIsStoredPerWorkspaceUnderIndexDir",
+              "failed": {
+                "at": "2026-11-19T20:55:37Z",
+                "tree": "ff1db84f16949aa01f86896558ce8f8b3636dde9"
+              },
+              "passed": {
+                "at": "2026-11-19T20:58:09Z",
+                "tree": "4d6f990f9cee04473170896e9329997b6a098db2"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.3",
+          "tests": [
+            {
+              "test": "./codesearch:TestAnIndexDirInsideTheWorkspaceIsRefused",
+              "failed": {
+                "at": "2026-11-19T20:55:37Z",
+                "tree": "ff1db84f16949aa01f86896558ce8f8b3636dde9"
+              },
+              "passed": {
+                "at": "2026-11-19T20:58:09Z",
+                "tree": "4d6f990f9cee04473170896e9329997b6a098db2"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.4",
+          "tests": [
+            {
+              "test": "./codesearch:TestAStoredIndexBecomesVisibleOnlyWhenComplete",
+              "failed": {
+                "at": "2026-11-19T20:55:37Z",
+                "tree": "ff1db84f16949aa01f86896558ce8f8b3636dde9"
+              },
+              "passed": {
+                "at": "2026-11-19T20:58:09Z",
+                "tree": "4d6f990f9cee04473170896e9329997b6a098db2"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.5",
+          "no_red": "before the store exists nothing is ever written under IndexDir, so the fallback holds trivially; the test keeps it true once storing exists",
+          "tests": [
+            {
+              "test": "./codesearch:TestAnIndexDirThatCannotBeWrittenStoresNothing",
+              "passed": {
+                "at": "2026-11-19T20:58:09Z",
+                "tree": "4d6f990f9cee04473170896e9329997b6a098db2"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 2,

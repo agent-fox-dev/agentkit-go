@@ -761,3 +761,127 @@ func TestLangForSniffsTheContentThenTheExtension(t *testing.T) {
 		}
 	}
 }
+
+func TestABuildIsStoredPerWorkspaceUnderIndexDir(t *testing.T) {
+	indexDir := t.TempDir()
+	var stores []string
+	for range 2 {
+		ws := openWorkspace(t, testutil.Tree(t, needleFiles))
+		idx := indexFor(t, ws, Options{IndexDir: indexDir})
+		find(t, idx, "needle")
+		if err := idx.Close(); err != nil {
+			t.Fatal(err)
+		}
+		store := storeOf(ws, indexDir)
+		m := readManifest(t, store)
+		if m["root"] != ws.Root() || fmt.Sprint(m["format_version"]) != fmt.Sprint(storeFormatVersion) {
+			t.Errorf("manifest = %v, want root %s and format version %d", m, ws.Root(), storeFormatVersion)
+		}
+		if shards, _ := filepath.Glob(filepath.Join(store, "index-*", "*.zoekt")); len(shards) == 0 {
+			t.Errorf("no shard kept in %s after Close: %v", store, treeOf(t, store))
+		}
+		stores = append(stores, store)
+	}
+	if stores[0] == stores[1] {
+		t.Fatalf("two workspaces share the store %s", stores[0])
+	}
+}
+
+func TestAnIndexDirInsideTheWorkspaceIsRefused(t *testing.T) {
+	root := testutil.Tree(t, map[string]string{"sub/x.go": "package sub\n"})
+	ws := openWorkspace(t, root)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(ws.Root(), link); err != nil {
+		t.Fatal(err)
+	}
+	before := treeOf(t, root)
+	for _, d := range []string{ws.Root(), filepath.Join(ws.Root(), "sub"), filepath.Join(ws.Root(), "missing", "deeper"), filepath.Join(link, "idx")} {
+		t.Run(d, func(t *testing.T) {
+			idx, err := New(ws, Options{IndexDir: d, TempDir: t.TempDir()})
+			if idx != nil {
+				t.Fatalf("New returned an index: %v", idx)
+			}
+			if err == nil || !strings.Contains(err.Error(), "outside") {
+				t.Fatalf("err = %v, want one saying the index directory must be outside", err)
+			}
+		})
+	}
+	if after := treeOf(t, root); !slices.Equal(before, after) {
+		t.Fatalf("New wrote into the workspace: %v, was %v", after, before)
+	}
+}
+
+func TestAStoredIndexBecomesVisibleOnlyWhenComplete(t *testing.T) {
+	indexDir := t.TempDir()
+	idx := newFixture(t, needleFiles, Options{IndexDir: indexDir})
+	store := storeOf(idx.ws, indexDir)
+	reached, release := make(chan struct{}), make(chan struct{})
+	idx.testStoreHook = func() {
+		close(reached)
+		<-release
+	}
+	done := make(chan core.ToolResult, 1)
+	go func() { done <- call(context.Background(), idx, map[string]any{"query": "needle"}) }()
+	select {
+	case <-reached:
+	case r := <-done:
+		t.Fatalf("the search finished without storing an index: ok %v", r.OK)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the build never reached the point before its store")
+	}
+	if _, err := os.Stat(filepath.Join(store, "manifest.json")); err == nil {
+		t.Error("a manifest is visible before the store is complete")
+	}
+	for _, e := range treeOf(t, store) {
+		if top := strings.Split(e, string(filepath.Separator))[0]; !strings.HasSuffix(top, ".tmp") {
+			t.Errorf("%s is visible before the store is complete", e)
+		}
+	}
+	close(release)
+	if r := <-done; !r.OK {
+		t.Fatalf("code_search: %s %s", r.Error, r.Detail)
+	}
+	readManifest(t, store)
+	for _, e := range treeOf(t, store) {
+		if strings.Contains(e, ".tmp") {
+			t.Errorf("a temporary name is left: %s", e)
+		}
+	}
+}
+
+func TestAnIndexDirThatCannotBeWrittenStoresNothing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through file modes")
+	}
+	plain := newFixture(t, needleFiles, Options{})
+	want := find(t, plain, "needle")
+	base := t.TempDir()
+	file := filepath.Join(base, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	readOnly := filepath.Join(base, "ro")
+	if err := os.Mkdir(readOnly, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(readOnly, 0o700) })
+	for _, d := range []string{filepath.Join(file, "below"), readOnly} {
+		t.Run(filepath.Base(d), func(t *testing.T) {
+			tmp := t.TempDir()
+			idx := indexFor(t, openWorkspace(t, plain.ws.Root()), Options{IndexDir: d, TempDir: tmp})
+			r := find(t, idx, "needle")
+			if !slices.Equal(paths(r), paths(want)) {
+				t.Errorf("paths = %v, want %v", paths(r), paths(want))
+			}
+			if !slices.Equal(slices.Sorted(maps.Keys(r.Data)), slices.Sorted(maps.Keys(want.Data))) {
+				t.Errorf("data keys = %v, want %v", slices.Sorted(maps.Keys(r.Data)), slices.Sorted(maps.Keys(want.Data)))
+			}
+			if !strings.HasPrefix(idx.RunDir(), tmp) {
+				t.Errorf("run directory %s is not under %s", idx.RunDir(), tmp)
+			}
+			if entries, _ := os.ReadDir(readOnly); len(entries) != 0 {
+				t.Errorf("something was written under the read-only index directory: %v", entries)
+			}
+		})
+	}
+}
