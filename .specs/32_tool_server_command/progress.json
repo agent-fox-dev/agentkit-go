@@ -3,7 +3,7 @@
   "spec_id": "32",
   "spec_name": "tool_server_command",
   "schema_version": 3,
-  "updated_at": "2026-11-19T18:42:18Z",
+  "updated_at": "2026-11-19T18:45:18Z",
   "tasks": [
     {
       "id": 1,
@@ -469,7 +469,58 @@
     },
     {
       "id": 7,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "PATH-1",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestAHarnessSearchesEditsAndSearchesAgainInOneSession",
+              "passed": {
+                "at": "2026-11-19T18:45:07Z",
+                "tree": "929d55612f5a18135c18a1d53e550fb23a471dc8"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-2",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestARelayListsAndCallsInSingleProcesses",
+              "passed": {
+                "at": "2026-11-19T18:45:07Z",
+                "tree": "929d55612f5a18135c18a1d53e550fb23a471dc8"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-3",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestACodeModeScriptRunsItsCallsInOneProcess",
+              "passed": {
+                "at": "2026-11-19T18:45:07Z",
+                "tree": "929d55612f5a18135c18a1d53e550fb23a471dc8"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-4",
+          "no_red": "PATH-4 also ran as a shell session (go run in examples/toolserver exit 0; make check exit 0 with both new modules' tests; root go.mod unchanged; make doc clean; docs/cli.md names every command, flag and exit code); this test is the example's run",
+          "tests": [
+            {
+              "test": "./examples/toolserver:TestTheProgramDrivesTheCommandInBothModes",
+              "passed": {
+                "at": "2026-11-19T18:45:07Z",
+                "tree": "929d55612f5a18135c18a1d53e550fb23a471dc8"
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
