@@ -42,8 +42,9 @@ workspace/              containment, ignore rules and the directory walk
 tools/ guard/ outline/  the built-in tools, the shell guard, source outlines
 codemode/ mcp/ prompt/  code mode, the MCP client pool, system prompt assembly
 mcpserve/               nested module: serving a Runner's tools over MCP
+cmd/agentkit-tools/     nested module: the agentkit-tools command
 codesearch/             nested module: zoekt-backed code search
-examples/               runnable examples (indexedsearch is a nested module)
+examples/               runnable examples (indexedsearch and toolserver are nested modules)
 internal/               test-only packages: build gates, conformance suites, helpers
 testdata/               golden files and fixtures
 docs/                   documentation; docs/generated/ is generated
@@ -63,7 +64,8 @@ not link their dependencies:
 | root | `.` |
 | code search | `codesearch` |
 | MCP serving | `mcpserve` |
-| example with its own module | `examples/indexedsearch` |
+| the `agentkit-tools` command | `cmd/agentkit-tools` |
+| examples with their own module | `examples/indexedsearch`, `examples/toolserver` |
 
 Each nested module requires its siblings through `replace` directives, so a
 checkout always builds against itself. The list lives in `MODULES` in the

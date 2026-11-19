@@ -13,7 +13,7 @@ maintainers.
 
 | Artifact | How it is published |
 |---|---|
-| The Go modules | Git tags. Go resolves the root module from `vX.Y.Z` and each nested module from a tag with its directory as prefix: `codesearch/vX.Y.Z` and `mcpserve/vX.Y.Z`. |
+| The Go modules | Git tags. Go resolves the root module from `vX.Y.Z` and each nested module from a tag with its directory as prefix: `codesearch/vX.Y.Z`, `mcpserve/vX.Y.Z` and `cmd/agentkit-tools/vX.Y.Z`, the tag `go install …/cmd/agentkit-tools@vX.Y.Z` resolves. |
 
 Nothing else is published: no binaries, images, archives, formulae or charts.
 
@@ -28,7 +28,8 @@ Nothing else is published: no binaries, images, archives, formulae or charts.
    git tag v0.10.0
    git tag codesearch/v0.10.0
    git tag mcpserve/v0.10.0
-   git push origin v0.10.0 codesearch/v0.10.0 mcpserve/v0.10.0
+   git tag cmd/agentkit-tools/v0.10.0
+   git push origin v0.10.0 codesearch/v0.10.0 mcpserve/v0.10.0 cmd/agentkit-tools/v0.10.0
    ```
 
 ## The last release with sandboxes

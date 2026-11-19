@@ -1,0 +1,9 @@
+Command agentkit-tools serves AgentKit's built-in tools, code_search and
+code_mode for one directory, to a harness or a relay that runs beside it.
+
+    agentkit-tools mcp   [flags]   one MCP session on stdin and stdout
+    agentkit-tools call  [flags]   one tool call read from a request file
+    agentkit-tools tools [flags]   the served tool definitions as JSON
+    agentkit-tools --version
+
+It serves tools; it never calls a model. See docs/cli.md.

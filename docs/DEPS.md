@@ -47,9 +47,11 @@ Adding a direct dependency means adding it there, with its reason, and a
 ruling here. The same list covers the nested `mcpserve` module (spec 23),
 which adds no module: it requires only the root module and
 the MCP Go SDK directly, the SDK at the version the root requires, and its
-graph holds nothing the root module's lacks. The
+graph holds nothing the root module's lacks. It covers the nested
+`cmd/agentkit-tools` module too, which adds no third-party module: it requires
+only the root, codesearch and mcpserve modules directly. The
 `codesearch` module is separate and not covered: its zoekt graph stays out of
-the root module's.
+the root module's, and `cmd/agentkit-tools` carries it as codesearch does.
 
 ## `github.com/anthropics/anthropic-sdk-go`
 

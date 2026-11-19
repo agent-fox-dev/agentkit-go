@@ -28,6 +28,7 @@ AgentKit answers them once, as a library:
 | Stay in control of the shell | A shell guard that reads every command on a line and allows only the programs you list. An agent with a shell tool and no guard is refused at construction. |
 | Fewer round trips | Code mode: the model writes one short Starlark script that calls many tools, instead of one tool call per turn. |
 | Connect other tools | An MCP client that imports the tools of any MCP server, and an MCP server that serves AgentKit's tools to another harness such as Claude Code. |
+| Serve the tools without Go | `agentkit-tools`, one command that serves the tools for a directory as an MCP session on stdio or as a single call read from a file, inside a sandbox someone else runs. |
 | Run the model | A minimal agent loop with turn, cost and time limits, an event stream, and providers for Anthropic (direct, Vertex AI, Bedrock), OpenRouter and Ollama. |
 
 Each part works on its own: you can use the tools and the guard in your own
@@ -103,21 +104,23 @@ go get github.com/agent-fox-dev/agentkit-go
 ```
 
 Two optional parts are separate Go modules, so you only pay for their
-dependencies when you use them:
+dependencies when you use them, and the `agentkit-tools` command is a third:
 
 | Module | Adds |
 |---|---|
 | `github.com/agent-fox-dev/agentkit-go/mcpserve` | Serving a set of tools over MCP to another harness. |
 | `github.com/agent-fox-dev/agentkit-go/codesearch` | An indexed `code_search` tool for large repositories. |
+| `github.com/agent-fox-dev/agentkit-go/cmd/agentkit-tools` | The `agentkit-tools` command: `go install github.com/agent-fox-dev/agentkit-go/cmd/agentkit-tools@latest`. |
 
 ## Documentation
 
 | Document | Read it to |
 |---|---|
-| [User guide](docs/guide.md) | Learn each part with examples: providers and credentials, tools and the guard, code mode, MCP, running tools without a model, serving tools over MCP, code search. **Start here.** |
-| [Examples](examples/README.md) | Run seven small, self-contained programs, most of them offline. |
+| [User guide](docs/guide.md) | Learn each part with examples: providers and credentials, tools and the guard, code mode, MCP, running tools without a model, serving tools over MCP, serving them from the command line, code search. **Start here.** |
+| [Examples](examples/README.md) | Run eight small, self-contained programs, most of them offline. |
 | [API map](docs/api.md) | Find the package and identifier for a task. |
 | [Configuration reference](docs/configuration.md) | Look up every option, environment variable, default and limit. |
+| [Command-line programs](docs/cli.md) | Run `agentkit-tools`: its modes, flags and exit codes. |
 | [Architecture](docs/architecture.md) | Understand how a call and a run flow through the code, and the invariants behind it. |
 | [Development](docs/development.md) | Build, test and contribute to AgentKit. |
 | [Releasing](docs/releasing.md) | Tag a release of the Go modules. |

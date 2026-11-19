@@ -1,6 +1,6 @@
 # AgentKit examples
 
-Seven small programs, each showing one part of AgentKit. Every example is a
+Eight small programs, each showing one part of AgentKit. Every example is a
 single `main.go` you can read top to bottom. They repeat their setup rather
 than share a helper package, so everything you need is in the file you have
 open. Each has a `README.md` saying what it shows and how to run it.
@@ -13,7 +13,7 @@ open. Each has a `README.md` saying what it shows and how to run it.
 
 ## The examples
 
-Four run **offline**, with no API key and no network: they use the scripted
+Five run **offline**, with no API key and no network: they use the scripted
 model `provider/faux`, or no model at all. Three call a real model.
 
 | Example | Shows | Needs | Run it |
@@ -22,12 +22,13 @@ model `provider/faux`, or no model at all. Three call a real model.
 | [`toolbox`](toolbox) | Every built-in tool, called by hand through a `Runner`; try them on your own directory. | nothing | `go run ./examples/toolbox` |
 | [`codemode`](codemode) | Code mode: one tool that runs a model-written script over other tools. | nothing | `go run ./examples/codemode` |
 | [`indexedsearch`](indexedsearch) | The `code_search` index: queries, symbol lookup, keeping it current. | nothing | `cd examples/indexedsearch && go run .` |
+| [`toolserver`](toolserver) | The `agentkit-tools` command: an MCP session on its stdin and stdout, and single calls from request files. | nothing | `cd examples/toolserver && go run .` |
 | [`codingagent`](codingagent) | A small coding agent: built-in tools, a workspace and the shell guard. | a model | `go run ./examples/codingagent --dir . "which files define the tool policy?"` |
 | [`customtools`](customtools) | Writing your own tools well: schemas, argument repair, guidelines, ending a run. | a model | `go run ./examples/customtools` |
 | [`mcp`](mcp) | Importing the tools of an MCP server, and the name-clash protection. | a model | `go run ./examples/mcp` |
 
-The `indexedsearch` example is its own Go module, so run it from its
-directory.
+The `indexedsearch` and `toolserver` examples are their own Go modules, so
+run them from their directory.
 
 ## Where to start
 

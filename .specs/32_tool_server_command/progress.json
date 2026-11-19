@@ -3,35 +3,524 @@
   "spec_id": "32",
   "spec_name": "tool_server_command",
   "schema_version": 3,
-  "updated_at": "",
+  "updated_at": "2026-11-19T18:45:18Z",
   "tasks": [
     {
       "id": 1,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-1.1",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestTheDirectoryIsServedWithThePackagesToolsInServingOrder",
+              "failed": {
+                "at": "2026-11-19T18:15:23Z",
+                "tree": "517b54f9eeff621d1f1a2095158ff824416d550a"
+              },
+              "passed": {
+                "at": "2026-11-19T18:17:55Z",
+                "tree": "0a6fddcbc3ee900c1d9fd88615bcfeb57bd54235"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.2",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestADirectoryThatIsMissingOrAFileServesNothing",
+              "failed": {
+                "at": "2026-11-19T18:15:23Z",
+                "tree": "517b54f9eeff621d1f1a2095158ff824416d550a"
+              },
+              "passed": {
+                "at": "2026-11-19T18:17:55Z",
+                "tree": "0a6fddcbc3ee900c1d9fd88615bcfeb57bd54235"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.3",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestWithoutCodeSearchOnThePlatformTheOtherToolsAreServed",
+              "failed": {
+                "at": "2026-11-19T18:15:23Z",
+                "tree": "517b54f9eeff621d1f1a2095158ff824416d550a"
+              },
+              "passed": {
+                "at": "2026-11-19T18:17:55Z",
+                "tree": "0a6fddcbc3ee900c1d9fd88615bcfeb57bd54235"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.4",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestTheShellToolsGetTheReducedEnvironment",
+              "failed": {
+                "at": "2026-11-19T18:15:23Z",
+                "tree": "517b54f9eeff621d1f1a2095158ff824416d550a"
+              },
+              "passed": {
+                "at": "2026-11-19T18:17:55Z",
+                "tree": "0a6fddcbc3ee900c1d9fd88615bcfeb57bd54235"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.5",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestVersionPrintsTheModuleVersion",
+              "failed": {
+                "at": "2026-11-19T18:15:23Z",
+                "tree": "517b54f9eeff621d1f1a2095158ff824416d550a"
+              },
+              "passed": {
+                "at": "2026-11-19T18:17:55Z",
+                "tree": "0a6fddcbc3ee900c1d9fd88615bcfeb57bd54235"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.6",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestAMisspelledCommandLinePrintsUsage",
+              "failed": {
+                "at": "2026-11-19T18:15:23Z",
+                "tree": "517b54f9eeff621d1f1a2095158ff824416d550a"
+              },
+              "passed": {
+                "at": "2026-11-19T18:17:55Z",
+                "tree": "0a6fddcbc3ee900c1d9fd88615bcfeb57bd54235"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-5.1",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestTheListingHasTheFourKeysAndDefaultSchemas",
+              "failed": {
+                "at": "2026-11-19T18:15:23Z",
+                "tree": "517b54f9eeff621d1f1a2095158ff824416d550a"
+              },
+              "passed": {
+                "at": "2026-11-19T18:17:55Z",
+                "tree": "0a6fddcbc3ee900c1d9fd88615bcfeb57bd54235"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 2,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-2.1",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestTheGuardFlagChoosesHowTheShellIsAuthorized",
+              "failed": {
+                "at": "2026-11-19T18:18:59Z",
+                "tree": "58c4d4ccfd4415307284ae66028c4b2a61b6299e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:20:24Z",
+                "tree": "ef3c1582535ddb07d522b6742392e382980f3822"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.2",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestTheGuardFlagChoosesHowTheShellIsAuthorized",
+              "failed": {
+                "at": "2026-11-19T18:18:59Z",
+                "tree": "58c4d4ccfd4415307284ae66028c4b2a61b6299e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:20:24Z",
+                "tree": "ef3c1582535ddb07d522b6742392e382980f3822"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.3",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestAnUnknownGuardIsRefused",
+              "failed": {
+                "at": "2026-11-19T18:18:59Z",
+                "tree": "58c4d4ccfd4415307284ae66028c4b2a61b6299e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:20:24Z",
+                "tree": "ef3c1582535ddb07d522b6742392e382980f3822"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.4",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestToolsAndReadOnlyChooseWhatIsServed",
+              "failed": {
+                "at": "2026-11-19T18:18:59Z",
+                "tree": "58c4d4ccfd4415307284ae66028c4b2a61b6299e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:20:24Z",
+                "tree": "ef3c1582535ddb07d522b6742392e382980f3822"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.5",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestCodeModeIsBoundToExactlyTheServedTools",
+              "failed": {
+                "at": "2026-11-19T18:18:59Z",
+                "tree": "58c4d4ccfd4415307284ae66028c4b2a61b6299e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:20:24Z",
+                "tree": "ef3c1582535ddb07d522b6742392e382980f3822"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.6",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestASelectionThatNamesNoToolOrLeavesNoneIsRefused",
+              "failed": {
+                "at": "2026-11-19T18:18:59Z",
+                "tree": "58c4d4ccfd4415307284ae66028c4b2a61b6299e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:20:24Z",
+                "tree": "ef3c1582535ddb07d522b6742392e382980f3822"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 3,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-4.1",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestACallWritesOneResultObjectWithTheServedText",
+              "failed": {
+                "at": "2026-11-19T18:24:14Z",
+                "tree": "048074710f1166c206a95711444941fe7bee2e4e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:26:38Z",
+                "tree": "6acc637531af45712b4cb2e081f44e33a1dd5d75"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-4.2",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestABadRequestOrTimeoutMakesNoCall",
+              "failed": {
+                "at": "2026-11-19T18:24:14Z",
+                "tree": "048074710f1166c206a95711444941fe7bee2e4e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:26:38Z",
+                "tree": "6acc637531af45712b4cb2e081f44e33a1dd5d75"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-4.3",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestAnInputThatIsNotAnObjectIsInvalidArguments",
+              "failed": {
+                "at": "2026-11-19T18:24:14Z",
+                "tree": "048074710f1166c206a95711444941fe7bee2e4e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:26:38Z",
+                "tree": "6acc637531af45712b4cb2e081f44e33a1dd5d75"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-4.4",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestANameThatIsNotServedIsUnknownTool",
+              "failed": {
+                "at": "2026-11-19T18:24:14Z",
+                "tree": "048074710f1166c206a95711444941fe7bee2e4e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:26:38Z",
+                "tree": "6acc637531af45712b4cb2e081f44e33a1dd5d75"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-4.5",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestACallPastItsTimeoutIsATimeoutResult",
+              "failed": {
+                "at": "2026-11-19T18:24:14Z",
+                "tree": "048074710f1166c206a95711444941fe7bee2e4e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:26:38Z",
+                "tree": "6acc637531af45712b4cb2e081f44e33a1dd5d75"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-4.6",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestACodeModeScriptRunsItsCallsInOneProcess",
+              "failed": {
+                "at": "2026-11-19T18:24:14Z",
+                "tree": "048074710f1166c206a95711444941fe7bee2e4e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:26:38Z",
+                "tree": "6acc637531af45712b4cb2e081f44e33a1dd5d75"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.4",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestASignalEndsTheCommandWithItsStatus",
+              "failed": {
+                "at": "2026-11-19T18:24:14Z",
+                "tree": "048074710f1166c206a95711444941fe7bee2e4e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:26:38Z",
+                "tree": "6acc637531af45712b4cb2e081f44e33a1dd5d75"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 4,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-3.1",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestAHarnessSearchesEditsAndSearchesAgainInOneSession",
+              "failed": {
+                "at": "2026-11-19T18:28:05Z",
+                "tree": "22f5dc1d2d09cf1269991f369af2341465340109"
+              },
+              "passed": {
+                "at": "2026-11-19T18:33:10Z",
+                "tree": "96c7626ffe548d566cd81b27bf89a57ab657a434"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.2",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestAHarnessSearchesEditsAndSearchesAgainInOneSession",
+              "failed": {
+                "at": "2026-11-19T18:28:05Z",
+                "tree": "22f5dc1d2d09cf1269991f369af2341465340109"
+              },
+              "passed": {
+                "at": "2026-11-19T18:33:10Z",
+                "tree": "96c7626ffe548d566cd81b27bf89a57ab657a434"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.3",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestAFrameThatBreaksTheWireLimitsEndsTheSessionWithoutQuotingIt",
+              "failed": {
+                "at": "2026-11-19T18:28:05Z",
+                "tree": "22f5dc1d2d09cf1269991f369af2341465340109"
+              },
+              "passed": {
+                "at": "2026-11-19T18:33:10Z",
+                "tree": "96c7626ffe548d566cd81b27bf89a57ab657a434"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.4",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestASignalEndsTheCommandWithItsStatus",
+              "failed": {
+                "at": "2026-11-19T18:28:05Z",
+                "tree": "22f5dc1d2d09cf1269991f369af2341465340109"
+              },
+              "passed": {
+                "at": "2026-11-19T18:33:10Z",
+                "tree": "96c7626ffe548d566cd81b27bf89a57ab657a434"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 5,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-6.2",
+          "tests": [
+            {
+              "test": "./examples/toolserver:TestTheProgramDrivesTheCommandInBothModes",
+              "failed": {
+                "at": "2026-11-19T18:34:43Z",
+                "tree": "2444a63716fcf74de02bc3bf69734915ee08d880"
+              },
+              "passed": {
+                "at": "2026-11-19T18:38:51Z",
+                "tree": "585a4c318d7dc824d2ac2f4ba8fabb91f94684a0"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 6,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-6.1",
+          "no_red": "the module layout is a property of the tree, verified by PATH-4's shell check; this test builds and vets every module MODULES lists, cmd/agentkit-tools and examples/toolserver among them",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T18:42:02Z",
+                "tree": "a7ef575c367ccced863bac3507c0e306be85e2ab"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-6.3",
+          "no_red": "documentation is text, which steering forbids testing; PATH-4's shell check verifies it; this test proves the modules the docs describe build",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T18:42:02Z",
+                "tree": "a7ef575c367ccced863bac3507c0e306be85e2ab"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 7,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "PATH-1",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestAHarnessSearchesEditsAndSearchesAgainInOneSession",
+              "passed": {
+                "at": "2026-11-19T18:45:07Z",
+                "tree": "929d55612f5a18135c18a1d53e550fb23a471dc8"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-2",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestARelayListsAndCallsInSingleProcesses",
+              "passed": {
+                "at": "2026-11-19T18:45:07Z",
+                "tree": "929d55612f5a18135c18a1d53e550fb23a471dc8"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-3",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestACodeModeScriptRunsItsCallsInOneProcess",
+              "passed": {
+                "at": "2026-11-19T18:45:07Z",
+                "tree": "929d55612f5a18135c18a1d53e550fb23a471dc8"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-4",
+          "no_red": "PATH-4 also ran as a shell session (go run in examples/toolserver exit 0; make check exit 0 with both new modules' tests; root go.mod unchanged; make doc clean; docs/cli.md names every command, flag and exit code); this test is the example's run",
+          "tests": [
+            {
+              "test": "./examples/toolserver:TestTheProgramDrivesTheCommandInBothModes",
+              "passed": {
+                "at": "2026-11-19T18:45:07Z",
+                "tree": "929d55612f5a18135c18a1d53e550fb23a471dc8"
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
