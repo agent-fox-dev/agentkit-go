@@ -3,7 +3,7 @@
   "spec_id": "31",
   "spec_name": "sandbox_removal",
   "schema_version": 3,
-  "updated_at": "2026-11-19T16:21:23Z",
+  "updated_at": "2026-11-19T16:24:50Z",
   "tasks": [
     {
       "id": 1,
@@ -271,7 +271,35 @@
     },
     {
       "id": 6,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "PATH-1",
+          "no_red": "PATH-1's smoke check is a shell session (steering forbids committed tests of files); run on the finished branch, it reached its end state except that make tidy rewrites codesearch/go.sum, a declared deviation; this test is the module build it rests on",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T16:23:42Z",
+                "tree": "c189aaa00bb03b1beb14cbe1061827d173f5d4b9"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-2",
+          "no_red": "PATH-2's smoke check ran as a shell session: releasing.md names v0.9.1 and its tree holds sandbox/go.mod, but codesearch/, sandbox/ and mcpserve/v0.9.1 do not exist and v0.9.1 is on f421f0b, not the branch base; the owner waived the tags, and the gap is an open item",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T16:23:42Z",
+                "tree": "c189aaa00bb03b1beb14cbe1061827d173f5d4b9"
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
