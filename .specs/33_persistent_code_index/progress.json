@@ -3,7 +3,7 @@
   "spec_id": "33",
   "spec_name": "persistent_code_index",
   "schema_version": 3,
-  "updated_at": "2026-11-19T21:18:22Z",
+  "updated_at": "2026-11-19T21:21:23Z",
   "tasks": [
     {
       "id": 1,
@@ -378,7 +378,58 @@
     },
     {
       "id": 7,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "PATH-1",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestARelayReusesTheIndexAcrossSingleCalls",
+              "passed": {
+                "at": "2026-11-19T21:21:02Z",
+                "tree": "cbda44bf25b628a75ea3841f92cbafe6fa06894e"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-2",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestASessionsEditIsSeenByALaterSingleCall",
+              "passed": {
+                "at": "2026-11-19T21:21:02Z",
+                "tree": "cbda44bf25b628a75ea3841f92cbafe6fa06894e"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-3",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestTwoSingleCallsAtOnceStoreOneIndex",
+              "passed": {
+                "at": "2026-11-19T21:21:02Z",
+                "tree": "cbda44bf25b628a75ea3841f92cbafe6fa06894e"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-4",
+          "no_red": "PATH-4 ran as a shell session: make check exit 0; make doc clean; docs/generated/codesearch names IndexDir; the four docs name IndexDir, AGENTKIT_INDEX_DIR and --index-dir as REQ-6.1 lists, their anchors resolving",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T21:21:02Z",
+                "tree": "cbda44bf25b628a75ea3841f92cbafe6fa06894e"
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
