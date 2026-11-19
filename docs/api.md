@@ -21,7 +21,6 @@ The authoritative reference is each package's documentation: `go doc -all
   - [Toolset and runner](#toolset-and-runner)
   - [Agent](#agent)
   - [Serving over MCP](#serving-over-mcp)
-  - [Sandboxes](#sandboxes)
   - [Models and providers](#models-and-providers)
   - [Shared vocabulary](#shared-vocabulary)
   - [Test doubles](#test-doubles)
@@ -59,8 +58,6 @@ Each is its own Go module, imported only when needed.
 
 | Module | Purpose |
 |---|---|
-| `…/sandbox` | The sandbox API (`Provider`, `Sandbox`, `Spec`, `Open`, the transfer sources) and its providers: `sandbox/local`, `sandbox/podman`, `sandbox/landlock` and the gateway client `sandbox/gateway`. Also the `agentkit-sandboxd` command. |
-| `…/sandbox/gatewayd` | The gateway server (`gatewayd.New`, `Server`) behind the `agentkit-gateway` command. A program that embeds it can authenticate with `Config.Authenticate`, read the caller with `gatewayd.PrincipalFromContext`, and end a sandbox with `Server.Destroy`. |
 | `…/mcpserve` | Serves a `Runner`'s tools over MCP: `mcpserve.New`, `Server.ServeStdio`, `Server.ServeLoopback`. |
 | `…/codesearch` | Indexed code search on zoekt: `codesearch.New`, added to the tools with `tools.Options{Index: idx}`. |
 
@@ -69,8 +66,7 @@ Each is its own Go module, imported only when needed.
 An application opens a **workspace**, builds the **tools** for it and shapes
 that set, describes a **toolset** (the tools, their policy, the guard, the
 after-call hook and an event sink) and turns it into a **runner**. The runner
-is used by the **agent loop** and by **`mcpserve`**. A sandbox takes the place
-of the first two steps.
+is used by the **agent loop** and by **`mcpserve`**.
 
 ### Workspace
 
@@ -134,18 +130,6 @@ of the first two steps.
 | `Server.ServeLoopback` | `ServeLoopback(ctx) (*Endpoint, error)`: Streamable HTTP on `127.0.0.1` with a fresh bearer token |
 | `mcpserve.Endpoint` | `URL`, `Token`; `Close`, `ClaudeConfig(name)`, `PiConfig(name)` |
 
-### Sandboxes
-
-| Identifier | Shape |
-|---|---|
-| `sandbox.Open` | `Open(ctx, p Provider, spec Spec, src Source, opts ToolOptions) (Sandbox, []core.Tool, error)`: `Create`, `Sync` (when `src` is not nil), `Tools`; closes the sandbox if a step fails |
-| `sandbox.Provider` | `Capabilities()`, `Create(ctx, Spec) (Sandbox, error)`, `Reap(ctx) ([]string, error)` |
-| `sandbox.Sandbox` | `ID`, `Spec`, `Agent`, `Sync(ctx, Source)`, `Tools(ctx, ToolOptions)`, `Export(ctx, path, Destination)`, `Close(ctx)` |
-| `sandbox.Spec` | `Image`, `Workdir`, `Env`, `Resources`, `Network`, `TTL`, `Labels`, `Provider`, `RequireLandlock` |
-| `sandbox.CheckSpec` | `CheckSpec(caps Capabilities, spec Spec) (Spec, error)` |
-| `sandbox.LocalDir`, `Tar`, `TarOut`, `GitRepo` | Sources and destinations: a host directory over rsync, a tar stream in or out, a public repository |
-| `local.Unisolated`, `podman.New`, `landlock.New`, `gateway.Dial` | The providers |
-
 ### Models and providers
 
 | Identifier | Shape |
@@ -178,10 +162,9 @@ of the first two steps.
 
 ## Network services
 
-The root and sandbox modules open no listening socket. Two nested modules
-serve: `mcpserve` (MCP on stdio or a loopback port, see
-[configuration](configuration.md#mcp-serving-mcpserveoptions)) and
-`sandbox/gatewayd`, whose `agentkit-gateway` command speaks gRPC (see
-[cli.md](cli.md#agentkit-gateway)). How the modules relate is in
+The root module opens no listening socket. One nested module serves:
+`mcpserve` (MCP on stdio or a loopback port, see
+[configuration](configuration.md#mcp-serving-mcpserveoptions)). How the
+modules relate is in
 [architecture.md](architecture.md); every option is in
 [configuration.md](configuration.md).

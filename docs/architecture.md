@@ -24,52 +24,20 @@ disagree, fix this file.
 - [MCP client](#mcp-client)
 - [Symbol and reference navigation](#symbol-and-reference-navigation)
   - [`tools.References`](#toolsreferences)
-- [Sandboxes](#sandboxes)
-  - [The agent service](#the-agent-service)
-  - [What a proxy guarantees](#what-a-proxy-guarantees)
-  - [The state machine](#the-state-machine)
-  - [Tar transfer](#tar-transfer)
-  - [LocalDir transfer](#localdir-transfer)
-  - [Kernel confinement inside the agent](#kernel-confinement-inside-the-agent)
-  - [Code mode over proxies: the script runs on the host](#code-mode-over-proxies-the-script-runs-on-the-host)
-  - [Sandbox image](#sandbox-image)
-  - [The Podman and Docker provider](#the-podman-and-docker-provider)
-  - [The Landlock provider](#the-landlock-provider)
-  - [The gateway](#the-gateway)
-  - [`local` is not isolation](#local-is-not-isolation)
 - [Testing layout](#testing-layout)
 
 ## Shape
 
 One Go module, `github.com/agent-fox-dev/agentkit-go` (`go 1.27`), plus
-seven nested modules with their own `go.mod`, none of them in the root build
+three nested modules with their own `go.mod`, none of them in the root build
 graph:
 
 - [`codesearch/`](../codesearch), the zoekt-backed index;
-- [`sandbox/`](../sandbox) (`…/sandbox`), the sandbox API, protocol, agent and
-  providers, the gateway client among them, with their dependencies (gRPC,
-  protobuf, the rsync protocol). It requires the root module through a
-  `replace`; import paths are unchanged;
-- [`sandbox/gatewayd/`](../sandbox/gatewayd) (`…/sandbox/gatewayd`), the
-  gateway server and its `agentkit-gateway` command. It requires the root and
-  sandbox modules through `replace ../../` and `replace ../`, directly
-  requires nothing else but gRPC, and its graph holds no module the sandbox
-  module's lacks. Go's `internal` rule goes by import path, so it uses the
-  sandbox module's `internal/sandboxpb` and `internal/attach`;
 - [`mcpserve/`](../mcpserve) (`…/mcpserve`), the MCP server for a `Runner`'s
   tools, on stdio or on loopback HTTP behind a bearer token, for a harness on
   the same machine. It requires the root module through `replace ../`,
   directly requires nothing else but the MCP Go SDK at the root's version, and
   its graph holds no module the root's lacks;
-- [`examples/sandbox/`](../examples/sandbox), the example program that uses
-  the sandbox module;
-- [`examples/gateway/`](../examples/gateway), the example program that runs a
-  gateway in process on a loopback port and dials it. It requires the root,
-  sandbox and gatewayd modules through `replace`;
-- [`examples/harness/`](../examples/harness), the example program that serves
-  code mode and a sandbox's proxy tools to another harness (Claude Code, Pi)
-  over MCP on a loopback port. It requires the root, sandbox and mcpserve
-  modules through `replace`;
 - [`examples/indexedsearch/`](../examples/indexedsearch), the example program
   that walks through the code-search index on a sample project. It requires the
   root and codesearch modules through `replace`.
@@ -82,7 +50,9 @@ dependencies are an allowlist ([`DEPS.md`](DEPS.md)), kept by review.
 AgentKit is two parts:
 
 - **The hands**: `workspace`, `tools`, `outline`, `codesearch`, `codemode`,
-  `mcp`, `guard`, and `sandbox`, which runs the built-in tools somewhere else.
+  `mcp` and `guard`. They work in the directory they are given; isolating
+  them is the job of the sandbox the platform runs them in
+  ([ADR 08](adr/08-leave-sandboxes-to-the-platform-that-runs-them.md)).
   Each is usable without the driver.
 - **One driver**: the root package, `agentkit`. It holds `Config`, `New`, the
   `Agent` and the loop, and the tool side the loop runs on: `Toolset`,
@@ -90,23 +60,19 @@ AgentKit is two parts:
   it. Nothing else. The driver is the loop over a runner; the runner needs no
   driver.
 
-The root and sandbox modules listen on no socket and serve no MCP. They are a
-library: `agentkit-sandboxd` serves the agent service on its stdio, and two
-nested modules listen: `agentkit-gateway` (`sandbox/gatewayd`) is the
-gateway's gRPC server, and `mcpserve` serves a runner's tools over MCP, on
+The root module listens on no socket and serves no MCP. It is a library: one
+nested module listens, `mcpserve`, which serves a runner's tools over MCP, on
 stdio or a loopback port, to a harness on the same machine. No non-test file
-of the root or the sandbox module listens on a socket. The library's only
-network traffic is outbound: the Anthropic provider's requests, the MCP client's
-connections to servers an embedder configures, and a gateway client's
-connection to its gateway.
+of the root module listens on a socket. The library's only network traffic is
+outbound: the providers' requests and the MCP client's connections to servers
+an embedder configures.
 
 ## Package graph
 
 First-party imports, from
 `go list -f '{{.ImportPath}}: {{join .Imports " "}}' ./...` (tests excluded),
-run in the root module and in `codesearch`, `sandbox`, `sandbox/gatewayd` and
-`mcpserve`. The nested example modules (`examples/sandbox`, `examples/gateway`,
-`examples/harness` and `examples/indexedsearch`) are programs and not listed. A package marked "tests
+run in the root module and in `codesearch` and `mcpserve`. The nested example
+module `examples/indexedsearch` is a program and not listed. A package marked "tests
 only" exists for tests: it holds only test files, or only test files import it.
 
 | Package | Imports (first-party) | Notable third-party |
@@ -138,33 +104,6 @@ only" exists for tests: it holds only test files, or only test files import it.
 | `.` (root, `agentkit`) | `core`, `catalog`, `guard`, `prompt`, `provider`, `provider/anthropic`, `provider/openrouter`, `provider/ollama` | |
 | `examples/{agentdemo,codemode,codingagent,customtools,mcp}` (programs) | `.`, `codemode`, `core`, `guard`, `mcp`, `provider/anthropic`, `provider/faux`, `schema`, `tools`, `wire`, `workspace`, by program | |
 | `codesearch` (nested module) | `core`, `outline`, `schema`, `tools`, `workspace` | `github.com/sourcegraph/zoekt` |
-| `sandbox` (nested module; so are the rows below) | `core`, `sandbox/internal/buildver`, `tools`, `workspace` | |
-| `sandbox/internal/sandboxpb` | none (generated) | `google.golang.org/grpc`, `google.golang.org/protobuf` |
-| `sandbox/internal/tooldigest` | `core`, `schema` | |
-| `sandbox/internal/buildver` | none | |
-| `sandbox/internal/tarsafe` | none | |
-| `sandbox/internal/stdioconn` | none | |
-| `sandbox/internal/agentenv` | none | |
-| `sandbox/internal/confine` | `sandbox`, `sandbox/internal/agentenv` | `github.com/landlock-lsm/go-landlock/landlock{,/syscall}`, in `//go:build linux` files |
-| `sandbox/internal/rsyncx` | `sandbox/internal/{sandboxpb,tarsafe}`, `workspace`; `sandbox` in its Windows stubs | `github.com/gokrazy/rsync/{rsyncclient,rsyncd}`, in `//go:build !windows` files |
-| `sandbox/internal/agent` | `core`, `sandbox`, `sandbox/internal/{agentenv,buildver,rsyncx,sandboxpb,tarsafe,tooldigest}`, `tools`, `workspace` | `google.golang.org/grpc` |
-| `sandbox/internal/attach` | `core`, `sandbox`, `sandbox/internal/{buildver,rsyncx,sandboxpb,tarsafe,tooldigest}`, `tools`, `wire`, `workspace` | `google.golang.org/grpc`, `google.golang.org/protobuf` |
-| `sandbox/internal/localtest` | `sandbox`, `sandbox/internal/{attach,sandboxpb}` | |
-| `sandbox/local` | `sandbox`, `sandbox/internal/{agent,attach,localtest,stdioconn}` | |
-| `sandbox/internal/gitclone` | `sandbox` | |
-| `sandbox/podman` | `core`, `sandbox`, `sandbox/internal/{attach,gitclone,stdioconn}`, `tools` | |
-| `sandbox/landlock` | `core`, `sandbox`, `sandbox/internal/{attach,buildver,gitclone,stdioconn}` | |
-| `sandbox/images` (tests only) | none | |
-| `sandbox/internal/gatewaywire` | `sandbox`, `sandbox/internal/sandboxpb` | |
-| `sandbox/gateway` | `core`, `sandbox`, `sandbox/internal/{attach,gatewaywire,gitclone,sandboxpb}` | `google.golang.org/grpc` |
-| `sandbox/gatewayd` (nested module; so are the two rows below) | `sandbox`, `sandbox/gateway`, `sandbox/gatewayd/internal/token`, `sandbox/internal/{attach,buildver,gatewaywire,sandboxpb}`, `wire` | `google.golang.org/grpc` |
-| `sandbox/gatewayd/internal/token` | none | |
-| `sandbox/gatewayd/cmd/agentkit-gateway` | `sandbox`, `sandbox/gateway`, `sandbox/gatewayd`, `sandbox/gatewayd/internal/token`, `sandbox/internal/buildver`, `sandbox/podman` | |
-| `sandbox/cmd/agentkit-sandboxd` | `sandbox`, `sandbox/internal/{agent,buildver,confine,stdioconn}` | |
-| `sandbox/internal/fakeagent` (tests only) | `sandbox/internal/{sandboxpb,tooldigest}`, `tools`, `workspace` | `google.golang.org/grpc` |
-| `sandbox/internal/relaytest` (tests only) | `sandbox`, `sandbox/internal/{agent,attach,rsyncx,sandboxpb}` | `google.golang.org/grpc` |
-| `sandbox/internal/treegen` (tests only) | `sandbox/internal/tarsafe`, `workspace` | |
-| `sandbox/gatewayd/internal/gwtest` (tests only) | `sandbox`, `sandbox/gateway`, `sandbox/gatewayd`, `sandbox/internal/{attach,fakeagent,sandboxpb}`, `sandbox/local` | `google.golang.org/grpc` |
 
 What follows from it:
 
@@ -188,20 +127,14 @@ What follows from it:
   the one place that names a provider package, to build the client of
   `Config.Provider`.
 - The root package is imported by `mcpserve` and by programs: this module's
-  `examples/` and the nested example modules. No library package of the root
-  module imports it, so the tools, the guard, code mode and the sandboxes do
-  not depend on the driver.
+  `examples/` and the nested example module. No library package of the root
+  module imports it, so the tools, the guard and code mode do not depend on
+  the driver.
 - `mcpserve` imports the root (for `agentkit.Runner`), `core`, `mcp` (for its
   pipe transport) and `wire`, and the MCP SDK. It imports neither `tools` nor
-  `workspace`, nor the sandbox tree: it serves whatever tools a runner holds.
+  `workspace`: it serves whatever tools a runner holds.
 - `codesearch` imports `core`, `outline`, `schema`, `tools` and `workspace`,
-  and not the root or the sandbox tree.
-- The sandbox tree imports `core`, `schema`, `tools`, `workspace` and `wire`,
-  and nothing outside it imports the sandbox tree except `examples/sandbox`,
-  `examples/gateway` and `examples/harness` (nested modules, outside the
-  root's graph) and test helpers under `internal/`, and no non-test file outside
-  it imports gRPC. `core`, `tools`,
-  `codemode` and the driver do not know a sandbox exists.
+  and not the root.
 
 ## Packages
 
@@ -217,7 +150,7 @@ What follows from it:
 | `provider/ollama` | The Ollama wire: Ollama's native `/api/chat` through its own Go package. `New` resolves `OLLAMA_HOST` by the ollama CLI's rules (refusing a scheme other than http or https, a bad port, user information and the hosted service), builds one SDK client with `api.NewClient` and makes no request. Every request goes through a layer that deletes `Authorization` and records the response's status, because `Chat` returns no error for an error status with an empty body. It sends `num_ctx` and `truncate: false` on every request, cuts a tool schema to what the SDK's tool type carries, replays thinking to the model that produced it and a call's arguments with their keys in order and their values as written, nets the usage and prices it at zero, and names its failures: `ErrModelNotFound`, `ErrUnreachable`, `ErrContextWindow` and `ErrStreamTruncated`. |
 | `provider/faux` | A scripted provider for offline tests and demos. |
 | `outline` | Declarations of a source file with line ranges. Go uses `go/ast` in every build. With cgo, Python, JavaScript, TypeScript/TSX, Java, Kotlin, C#, Scala, Rust, C, C++, PHP, Ruby, Lua and shell are parsed by tree-sitter grammars; without cgo they are `none`. `IsTestFile` is the test-file convention the symbol and reference ranking in `tools` uses. |
-| `workspace` | The workspace: the containment boundary (`Open`, `Resolve`, `Rel`, `CheckWriteTarget`), the layered ignore engine (`IgnoreOptions`, `NoGlobalExcludes`, `Ignore`, `Ignored`) and the directory walk (`Walk`), opened once and handed to the tools and the index; the sandbox tree opens its own over a root it owns and takes a workspace's `Ignore()` options. It imports only the standard library and doublestar. |
+| `workspace` | The workspace: the containment boundary (`Open`, `Resolve`, `Rel`, `CheckWriteTarget`), the layered ignore engine (`IgnoreOptions`, `NoGlobalExcludes`, `Ignore`, `Ignored`) and the directory walk (`Walk`), opened once and handed to the tools and the index. It imports only the standard library and doublestar. |
 | `tools` | The built-in tools (`For`), the output accumulator, process control and the runner (`Run`, `RunArgv`), glob, the symbol table behind `find_symbol` and the reference engine behind `find_references` (`References`). |
 | `guard` | The shell boundary: `Check` (a pure decision on an argv), `Commands` (the simple commands a shell line runs, read once for every policy), `Restricted` (the interceptor over both), `Allow` (`Restricted` with only the allowlist), `AllowAll`. |
 | `codemode` | The code-mode tool (below). |
@@ -227,29 +160,11 @@ What follows from it:
 | `internal/toml` | A lenient TOML reader for `mcp.ParseConfig`, over `go-toml/v2/unstable`. |
 | `internal/diag` | The shared non-fatal `Diagnostic`. |
 | `internal/policy` | Tests only: the cross-target and host build gates. |
-| `internal/testutil` | The shared test helpers that need nothing of the module (file trees, a hermetic git environment, polling, JSON, tar, golden files, `go run`). |
+| `internal/testutil` | The shared test helpers that need nothing of the module (file trees, a hermetic git environment, polling, JSON, golden files, `go run`). |
 | `internal/testkit` | Test doubles over `core`: the scripted provider and tools. |
-| `internal/toolconformance` | Tests only: the conformance case table of the built-in tools, run against `tools.For` and against sandbox proxy tools. |
+| `internal/toolconformance` | Tests only: the conformance case table of the built-in tools, run against `tools.For`. |
 | `internal/providerconformance` | Tests only: the opt-in live tests of the three providers (below). Its only non-test file is `doc.go`. |
-| `sandbox` | The host-side sandbox API: `Spec`, `Capabilities`, `Provider`, `Sandbox`, `CheckSpec`, `LocalDir`, `Tar`/`TarOut`, `LandlockInfo`, `AgentArgs`, the protocol version, `MaxMessageBytes` and the errors (below). |
-| `sandbox/internal/sandboxpb` | The `agentkit.sandbox.v1` protocols, the agent's (`sandbox.proto`) and the gateway's (`gateway.proto`), and their checked-in generated code; `make proto` regenerates both. |
-| `sandbox/internal/agent` | The agent service: runs `tools.For` over one workspace with an explicit environment. |
-| `sandbox/internal/attach` | The one `Sandbox` implementation, for every provider: handshake, state machine, failure classification, proxy tools, tar transfer. |
-| `sandbox/internal/tarsafe` | The tar entry rules both directions share, the `os.Root` extractor, the export validator and the archiver. |
-| `sandbox/internal/tooldigest`, `sandbox/internal/buildver` | The definition digest host and agent share; the agent's version: the link-time stamp, else the sandbox module's version from the build info, else `(devel)`. |
-| `sandbox/internal/stdioconn` | A `net.Conn` over a reader and a writer: stdin/stdout, or two `os.Pipe` pairs. |
-| `sandbox/internal/confine` | The agent's Landlock confinement: `Plan`, the ruleset, `Setup`. Only `agentkit-sandboxd` imports it. |
-| `sandbox/internal/agentenv` | Reads the agent's explicit environment: a variable, the temporary directory. |
-| `sandbox/local` | The in-process provider with no isolation. |
-| `sandbox/podman` | The Podman and Docker provider: a hardened container per sandbox, driven through the engine's command line. |
-| `sandbox/landlock` | The Landlock provider: `agentkit-sandboxd` as a confined child process on Linux with Landlock ABI 4. |
-| `sandbox/internal/gitclone` | `GitRepo` validation and the `git clone` argument list. |
-| `sandbox/internal/gatewaywire` | The conversions between `Spec` and `Capabilities` and the gateway's wire messages, shared by its client and its server. |
-| `sandbox/gateway` | The gateway client: `Dial` returns a `sandbox.Provider` whose sandboxes live on a remote gateway. |
-| `sandbox/gatewayd` | The gateway server (nested module): authentication, ownership, the sandbox lifecycle and the Agent relay over one backend provider. |
-| `sandbox/gatewayd/cmd/agentkit-gateway` | The gateway command: a TCP server over the Podman or Docker provider. |
 | `mcpserve` | The MCP server (nested module): one MCP tool per tool of an `agentkit.Runner`, every call through `Runner.Call`, served on stdio (`ServeStdio`) or on loopback HTTP behind a bearer token (`ServeLoopback`). |
-| `sandbox/cmd/agentkit-sandboxd` | The agent command. |
 
 ## The embedder's path
 
@@ -263,8 +178,7 @@ tools.For           the built-in tools for that workspace; tools.Options sets
                     spill, environment, symbol bounds and an optional index
 shaping the set     core.Named picks tools by name; codemode.New binds some of
                     them into one code_mode tool; mcp Pool.Tools adds an MCP
-                    server's tools; sandbox.Open returns proxies that stand in
-                    for tools.For and fills the sandbox from a source
+                    server's tools
 agentkit.Toolset    the tool side of an agent as a value: Tools, the Policy
                     that selects from them, Guard, After and an Events sink
 agentkit.NewRunner  checks the toolset, resolves the policy and owns the
@@ -541,9 +455,8 @@ calls reach `Toolset.Events` with the `code_mode` call as their parent.
 `ReachableTools`, or when something that is neither an agent run nor a runner
 invokes it: code mode never runs a tool around the pipeline. An embedder that
 is its own driver — one that serves the tools to another harness over MCP,
-say — builds a runner and calls it. [`examples/harness`](../examples/harness)
-does exactly that, serving the runner through `mcpserve`, and nothing else of
-the driver.
+say — builds a runner and calls it, and serves the runner through `mcpserve`
+with nothing else of the driver.
 
 ## MCP serving
 
@@ -686,473 +599,6 @@ as the `find_references` tool does. It always uses the default
 calls. `PackagesChecked` counts the Go package type-checks the pass used, and
 `Errors` the parse and type errors they collected; both are 0 when no Go code
 was checked.
-
-## Sandboxes
-
-`sandbox` lets an embedder run the built-in tools inside a sandbox: an
-ephemeral environment that holds exactly one workspace and one agent
-process. Containment comes from where the tools run; the driver does not
-change. PRD 11 (`docs/prd/11-run-tools-in-an-isolated-sandbox.md`) holds the
-design; spec 13 built the foundation, and later scopes add the providers that
-isolate. `sandbox.Open` sits over `Provider.Create`, `Sandbox.Sync` and
-`Sandbox.Tools`, running them in that order and closing the sandbox if `Sync`
-or `Tools` fails; the steps below describe what each of them does.
-
-```
-Provider.Create   CheckSpec(Capabilities, Spec): every field the provider does
-                  not honour is refused (*SpecError, ErrUnsupported); then the
-                  provider starts an agent and hands attach a connection
-attach            gRPC client over that connection (one-shot dialer, never
-                  redialled); Hello: a different protocol major is refused
-                  (ErrProtocol), any minor accepted; TTL timer started
-Sandbox.Sync      Tar: a TarStart chunk, then the tar in chunks of at most
-                  1 MiB; the agent extracts through tarsafe as the bytes
-                  arrive. LocalDir: one Rsync stream (below)
-Sandbox.Tools     Tools RPC; the host builds its own tools.For and compares
-                  names, order and definition digests (ErrToolMismatch);
-                  returns one proxy per tool
-proxy Execute     Call RPC with the model's bytes verbatim; the agent runs the
-                  tool with the RPC context; Data and Metadata come back as
-                  JSON bytes and pass wire.Guard
-Sandbox.Export    TarOut: ExportTar; the host re-validates every entry before
-                  the destination sees it. LocalDir: one Rsync stream
-Sandbox.Close     timer stopped, connection closed, the provider's destroy step
-```
-
-### The agent service
-
-`agentkit.sandbox.v1` has one service, `Agent`, with
-`Hello`, `Tools`, `Call`, client-streaming `SyncTar`, server-streaming
-`ExportTar` and, since protocol 1.1, bidirectional `Rsync`; since protocol
-1.2 `HelloResponse` carries the agent's `LandlockReport`. Tool input, result data and metadata travel as JSON bytes, so
-schemas stay the `tools` package's own and new `ToolMetadata` fields need no
-proto change; `CallRequest` and `CallResponse` are self-contained. Every
-message is bounded by `sandbox.MaxMessageBytes` (16 MiB, the same number as
-`wire.Defaults`). The agent builds `tools.For` over a workspace opened at its root, with its explicit
-environment (never its process's own), `workspace.NoGlobalExcludes()`, and a spill directory under
-that environment's `TMPDIR`; the options are fixed by the first `Tools` RPC,
-and a successful sync rebuilds the tool set so the symbol table sees the new
-files. At its TTL it cancels every in-flight call, which kills the process
-groups those calls started, and stops. `agentkit-sandboxd` serves it on stdin
-and stdout; `local` runs it in-process over two `os.Pipe` pairs through the
-same adapter.
-
-### What a proxy guarantees
-
-A proxy carries the host's own definition
-(`Name`, `Description`, both schemas, `PromptGuidelines`, `Builtin`,
-`ExecutionMode`, `PrepareArguments`, `Label`), so the model sees exactly what
-`tools.For` would show; it keeps no local `Execute`. Its result looks to the
-driver like a local one:
-
-- a cancelled host context returns `aborted` / `Operation aborted`, the batch
-  executor's own result, and the sandbox stays live;
-- an input over `MaxMessageBytes` returns `arguments_too_large` without an
-  RPC, and the sandbox stays live;
-- a transport failure, or `Data`/`Metadata` that fail `wire.Guard` or do not
-  decode, returns `sandbox_unavailable` — for that call and every later one;
-- an agent's `unknown_tool` is passed through.
-
-Proxies are safe for concurrent use and serialise nothing on the host; the
-batch executor decides what runs in sequence. `checkShellGuard` sees a proxy
-`execute` by name, so `New` refuses proxy shell tools with no `Guard`, and
-`codemode.New` binds proxies unchanged.
-
-### The state machine
-
-A sandbox is live, then unavailable, then closed.
-
-| From | To | When |
-|---|---|---|
-| live | unavailable | an RPC error other than the agent's deliberate refusals (`InvalidArgument`, `FailedPrecondition`, `NotFound`, `Unimplemented`) while the host context is live; a malformed response; the agent's connection ending; the TTL |
-| live, unavailable | closed | `Close` (idempotent; a later `Close` returns nil) |
-
-A failing `TarOut` destination is the caller's error and changes nothing.
-Once unavailable or closed, `Tools`, `Sync` and `Export` return
-`ErrUnavailable` or `ErrClosed` without an RPC, and proxies return
-`sandbox_unavailable` (detail `sandbox closed` after `Close`). There is no
-retry and no reconnect. A refusal — an unsafe tar entry, a missing export
-path, differing tool options — never changes the state. The context given to
-`Create` bounds creation only.
-
-### Tar transfer
-
-One function, `tarsafe.Validator.Check`, applies the entry
-rules on both sides: only regular files, directories and symlinks that
-resolve inside the target; absolute names, `..` components, hard links,
-devices, FIFOs, other types, escaping symlinks and paths through them are
-refused; setuid, setgid and sticky bits are cleared. Extraction writes through
-an `os.Root`, so no write follows a symlink out. A refused entry ends a sync
-with `ErrUnsafeArchive`, and entries already extracted stay. A transfer has no
-ordering guarantee with tool calls running at the same time.
-
-### LocalDir transfer
-
-`sandbox.LocalDir` moves a host directory over the
-rsync protocol, `github.com/gokrazy/rsync` behind `sandbox/internal/rsyncx`,
-the only package that imports it. That library can neither apply exclude
-rules safely nor keep excluded paths from deletion
-([ADR 05](adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md)), so it only ever moves the files of
-a tree that already is the transfer set: the sending side serves a filtered,
-read-only `fs.FS` view of its tree (`rsyncx.Filtered`) with an `rsyncd`
-server, and the receiving side runs an `rsyncclient` receiver into its
-directory. On Sync the host serves and the agent receives into the workspace;
-on Export the agent serves and the host receives into the destination. The
-library never sees a rule or `--delete`; deletion is AgentKit's own
-(`rsyncx.DeleteAbsent`, through an `os.Root`, never following a symlink).
-
-One `Rsync` stream carries one transfer, its frames in this order:
-
-```
-host  -> agent  start  direction (SYNC or EXPORT), path (empty for SYNC),
-                       include_ignored, exclude_git, delete
-agent -> host   plan   the agent's rules over its tree; file: the export path
-                       is a regular file
-host  -> agent  args   the agent's server-side argument list (--sender exactly
-                       for EXPORT, --delete as the declared intent), the
-                       combined rules and, for a SYNC with delete, the host's
-                       transfer set
-both            data   rsync protocol bytes, at most 1 MiB a frame
-agent -> host   done   files, bytes, deleted for SYNC; the transfer set for an
-                       EXPORT with delete
-```
-
-A frame out of this order, or a stream that ends with status OK and no done
-frame, is a malformed response (`malformed response: rsync: <reason>`) and
-makes the sandbox unavailable. The agent refuses a bad start or args frame
-with `InvalidArgument` (a missing export path with `NotFound`) before it
-builds any server, runs one stream at a time (a second is
-`FailedPrecondition`; one that arrives while a cancelled stream is still
-unwinding waits for it, up to 5 seconds), and ends a library failure with `FailedPrecondition`
-carrying the library's message; all of these keep the sandbox live. A failure
-of the host's own side of the library cancels the stream and returns
-`sandbox: rsync client: <the library's error>`, the sandbox live. An agent
-below protocol 1.1 and a Windows host are refused before any walk or stream.
-
-*The transfer set.* Each side computes rules over its own tree: the entries
-`workspace.Walk` (hidden files included) does not visit, one rule per ignored
-directory at its highest level and none under `.git` (the host walks with
-`LocalDir.Ignore`, the agent with `workspace.NoGlobalExcludes()`; an export of a
-subdirectory honours the workspace's ignore files above it); every symlink
-`tarsafe.SymlinkEscapes` rejects, relative to the transfer root; every entry
-it cannot read; and `.git`, which excludes a `.git` component at any depth, on
-a Sync with `ExcludeGit` and on every Export. `IncludeIgnored`, or an export
-of a single regular file, drops the ignore rules only. A rule is a literal
-path (wildcard characters are plain characters) and excludes its subtree. The
-host combines both sides' rules into their sorted union; a path either side
-excludes is not sent, not overwritten, not written through and not deleted on
-the receiving side. The combined rules, and a sender's transfer set, are
-capped at 8 MiB: the agent refuses its own oversized rules with
-`FailedPrecondition` instead of sending plan, and the host refuses oversized
-combined rules before args.
-
-*Trust.* Workspace content is untrusted; the agent binary is trusted. On
-Export the host's safety rests on two things: the agent never sends an
-escaping symlink or `.git` (the filtered view judges every symlink as it is
-served, so a link planted after the plan is hidden too), and the host's own
-rules over the destination
-keep its ignored files, its `.git` and its escaping symlinks from being
-overwritten, written through or deleted. The agent serves each stream with
-exactly one module over the workspace root, writable only for SYNC
-(`rsyncx.ModulesFor`), so an EXPORT stream cannot change the workspace.
-
-### Kernel confinement inside the agent
-
-The containment of a sandbox is
-the provider's; on Linux the agent adds a second boundary underneath it, a
-Landlock ruleset on its own process that every process a tool starts
-inherits and none can lift. `agentkit-sandboxd` is the only code that
-applies it, through `sandbox/internal/confine`, which nothing else imports:
-
-```
-main      parse flags; --version answers without probing
-confine   validate the flag roots (a refused value: exit 2)
-          probe the kernel's ABI once; Plan picks the ABI (0, 2, 3 or 4)
-          and whether TCP is handled (only at 4, under --network none)
-          resolve the roots; apply landlock.V2/V3/V4 strictly (Restrict
-          with TCP, RestrictPaths without; never BestEffort); no_new_privs
-          on every thread (a failure after a good probe: exit 1)
-main      redirect stdout, agent.New(Config{Landlock: outcome}), serve
-Hello     the outcome as LandlockReport; attach fills AgentInfo.Landlock
-attach    RequireLandlock: refuse unless Landlock.Satisfies(network mode),
-          closing the client and destroying the sandbox once
-```
-
-The ruleset grants every right beneath the workspace, `HOME`, the
-temporary directory and each `--landlock-rw`; read and execute beneath the
-system directories and each `--landlock-ro`; read beneath `/proc`; and read
-and write on five device nodes (`/dev/null` above all: every shell tool's
-stdin is the null device). Under `--network none` at ABI 4 it denies every
-TCP bind and connect, **loopback included**: Landlock rules are by port and
-cannot tell local from remote. `docs/configuration.md` has the full table.
-Landlock does not reach resources (memory, CPU, processes stay the
-container's job), UDP or Unix sockets, Multipath TCP (which Go's
-`net.Listen` uses by default, so a test that wants a denial disables it), or
-host allowlists (`NetworkAllowlist` gets no TCP rule from the agent).
-
-*The agent's Landlock ruleset is applied before any other work.* "Before"
-cannot be observed from outside, so an AST test over the command pins it:
-`confine.Setup` precedes every `redirectStdout`, `agent.New` and `go`
-statement. The agent package never applies Landlock; it receives the outcome
-as data, because `local` runs it inside the embedder's process.
-
-*No code in this module confines the process that embeds it.* Both library
-constructors, `rsyncd.NewServer` and `rsyncclient.New`, are called in exactly
-one `rsyncx` function each, always with `DontRestrict()`: without it the
-library applies Landlock to the whole process, which under `local` is the
-embedder. Nothing in the sandbox module calls `chroot` or changes the
-working directory or the user id. The library's receiver reads the umask
-once per process by setting it to 0 and straight back
-(`internal/receiver/permissionsumask.go`); the umask is unchanged after it,
-but a file another goroutine creates in that instant gets mode bits from a
-zero umask; a test checks that the process can still write after a transfer.
-
-### Code mode over proxies: the script runs on the host
-
-PRD 11's decision D3 (a) is what spec 13
-implements: a code-mode script over proxy tools runs in the host's Starlark
-interpreter, and each call it makes goes through the host's nested-call
-pipeline and `Toolset.Guard` before it becomes a `Call` RPC. The guard
-therefore sees every call a script makes, inside a sandbox or not. Running the
-interpreter in the sandbox with authorization called back to the host
-(D3 (c)) is deferred to the second release; only the self-contained `Call`
-messages are designed for it.
-
-### Sandbox image
-
-One Containerfile, `containers/agentkit-sandbox/Containerfile`,
-builds the published image from the repository root, in two stages:
-
-```
-build   ubi10/go-toolset, GOTOOLCHAIN=auto; CGO_ENABLED=1 (tree-sitter, psx's cgo variant)
-base    ubi10/s2i-core + git-core, bash, ca-certificates + build's agent at AgentPath
-```
-
-The agent is built in the nested `sandbox` module with `-trimpath`,
-`-buildvcs=false` and `-ldflags -X …/sandbox/internal/buildver.stamp=$VERSION`:
-`buildver.Version()` returns the stamp when it is set, so a published agent
-reports its release version, and an unstamped build `(devel)`. The agent is
-`/usr/local/bin/agentkit-sandboxd`, owned by root with mode 0755, and the
-tools run as uid 1001, which cannot replace the binary that confines it (14's
-trust model). The layout lines up with the agent's Landlock roots:
-`/workspace` (the workspace), `/home/agentkit` (`HOME`) and `/tmp` (the
-temporary directory) are writable, and `git`, `bash` and the CA bundle sit
-under the read-only system directories. The image declares no `VOLUME`, which
-would make anonymous volumes no provider reaps, and only `HOME` as `ENV`.
-Providers pass `--entrypoint sandbox.AgentPath` (an embedder's image built
-`FROM` the base may set its own entrypoint) and `--init` for zombie reaping.
-[`releasing.md`](releasing.md) describes publishing it.
-
-### The Podman and Docker provider
-
-`sandbox/podman` runs each sandbox's
-agent as the only process of a container that holds one named volume, with
-no host mount, a read-only root, no capabilities, `no-new-privileges`, an
-explicit environment (on docker the image's own `ENV` is added, since docker
-cannot drop it) and, by default, no network. Its argument lists are
-pure functions (`podman.Args`, `podman.InitArgs`), golden-tested offline, and
-every engine command goes through an unexported runner seam that the
-offline tests replace with a fake serving an in-process agent.
-
-```
-Create   CheckSpec → provider checks → volume create agentkit-<id> (labels)
-         → <engine> run --rm -i --init … --entrypoint AgentPath <image> AgentArgs
-           (own process group; stdin pipe, private stdout pipe, 8 KiB stderr tail)
-         → attach.Dial over stdioconn → Hello → host TTL timer
-Close    attach teardown → destroy: wait ≤5 s / kill group → rm -f both names
-         → volume rm (retried ≤10 s while in use)
-```
-
-A `GitRepo` sync runs a second, short-lived container, `agentkit-<id>-init`,
-with `--entrypoint git` on the same volume and the engine's default network,
-while the agent's container sits idle beside it under its own policy: the
-clone's network never reaches the agent. It is allowed only before anything
-else has written to the workspace and before the tool set exists. The TTL is
-enforced on both sides: attach's host timer runs the destroy step, and the
-agent's `--ttl` ends the container, which `--rm` removes, even when the host
-is gone. The host timer counts from the creation time the volume's
-`agentkit.sandbox.expires` label is written from, not from the end of
-`Create`, so the sandbox never outlives its label. The volume of a host that
-died keeps that label, and `Reap` removes containers and volumes only once
-the expiry has passed, so it never touches a sandbox that a live process on
-another host still uses, as long as the hosts' clocks agree. A `GitRepo`
-sync that finds the sandbox closed or expired when its clone ends removes
-the volume again, since the init container's mount may have re-created it.
-When the handshake fails with a non-zero exit other than the engine's own
-125, a `--version` run of the image without
-`--init` (whose init process would decide the exit status) tells an image
-with no agent (126 or 127, reported as `sandbox.ErrNoAgent` with the
-`COPY --from` line that fixes it) from an agent that failed to start.
-
-### The Landlock provider
-
-`sandbox/landlock` runs `agentkit-sandboxd` as a
-child process of the embedder, and the agent's own Landlock ruleset is the
-only boundary. `New` probes the kernel once with the raw version query
-(syscall 444), not with `confine` or go-landlock, which only the agent may
-import, and checks the agent binary's `--version`.
-
-```
-Create   CheckSpec → refuse Provider keys, HOME/TMPDIR → <Root>/<id>/ + creator marker
-         → workspace/ home/ tmp/ → agentkit-sandboxd in a new session (Setsid),
-           --workdir <workspace>, ExtraRO/resolver/ExtraRW roots, Spec.Env+HOME+TMPDIR+PATH
-         → marker names the agent → attach.Dial → report: ABI ≥ 4, TCP, roots, Root contained
-Close    attach teardown → wait ≤5 s / SIGKILL group → SIGKILL the session (≤5 s)
-         → remove <Root>/<id>/ (no symlink followed, rwx restored)
-```
-
-The agent leads its own session because `tools.Run` gives every command its
-own process group: killing the agent's group would miss a background job a
-tool left behind, but the job stays in the session, and the destroy step
-kills the session by scanning `/proc`. A process that calls `setsid` escapes
-that. A `GitRepo` sync starts a second agent with TCP allowed, beside the
-idle sandbox agent, and runs `git` through its `run_command` tool, so the
-clone is confined too and its network never reaches the sandbox's agent.
-The TTL is enforced on both sides: attach's host timer runs the destroy step,
-and the agent's `--ttl` ends it when the host is gone; a crashed host leaves
-a directory whose marker names the agent by pid, start time and boot id, and
-`Reap` removes it once that owner is gone, killing what outlived it, but
-never a sandbox whose agent is alive. What the provider gives up: Unix
-sockets, including a D-Bus session bus, an ssh-agent and engine sockets;
-UDP; Multipath TCP; signals to the user's processes; host paths in tool
-results; and file descriptors the embedder opened without close-on-exec.
-Landlock at the agent's ABI cap of 4 cannot express those, so the provider
-reports `IsolationConfinement` and its `Notes` say so.
-
-### The gateway
-
-A gateway lets an embedder create and use sandboxes on
-another host. `sandbox/gatewayd` holds one backend provider and that
-provider's credentials; the embedder holds only the gateway's URL and bearer
-token (`gateway.Dial`), and the sandbox holds neither. To the embedder and the
-model a gateway sandbox is attach's sandbox like any other: the same
-proxies, state machine and errors.
-
-```
-embedder   gateway.Dial: URL and token rules, one gRPC connection, Capabilities
-           Provider.Create: CheckSpec, MaxTTL, Provider JSON → Gateway.Create
-gatewayd   authenticate from the headers, before any message is read (SHA-256
-           of the token, constant time; or the embedder's Authenticator) →
-           ceiling, TTL, capacity → Backend.Create (the principal on its
-           context) → entry {owner = the principal, created, expires}
-embedder   attach.New over the shared connection, agentkit-sandbox-id metadata
-gatewayd   relay: route by id and owner → the backend sandbox's own agent
-           connection (attach.ClientConn through Unwrap), no incoming metadata,
-           the backend sandbox's own outgoing metadata (attach.Outgoing)
-agent      the backend's agent, unaware of the gateway
-```
-
-*Two services, one package.* `gateway.proto` is a second file of
-`agentkit.sandbox.v1` with its own version (`gateway.ProtocolMajor` 1,
-`ProtocolMinor` 0) and its own recorded hash; the Agent service, its file and
-`sandbox.ProtocolMinor` are untouched, so agents need no rebuild. Its six
-unary RPCs (`Capabilities`, `Create`, `SyncGit`, `List`, `Destroy`, `Reap`)
-carry the sandbox id in their messages; Agent RPCs carry it in the
-`agentkit-sandbox-id` metadata key, which `attach.Config.Metadata` adds to
-every call. A refusal travels as a typed `Refusal` in the response, which the
-client turns back into `*sandbox.SpecError`, `ErrNoAgent`,
-`ErrNoPublishedImage`, `ErrProtocol` or `gateway.ErrCapacity`.
-
-*The typed relay.* The gateway serves an `Agent` implementation that forwards
-`Hello`, `Tools`, `Call`, `SyncTar`, `ExportTar` and `Rsync` message by
-message, unknown fields included, under the incoming RPC's context, so
-cancellation and deadlines reach the agent. It reads what it must: the
-`Rsync` start frame's direction and the outcome of each slot-taking RPC. An
-Agent RPC the gateway's build does not know answers `Unimplemented` until the
-gateway is upgraded.
-
-*Metadata hygiene.* The relay forwards none of the incoming metadata. It calls
-the agent with the outgoing metadata of the backend's sandbox
-(`attach.Outgoing`), which is empty for a Podman, Landlock or local sandbox:
-the agent never sees `authorization` or `agentkit-sandbox-id`. A backend that
-is itself a gateway client makes a gateway of gateways. The sandbox it returns
-sends `agentkit-sandbox-id` with its own RPCs, so the relay passes that id to
-the next gateway, which routes by it, and the connection carries the client's
-token; the agent behind the last gateway sees neither.
-In static mode the server keeps only each token's SHA-256, which is the
-principal that owns the token's sandboxes, and logs only its first 8 hex
-characters; in callback mode it keeps no token and logs the principal the
-embedder chose, whole. No log line carries a token, an authenticator's panic
-value, an `Env` value, a tool input or a tool result.
-
-*Ownership.* A sandbox belongs to the principal of the `Create` that made it:
-the hex SHA-256 of the token in static mode, what the embedder's
-`Authenticator` returned in callback mode. The relay, `SyncGit`, `Destroy` and
-`List` key every lookup by principal and id, so a token of another principal
-behaves exactly like an id that does not exist: `List` omits it, `Destroy`
-answers OK and does nothing, the relay and `SyncGit` answer `Unavailable`. No
-existence oracle leaks. Several tokens of one principal share their sandboxes.
-
-*The embedded gateway.* A program that embeds `gatewayd.Server` can own
-authentication: `Config.Authenticate` is called once for each RPC, from the tap
-handle, which puts the principal on the RPC's context under an unexported key;
-the interceptors only check that the context carries one, so a revocation
-between them cannot give two answers. `gatewayd.PrincipalFromContext` reads
-that key in the backend's `Create`, in the `Sync` of a `SyncGit` and in the
-`Reap` of a `Gateway.Reap` RPC; the periodic reap and every `Close` the server
-makes on its own run on contexts derived from `context.Background()` and see
-none. A revoked token
-refuses later RPCs and leaves its principal's sandboxes alone. The embedder
-ends any sandbox with `(*Server).Destroy`, which runs the registry's single
-removal path with the reason `embedder` and closes the backend sandbox with the
-caller's context; an id the server does not hold, a `Create` in progress
-included, returns `gatewayd.ErrNotHeld`. Clients, both wire protocols and the
-`agentkit-gateway` command, which stays in static mode, do not change, and a
-client cannot tell which mode a gateway runs in.
-
-*The `GitRepo` slot.* A `GitRepo` is the backend's provider-side init step,
-so it is the Gateway RPC `SyncGit`, and the server keeps spec 17's slot rules
-itself: relayed RPCs bypass the backend wrapper's own bookkeeping. A
-successful `SyncGit`, the first relayed `Tools`, a relayed `SyncTar` that
-succeeds and a relayed `SYNC` `Rsync` that ends OK take the slot; while it is
-free, `SyncGit` holds a write lock and those relays a read lock, so the two
-never interleave. A later `SyncGit` is refused with "GitRepo must be the
-first Sync and come before Tools".
-
-*Transport failures and the state machine.* attach decides liveness by status
-code, and the client hides its shared connection from attach's watcher
-(`noWatch`), so liveness is decided per RPC: a network blip with no call in
-flight loses nothing. Every condition on the gateway's side (a missing,
-malformed, unknown or foreign id, a backend sandbox no longer live) answers
-`Unavailable`, never one of the four codes attach reads as the agent's own
-refusal, so a gone sandbox becomes `sandbox_unavailable` rather than a "live"
-sandbox that cannot work. Upstream, the agent's `InvalidArgument`,
-`FailedPrecondition`, `NotFound` and `Unimplemented` pass through, and every
-other error becomes `Unavailable`. A cut client connection, a cut backend
-connection and a gateway-side destroy all end the call in flight and every
-later call with `sandbox_unavailable`.
-
-*Lifecycle.* `Create` prunes entries whose backend sandbox is no longer live,
-then refuses with `CAPACITY` when recorded sandboxes plus creates in progress
-reach `MaxSandboxes`. A sandbox whose caller has gone by the time the backend
-returns is closed and never recorded, as is one whose backend exposes no
-agent connection. Each entry expires by its own timer at
-`created + TTL`; any access that finds the backend sandbox dead removes it;
-`Destroy`, the embedder's `Server.Destroy` and `Shutdown` remove the rest.
-Each removal closes the backend sandbox and logs the reason (`client`,
-`expired`, `unavailable`, `shutdown`, or `embedder`). `Serve` also runs the
-backend's own `Reap` at start and every `ReapInterval`, which catches what a
-crashed gateway left behind. On the
-client, a handshake that fails after `Gateway.Create` runs attach's destroy
-step, a context that ends before `Create` returns destroys the sandbox, and
-`Provider.Close` destroys every sandbox it created before closing the
-connection. Nothing reattaches: a crashed embedder's sandboxes live until their
-TTL unless it lists and destroys them.
-
-*No socket in the library.* The client package is in the sandbox module,
-which listens on nothing; only the nested modules call `net.Listen`: gatewayd,
-in the command, and mcpserve, in `ServeLoopback`.
-
-### `local` is not isolation
-
-Its capabilities say so (`IsolationNone`, only
-`NetworkUnrestricted`, nothing else honoured), and it refuses the zero
-`Spec` because the zero network is `none`. It applies no Landlock ruleset
-(`Capabilities.Landlock` is false, so `RequireLandlock` is refused before
-anything is made) and its agent reports ABI 0 with the note
-`in-process agent (local provider): no confinement`. It keeps its files under
-`<os.TempDir()>/agentkit-sandbox-local/<id>/` with private `home/` and
-`tmp/`, and `Reap` removes directories whose creating process has gone.
 
 ## Testing layout
 
