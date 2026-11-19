@@ -3,6 +3,7 @@
 package codesearch
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -13,12 +14,14 @@ import (
 	"maps"
 	"math/rand/v2"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -834,7 +837,8 @@ func TestAStoredIndexBecomesVisibleOnlyWhenComplete(t *testing.T) {
 		t.Error("a manifest is visible before the store is complete")
 	}
 	for _, e := range treeOf(t, store) {
-		if top := strings.Split(e, string(filepath.Separator))[0]; !strings.HasSuffix(top, ".tmp") {
+		// The lock file is the builders' lock, not part of the index.
+		if top := strings.Split(e, string(filepath.Separator))[0]; top != "lock" && !strings.HasSuffix(top, ".tmp") {
 			t.Errorf("%s is visible before the store is complete", e)
 		}
 	}
@@ -954,5 +958,139 @@ func editManifest(t *testing.T, store, key string, v any) {
 	}
 	if err := os.WriteFile(filepath.Join(store, "manifest.json"), b, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTwoIndexesOnOneStoreBuildOnce(t *testing.T) {
+	ws := openWorkspace(t, testutil.Tree(t, filler(200)))
+	indexDir := t.TempDir()
+	a, b := indexFor(t, ws, Options{IndexDir: indexDir}), indexFor(t, ws, Options{IndexDir: indexDir})
+	var wg sync.WaitGroup
+	results := make([]core.ToolResult, 2)
+	for i, idx := range []*Index{a, b} {
+		wg.Go(func() { results[i] = call(context.Background(), idx, map[string]any{"query": "token042"}) })
+	}
+	wg.Wait()
+	for i, r := range results {
+		if !r.OK {
+			t.Fatalf("index %d: %s %s", i, r.Error, r.Detail)
+		}
+	}
+	if !slices.Equal(paths(results[0]), paths(results[1])) {
+		t.Errorf("paths %v and %v differ", paths(results[0]), paths(results[1]))
+	}
+	if n := a.BuildCount() + b.BuildCount(); n != 1 {
+		t.Fatalf("the two indexes built %d times, want once", n)
+	}
+}
+
+// holdStoreLock takes the store's lock of ws under indexDir, as another
+// builder would, and returns the function that releases it.
+func holdStoreLock(t *testing.T, ws *workspace.Workspace, indexDir string) func() {
+	t.Helper()
+	store := storeOf(ws, indexDir)
+	if err := os.MkdirAll(store, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(store, "lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	return func() { _ = f.Close() }
+}
+
+func TestAWaiterPastTheBoundBuildsForItself(t *testing.T) {
+	ws := openWorkspace(t, testutil.Tree(t, needleFiles))
+	indexDir := t.TempDir()
+	release := holdStoreLock(t, ws, indexDir)
+	defer release()
+	before := treeOf(t, storeOf(ws, indexDir))
+	tmp := t.TempDir()
+	idx := indexFor(t, ws, Options{IndexDir: indexDir, TempDir: tmp})
+	idx.lockWait = 200 * time.Millisecond
+	r := find(t, idx, "needle")
+	if !r.OK || idx.BuildCount() != 1 {
+		t.Fatalf("ok %v, BuildCount %d; want a result and one build", r.OK, idx.BuildCount())
+	}
+	if !strings.HasPrefix(idx.RunDir(), tmp) {
+		t.Errorf("run directory %s is not under %s", idx.RunDir(), tmp)
+	}
+	if after := treeOf(t, storeOf(ws, indexDir)); !slices.Equal(after, before) {
+		t.Errorf("the waiter changed the store: %v, was %v", after, before)
+	}
+}
+
+// lockHelperEnv names, for the helper process, the workspace and index
+// directory whose store lock it holds.
+const lockHelperEnv = "CODESEARCH_LOCK_HELPER"
+
+// TestHelperProcessHoldsTheStoreLock is not a test: run as a child process by
+// another test, it takes the store lock its environment names, says so on
+// stdout, and sleeps until it is killed.
+func TestHelperProcessHoldsTheStoreLock(t *testing.T) {
+	spec := os.Getenv(lockHelperEnv)
+	if spec == "" {
+		t.Skip("run only as another test's helper process")
+	}
+	root, indexDir, _ := strings.Cut(spec, string(os.PathListSeparator))
+	holdStoreLock(t, openWorkspace(t, root), indexDir)
+	fmt.Println("locked")
+	time.Sleep(time.Hour)
+}
+
+func TestALockHeldByAKilledProcessIsTakenAtOnce(t *testing.T) {
+	ws := openWorkspace(t, testutil.Tree(t, needleFiles))
+	indexDir := t.TempDir()
+	cmd := osexec.Command(os.Args[0], "-test.run=^TestHelperProcessHoldsTheStoreLock$", "-test.count=1", "-test.timeout=2h")
+	cmd.Env = append(os.Environ(), lockHelperEnv+"="+ws.Root()+string(os.PathListSeparator)+indexDir)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	line, _ := bufio.NewReader(out).ReadString('\n')
+	if strings.TrimSpace(line) != "locked" {
+		t.Fatalf("the helper did not take the lock: %q", line)
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+	idx := indexFor(t, ws, Options{IndexDir: indexDir, MaxBuildTime: time.Minute})
+	var r core.ToolResult
+	if !testutil.Within(30*time.Second, func() bool { r = find(t, idx, "needle"); return true }) {
+		t.Fatal("the index waited for a lock its dead holder could not release")
+	}
+	if !r.OK || idx.BuildCount() != 1 {
+		t.Fatalf("ok %v, BuildCount %d; want a result and one build", r.OK, idx.BuildCount())
+	}
+}
+
+func TestAPartialStoredIndexIsBuiltAgainByTheNextIndex(t *testing.T) {
+	ws := openWorkspace(t, testutil.Tree(t, numbered(6, "f%02d.go", "package p\n// needle %d\n")))
+	indexDir := t.TempDir()
+	a := indexFor(t, ws, Options{IndexDir: indexDir, MaxFiles: 5})
+	r := find(t, a, "needle")
+	if r.Data["partial"] != true || r.Data["partial_reason"] != "files" {
+		t.Fatalf("partial = %v (%v), want true (files)", r.Data["partial"], r.Data["partial_reason"])
+	}
+	if m := readManifest(t, storeOf(ws, indexDir)); m["partial"] != true || m["partial_reason"] != "files" {
+		t.Fatalf("manifest = %v, want it marked partial for files", m)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b := indexFor(t, ws, Options{IndexDir: indexDir})
+	if r := find(t, b, "needle"); len(paths(r)) != 6 || b.BuildCount() != 1 {
+		t.Fatalf("the next index: %d files, BuildCount %d; want 6 and 1", len(paths(r)), b.BuildCount())
+	}
+	if m := readManifest(t, storeOf(ws, indexDir)); m["partial"] != false {
+		t.Fatalf("manifest = %v, want the complete build stored", m)
 	}
 }

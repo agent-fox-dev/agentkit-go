@@ -3,7 +3,7 @@
   "spec_id": "33",
   "spec_name": "persistent_code_index",
   "schema_version": 3,
-  "updated_at": "2026-11-19T21:02:36Z",
+  "updated_at": "2026-11-19T21:08:00Z",
   "tasks": [
     {
       "id": 1,
@@ -177,7 +177,67 @@
     },
     {
       "id": 3,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-3.1",
+          "tests": [
+            {
+              "test": "./codesearch:TestTwoIndexesOnOneStoreBuildOnce",
+              "failed": {
+                "at": "2026-11-19T21:03:55Z",
+                "tree": "68bd70ba9570348b7f1a9341505ba75b2490ee09"
+              },
+              "passed": {
+                "at": "2026-11-19T21:07:57Z",
+                "tree": "3ac52d7a012d154923389f10df8e98d93e5d2ec6"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.2",
+          "tests": [
+            {
+              "test": "./codesearch:TestAWaiterPastTheBoundBuildsForItself",
+              "failed": {
+                "at": "2026-11-19T21:03:55Z",
+                "tree": "68bd70ba9570348b7f1a9341505ba75b2490ee09"
+              },
+              "passed": {
+                "at": "2026-11-19T21:07:57Z",
+                "tree": "3ac52d7a012d154923389f10df8e98d93e5d2ec6"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.3",
+          "no_red": "before the lock exists nothing waits on it, so a killed holder cannot stall anyone; the test keeps that so once indexes wait for the lock",
+          "tests": [
+            {
+              "test": "./codesearch:TestALockHeldByAKilledProcessIsTakenAtOnce",
+              "passed": {
+                "at": "2026-11-19T21:07:57Z",
+                "tree": "3ac52d7a012d154923389f10df8e98d93e5d2ec6"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.4",
+          "no_red": "task 1 stores the partial flag and task 2's load treats a partial store as absent, so the behaviour exists before this task",
+          "tests": [
+            {
+              "test": "./codesearch:TestAPartialStoredIndexIsBuiltAgainByTheNextIndex",
+              "passed": {
+                "at": "2026-11-19T21:07:57Z",
+                "tree": "3ac52d7a012d154923389f10df8e98d93e5d2ec6"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 4,

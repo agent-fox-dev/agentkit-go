@@ -301,6 +301,10 @@ type Index struct {
 	// walk. Tests use it to block the walk and inject concurrent writes.
 	testRevalHook func()
 
+	// lockWait, when positive, replaces the bound on waiting for another
+	// builder's store lock. Tests set it so as not to wait the real bound.
+	lockWait time.Duration
+
 	// testStoreHook, when set, is called when a store has written the index
 	// under its temporary name, before it renames it into place.
 	testStoreHook func()
@@ -626,10 +630,6 @@ func (idx *Index) build(ctx context.Context, onlyIfUnbuilt bool) error {
 	// this build when it finishes.
 	_, _, buildGenStart := idx.dirty.snapshot()
 
-	// Create a derived context with the wall-time bound.
-	buildCtx, buildCancel := context.WithTimeout(ctx, idx.opts.MaxBuildTime)
-	defer buildCancel()
-
 	// Create the run directory. idx.runID is stable here: only a rebuild
 	// changes it, and a rebuild needs a built index.
 	runDir := idx.runDirPath()
@@ -645,23 +645,45 @@ func (idx *Index) build(ctx context.Context, onlyIfUnbuilt bool) error {
 	// Sweep old sibling run directories.
 	idx.sweepOldRuns()
 
+	// With IndexDir set, one process at a time loads or builds and stores the
+	// workspace's index, under the store's lock. One that waited past the
+	// bound builds for itself and stores nothing.
+	storing := false
+	if idx.opts.IndexDir != "" {
+		unlock, held, err := idx.lockStore(ctx)
+		if err != nil {
+			os.RemoveAll(runDir)
+			return fmt.Errorf("aborted: %w", err)
+		}
+		if held {
+			defer unlock()
+			storing = true
+		}
+	}
+
 	// A complete stored index of this workspace is loaded instead of built,
 	// and the whole tree revalidated against it before the query is answered.
-	if out, err := idx.load(runDir); err == nil {
-		idx.mu.Lock()
-		idx.runDir = runDir
-		idx.lastTouch = time.Now()
-		idx.indexedFiles = out.indexedFiles
-		idx.outlineFiles = out.outlineFiles
-		idx.stats = out.stats
-		idx.fileInfos = out.fileInfos
-		idx.built = true
-		idx.partial = false
-		idx.partialReason = ""
-		idx.mu.Unlock()
-		idx.dirty.markRevalidateAll()
-		return nil
+	if storing {
+		if out, err := idx.load(runDir); err == nil {
+			idx.mu.Lock()
+			idx.runDir = runDir
+			idx.lastTouch = time.Now()
+			idx.indexedFiles = out.indexedFiles
+			idx.outlineFiles = out.outlineFiles
+			idx.stats = out.stats
+			idx.fileInfos = out.fileInfos
+			idx.built = true
+			idx.partial = false
+			idx.partialReason = ""
+			idx.mu.Unlock()
+			idx.dirty.markRevalidateAll()
+			return nil
+		}
 	}
+
+	// The wall-time bound starts with the build, not with a wait for the lock.
+	buildCtx, buildCancel := context.WithTimeout(ctx, idx.opts.MaxBuildTime)
+	defer buildCancel()
 
 	result, err := idx.doBuild(buildCtx, ctx, runDir)
 	if err != nil {
@@ -687,7 +709,9 @@ func (idx *Index) build(ctx context.Context, onlyIfUnbuilt bool) error {
 	// during the build (generation-based clearing).
 	idx.dirty.clearOlderThan(buildGenStart)
 
-	idx.store(runDir, result)
+	if storing {
+		idx.store(runDir, result)
+	}
 	return nil
 }
 
