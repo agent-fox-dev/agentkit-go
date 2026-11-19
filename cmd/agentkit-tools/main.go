@@ -83,22 +83,6 @@ func parse(fs *flag.FlagSet, args []string, stderr io.Writer) error {
 	return nil
 }
 
-// runMCP serves one MCP session.
-func runMCP(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
-	var s settings
-	s.register(fs)
-	if parse(fs, args, stderr) != nil {
-		return 2
-	}
-	if err := s.checkDir(); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 2
-	}
-	fmt.Fprintln(stderr, "agentkit-tools mcp: not implemented")
-	return 2
-}
-
 // selfPath is this module's path, which the build information names.
 const selfPath = "github.com/agent-fox-dev/agentkit-go/cmd/agentkit-tools"
 
