@@ -1,7 +1,6 @@
 // mcpserve is a SEPARATE MODULE: it serves a Runner's tools over MCP to a
-// harness on the same machine. It is the one module besides sandbox/gatewayd
-// that listens on a socket, kept out of the root and sandbox modules so the
-// library itself listens on none.
+// harness on the same machine. It is the one module that listens on a
+// socket, kept out of the root module so the library itself listens on none.
 module github.com/agent-fox-dev/agentkit-go/mcpserve
 
 go 1.27
@@ -80,13 +79,13 @@ require (
 	go.opentelemetry.io/otel v1.24.0 // indirect
 	go.opentelemetry.io/otel/metric v1.24.0 // indirect
 	go.opentelemetry.io/otel/trace v1.24.0 // indirect
-	go.starlark.net v0.0.0-20261005163335-bcb1a1a55bf9 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/crypto v0.43.0 // indirect
 	golang.org/x/net v0.46.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/term v0.41.0 // indirect
 	golang.org/x/text v0.30.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 	google.golang.org/api v0.189.0 // indirect

@@ -5,8 +5,7 @@ import "runtime/debug"
 // versionFrom is the version of this module that bi records: the main
 // module's, when the binary is built from this module, otherwise the
 // dependency's, or its replacement's when it is replaced. It is "(devel)" when
-// there is none. It is the algorithm of sandbox/internal/buildver, which this
-// module cannot import without requiring the sandbox module.
+// there is none.
 func versionFrom(bi *debug.BuildInfo) string {
 	if bi == nil {
 		return "(devel)"

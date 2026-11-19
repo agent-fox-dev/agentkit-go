@@ -23,10 +23,6 @@ in the [architecture](architecture.md) document.
 - [Using tools from MCP servers](#using-tools-from-mcp-servers)
 - [Running tools without a model](#running-tools-without-a-model)
 - [Serving tools to another harness over MCP](#serving-tools-to-another-harness-over-mcp)
-- [Sandboxes](#sandboxes)
-  - [Choosing a sandbox provider](#choosing-a-sandbox-provider)
-  - [Moving files in and out](#moving-files-in-and-out)
-- [Sandboxes on another host: the gateway](#sandboxes-on-another-host-the-gateway)
 - [Indexed code search](#indexed-code-search)
 - [Testing without a model](#testing-without-a-model)
 - [Troubleshooting](#troubleshooting)
@@ -39,7 +35,7 @@ you can stop at any layer and use it on its own:
 | Step | Package | What you get |
 |---|---|---|
 | 1. Open a workspace | `workspace` | A project directory with its containment boundary and ignore rules. |
-| 2. Build tools for it | `tools` | The built-in file, search, navigation and shell tools. Add your own, MCP tools, code mode, or swap in sandbox proxies. |
+| 2. Build tools for it | `tools` | The built-in file, search, navigation and shell tools. Add your own, MCP tools or code mode. |
 | 3. Describe the tool side | `agentkit.Toolset` | The tools, a policy that selects among them, the shell guard and an optional after-call hook. |
 | 4. Run tool calls | `agentkit.Runner` | Runs calls through validation, the guard and events — with or without a model. |
 | 5. Drive a model | `agentkit.New` | The agent loop: sends the conversation to a provider, runs the tool calls it asks for, repeats until done. |
@@ -229,11 +225,13 @@ Guard: guard.Allow("go", "git", "make") // only these programs; no pipes, no env
 whole command line the way a shell would, so `go test && rm -rf /` is
 refused. `guard.Restricted(guard.Options{...})` adds switches for shell
 operators, `NAME=value` prefixes, tools blocked by name and ending the run on a
-block. `guard.AllowAll` allows everything; use it only for tools that run in
-an isolating sandbox with no network (see [Sandboxes](#sandboxes)).
+block. `guard.AllowAll` allows everything; use it only in a process that
+already runs inside a sandbox someone else provides, such as the one the
+platform running your agent creates. AgentKit does not create sandboxes.
 
 The guard is a floor for unattended safety, not a sandbox: a listed program
-such as `go` can still run arbitrary code. Details and every option are under
+such as `go` can still run arbitrary code. On a host without a sandbox it is
+the only boundary. Details and every option are under
 [`guard.Options`](configuration.md#guardoptions).
 
 ## Bounding and watching a run
@@ -383,11 +381,11 @@ too.
 
 The nested `mcpserve` module serves a runner's tools over MCP, so another
 agent harness — Claude Code, Pi, any MCP client on the same machine — can use
-AgentKit's tools, code mode and sandboxes while you keep the guard and policy
-on your side:
+AgentKit's tools and code mode while you keep the guard and policy on your
+side:
 
 ```go
-srv, err := mcpserve.New(runner, mcpserve.Options{Instructions: "The tools run in a sandbox."})
+srv, err := mcpserve.New(runner, mcpserve.Options{Instructions: "The tools work on this checkout."})
 if err != nil {
 	return err
 }
@@ -402,96 +400,8 @@ fmt.Println(ep.ClaudeConfig("agentkit")) // pass to `claude --mcp-config`
 `srv.ServeStdio(ctx)` serves on the process's stdin and stdout instead, for a
 harness that starts your program as a child. Every call goes through
 `Runner.Call`, so a guard block reaches the harness as an error result.
-[`examples/harness`](../examples/harness) runs Claude Code or Pi against a
-sandbox this way. Options and limits:
+Options and limits:
 [MCP serving](configuration.md#mcp-serving-mcpserveoptions).
-
-## Sandboxes
-
-The guard limits what the model may run; a sandbox limits what that can
-affect. A sandbox is an ephemeral environment holding one workspace and the
-AgentKit agent, `agentkit-sandboxd`. `Sandbox.Tools` returns proxy tools with
-exactly the same definitions as `tools.For`, whose calls run inside the
-sandbox. The agent loop does not change and does not know a tool is remote.
-
-```go
-sb, proxies, err := sandbox.Open(ctx, provider,
-	sandbox.Spec{}, // no network, one-hour lifetime, the default image
-	sandbox.LocalDir{Path: "./project"}, sandbox.ToolOptions{})
-if err != nil {
-	return err
-}
-defer sb.Close(ctx)
-
-agent, err := agentkit.New(agentkit.Config{
-	Provider: "anthropic",
-	Model:    "STANDARD",
-	Toolset:  agentkit.Toolset{Tools: proxies, Guard: guard.Allow("go", "git")},
-})
-// ... run the agent, then copy its changes back out:
-err = sb.Export(ctx, ".", sandbox.LocalDir{Path: "./result"})
-```
-
-`sandbox.Open` creates the sandbox, fills it from a source and returns the
-proxies, closing the sandbox if a step fails. A `Spec` sets the image,
-environment, resources, network mode and lifetime; a provider refuses any
-field it cannot honour rather than quietly ignoring it. On Linux the agent
-also confines itself with Landlock, and `Spec.RequireLandlock` makes that
-mandatory.
-
-### Choosing a sandbox provider
-
-| Provider | Isolation | Needs | Use it for |
-|---|---|---|---|
-| `sandbox/podman` — `podman.New(podman.Options{})` | A hardened container per sandbox (or a micro-VM with `krun`): read-only root, no capabilities, no host mounts, no network by default | Podman or Docker, and the sandbox image | Untrusted, model-written code |
-| `sandbox/landlock` — `landlock.New(landlock.Options{})` | Confinement: the agent runs as a child process under Linux Landlock; no resource limits | Linux 6.7 or later and `agentkit-sandboxd` on `PATH` | Hosts without a container engine |
-| `sandbox/gateway` — `gateway.Dial(...)` | Whatever the remote gateway's backend gives | A running `agentkit-gateway` | Sandboxes on another machine |
-| `sandbox/local` — `local.Unisolated()` | **None**: runs in your own process | Nothing | Tests and development only |
-
-The Podman provider uses the published image
-`quay.io/agentfox/agentkit-sandbox:<version>` by default; build your own
-toolchain image `FROM` it. Install the agent for the Landlock provider with:
-
-```bash
-go install github.com/agent-fox-dev/agentkit-go/sandbox/cmd/agentkit-sandboxd@vX.Y.Z
-```
-
-A proxy shell tool still needs a `Guard`. `guard.AllowAll` is reasonable only
-for proxies from an isolating provider (`podman`) with `NetworkNone`, bounded
-resources, and exported files treated as untrusted.
-
-### Moving files in and out
-
-| Source or destination | Moves |
-|---|---|
-| `sandbox.LocalDir{Path: dir}` | A host directory, over the rsync protocol: only what changed, honouring ignore rules, never `.git` on export, never through an escaping symlink. |
-| `sandbox.Tar{R: r}` / `sandbox.TarOut{W: w}` | A tar stream, every entry checked before it is written. |
-| `sandbox.GitRepo{URL: u}` | A public HTTPS repository, cloned by the provider (Podman, Landlock and the gateway). |
-
-[`examples/sandbox`](../examples/sandbox) runs a sandbox end to end offline.
-Every `Spec` field, each provider's rules and the transfer options are in the
-[sandbox reference](configuration.md#sandboxes-sandboxspec-sandboxtooloptions-local-the-gateway).
-
-## Sandboxes on another host: the gateway
-
-A gateway runs sandboxes on another machine. The embedder holds only the
-gateway's URL and a bearer token; the gateway holds the container engine and
-its credentials; the sandbox holds neither.
-
-```go
-p, err := gateway.Dial(ctx, "https://gateway.example.com", gateway.Options{Token: token})
-if err != nil {
-	return err // a refused token matches gateway.ErrUnauthenticated
-}
-defer p.Close() // destroys the sandboxes p created
-sb, proxies, err := sandbox.Open(ctx, p, sandbox.Spec{}, sandbox.LocalDir{Path: "."}, sandbox.ToolOptions{})
-```
-
-A gateway sandbox behaves exactly like a local one. Each token sees only its
-own sandboxes, and the gateway bounds their number, lifetime and network.
-Run the server with the [`agentkit-gateway`](cli.md#agentkit-gateway) command,
-or embed `gatewayd.Server` in your own program to authenticate tokens your
-way. [`examples/gateway`](../examples/gateway) runs both ends in one process.
 
 ## Indexed code search
 
@@ -569,8 +479,3 @@ first run to finish.
 
 **The cost reads as zero** — the model id is not in the catalog and the vendor
 reported no cost; `Usage.Unpriced` is set. See [Models and tiers](#models-and-tiers).
-
-**`sandbox: provider "local" cannot honour Spec.Network.Mode = none`** — the
-`local` provider has no isolation and only accepts
-`sandbox.NetworkUnrestricted`. Ask for it explicitly, or use an isolating
-provider.

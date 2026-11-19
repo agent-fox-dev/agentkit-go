@@ -13,7 +13,6 @@ read [architecture.md](architecture.md); for publishing, read
 - [The quality gate](#the-quality-gate)
 - [Tests](#tests)
   - [Live provider tests](#live-provider-tests)
-  - [Container, Landlock and gateway tests](#container-landlock-and-gateway-tests)
   - [Other opt-in tests](#other-opt-in-tests)
 - [Generated files](#generated-files)
 - [Workflow](#workflow)
@@ -27,8 +26,6 @@ read [architecture.md](architecture.md); for publishing, read
 | `make` | The targets below. |
 | A C compiler (cgo) | Optional: tree-sitter outlines for non-Go languages. Without cgo every package still builds, and those languages have no outline. |
 | `golangci-lint` | Optional: `make lint` skips it when it is not installed. Configuration is in `.golangci.yml`. |
-| Podman or Docker | Only for the container tests and `make build-containers`. |
-| `protoc` | Only for `make proto`. |
 
 No API key and no network access are needed for `make check`: every test that
 talks to a model uses a scripted provider or a local fake of the vendor's API.
@@ -44,12 +41,9 @@ catalog/                the embedded model catalog and its tiers
 workspace/              containment, ignore rules and the directory walk
 tools/ guard/ outline/  the built-in tools, the shell guard, source outlines
 codemode/ mcp/ prompt/  code mode, the MCP client pool, system prompt assembly
-sandbox/                nested module: sandbox API, protocol, agent and providers
-sandbox/gatewayd/       nested module: the agentkit-gateway server
 mcpserve/               nested module: serving a Runner's tools over MCP
 codesearch/             nested module: zoekt-backed code search
-examples/               runnable examples (some are nested modules)
-containers/             the sandbox image's Containerfile
+examples/               runnable examples (indexedsearch is a nested module)
 internal/               test-only packages: build gates, conformance suites, helpers
 testdata/               golden files and fixtures
 docs/                   documentation; docs/generated/ is generated
@@ -68,10 +62,8 @@ not link their dependencies:
 |---|---|
 | root | `.` |
 | code search | `codesearch` |
-| sandboxes | `sandbox` |
-| gateway server | `sandbox/gatewayd` |
 | MCP serving | `mcpserve` |
-| examples with their own module | `examples/sandbox`, `examples/gateway`, `examples/harness`, `examples/indexedsearch` |
+| example with its own module | `examples/indexedsearch` |
 
 Each nested module requires its siblings through `replace` directives, so a
 checkout always builds against itself. The list lives in `MODULES` in the
@@ -95,17 +87,11 @@ run in each of them.
 | `make lint` | `golangci-lint` in every module; skipped when not installed. |
 | `make tidy` | `go mod tidy` in every module. |
 | `make doc` | Regenerate the package reference in `docs/generated/`. |
-| `make proto` | Regenerate the sandbox protocols' Go code (needs `protoc`). |
 | `make clean` | Remove `build/` and the coverage profile. |
-| `make build-containers` | Build the sandbox image with Podman. |
-| `make sandbox-podman-test` | Build the image and run the Podman provider's integration tests. |
-| `make sandbox-landlock-test` | Run the Landlock provider's tests verbosely, including a real public clone. |
-| `make sandbox-gateway` | Build `build/bin/agentkit-gateway`; `AGENTKIT_VERSION=vX.Y.Z` stamps its version. |
-| `make sandbox-gateway-test` | Build the image and run the gateway's Podman tests. |
 | `make provider-live-test` | One real tool loop on each provider you have credentials for. Costs money. |
 
 Only `check`, `check-release` and their parts run in the default gates; the
-container, Landlock, gateway and live targets are opt-in.
+live target is opt-in.
 
 ## The quality gate
 
@@ -114,7 +100,7 @@ tests of every module. While you work, narrow runs are fine:
 
 ```bash
 go test ./tools/...                      # one package of the root module
-(cd sandbox && go test ./podman/...)     # a package of a nested module
+(cd codesearch && go test ./...)         # a nested module
 go test -short -run TestNewRunner .      # tests by name
 ```
 
@@ -125,7 +111,7 @@ with cgo on. It is a manual step for maintainers before a release or a merge;
 contributors and coding agents run `make check` only.
 
 The direct-dependency allowlist ([DEPS.md](DEPS.md)), the rule that only the
-nested server modules open a listening socket, and the exported API of the
+nested `mcpserve` module opens a listening socket, and the exported API of the
 public packages are kept by review, not by tests: a change to any of them is
 made on purpose and named in its pull request.
 
@@ -136,7 +122,7 @@ made on purpose and named in its pull request.
   [`.specs/steering.md`](../.specs/steering.md).
 - `internal/testutil` holds the helpers many packages' tests share: file trees,
   a git environment that ignores the machine's configuration, polling with a
-  deadline, JSON, tar and golden files, the repository root, and `go run` with a
+  deadline, JSON and golden files, the repository root, and `go run` with a
   controlled environment. It imports only the standard library, so the nested modules'
   tests use it too. `internal/testkit` holds the scripted provider and tool
   doubles over `core`.
@@ -144,8 +130,8 @@ made on purpose and named in its pull request.
   against it.
 - `testdata/golden/` holds the exact request bodies sent to Anthropic. It pins
   regressions, not the vendor's behaviour.
-- `internal/toolconformance` runs one table of cases against `tools.For` and
-  against sandbox proxy tools, so the two stay interchangeable.
+- `internal/toolconformance` holds the table of cases every built-in tool must
+  pass, which the `tools` tests run against `tools.For`.
 
 Each provider package tests its wire against a fake of its vendor's API on a
 loopback test server (`provider/anthropic`, `provider/openrouter`,
@@ -177,21 +163,6 @@ with the word, within 6 turns, $0.50 and 10 minutes. It checks the answer, the
 resolved provider, model and effort, the token counts and the cost (positive
 on `anthropic` and `openrouter`, zero on `ollama`), and logs them.
 
-### Container, Landlock and gateway tests
-
-These need a container engine or a recent Linux kernel, and skip without one or
-under `-short`:
-
-| Target | Runs | Environment it sets |
-|---|---|---|
-| `make sandbox-podman-test` | `sandbox/podman`'s integration tests against a freshly built image. The `GitRepo` test clones `AGENTKIT_SANDBOX_GIT_URL` at depth 1; the micro-VM test runs only with `AGENTKIT_SANDBOX_RUNTIME=krun`. | `AGENTKIT_SANDBOX_BASE_IMAGE`, `AGENTKIT_SANDBOX_IMAGE_VERSION`, `AGENTKIT_CONTAINER` |
-| `make sandbox-landlock-test` | `sandbox/landlock`'s tests verbosely, with a real clone of `AGENTKIT_SANDBOX_GIT_URL`. Its offline and Linux tests also run in `make check`, skipping below Landlock ABI 4. | `AGENTKIT_SANDBOX_GIT_URL` |
-| `make sandbox-gateway-test` | `sandbox/gatewayd`'s Podman tests. The gateway's offline tests (an in-process server over `local`) run in `make check`. | `AGENTKIT_SANDBOX_BASE_IMAGE`, `AGENTKIT_CONTAINER` |
-
-`AGENTKIT_SANDBOX_GIT_URL` defaults to
-`https://github.com/agent-fox-dev/agentkit-go`. The image tests in
-`sandbox/images` run against the image named by `AGENTKIT_SANDBOX_BASE_IMAGE`.
-
 ### Other opt-in tests
 
 | Variable | Turns on |
@@ -205,7 +176,6 @@ Some files are generated and committed. Never edit them by hand:
 | Files | Regenerate with | When |
 |---|---|---|
 | `docs/generated/*.txt` | `make doc` | An exported identifier or a package doc comment changes. |
-| `sandbox/internal/sandboxpb/*.pb.go` and the `*.proto.sha256` hashes | `make proto` | `sandbox.proto` or `gateway.proto` changes. It installs pinned `protoc-gen-go` and `protoc-gen-go-grpc` into `build/bin`. |
 
 ## Workflow
 

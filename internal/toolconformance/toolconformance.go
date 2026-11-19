@@ -1,15 +1,13 @@
 // Package toolconformance holds the tool conformance case table: every
 // built-in tool returns its documented error codes, and its Data conforms to
-// its declared OutputSchema. The tools package runs it against tools.For and
-// the sandbox package against proxy tools, so the two cannot drift. Only
-// tests import it.
+// its declared OutputSchema. The tools package runs it against tools.For.
+// Only tests import it.
 //
 // code_search lives in its own module and is covered in
 // codesearch/tool_test.go.
 package toolconformance
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -55,29 +53,6 @@ func (tr Tree) Write(t testing.TB, dir string) {
 			t.Fatal(err)
 		}
 	}
-}
-
-// Tar returns tree as a tar stream.
-func (tr Tree) Tar(t testing.TB) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	for _, e := range tr {
-		h := &tar.Header{Typeflag: tar.TypeReg, Name: e.Path, Mode: int64(e.Mode), Size: int64(len(e.Body))}
-		if e.Dir {
-			h = &tar.Header{Typeflag: tar.TypeDir, Name: e.Path + "/", Mode: 0o755}
-		}
-		if err := tw.WriteHeader(h); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tw.Write([]byte(e.Body)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
 }
 
 // BaseTree is the small tree every conformance case runs against: a Go

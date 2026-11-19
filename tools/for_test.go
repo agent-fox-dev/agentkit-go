@@ -75,8 +75,8 @@ func TestForAppendsTheIndexsToolsAfterTheBuiltins(t *testing.T) {
 	}
 }
 
-// TestToolsConformToTheSharedCaseTable runs the conformance cases the
-// sandbox's proxy tools also run, so the two cannot drift.
+// TestToolsConformToTheSharedCaseTable runs the conformance case table
+// against the tools tools.For builds.
 func TestToolsConformToTheSharedCaseTable(t *testing.T) {
 	build := func(t *testing.T, tree toolconformance.Tree) []core.Tool {
 		ws := newWS(t, nil)

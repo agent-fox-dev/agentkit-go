@@ -21,10 +21,6 @@ purpose.
 - [`github.com/pelletier/go-toml/v2`](#githubcompelletiergo-tomlv2)
 - [`golang.org/x/oauth2`](#golangorgxoauth2)
 - [`github.com/aws/aws-sdk-go-v2`](#githubcomawsaws-sdk-go-v2)
-- [`google.golang.org/grpc`](#googlegolangorggrpc)
-- [`google.golang.org/protobuf`](#googlegolangorgprotobuf)
-- [`github.com/gokrazy/rsync`](#githubcomgokrazyrsync)
-- [`github.com/landlock-lsm/go-landlock`](#githubcomlandlock-lsmgo-landlock)
 - [Rejected](#rejected)
 
 ## The allowlist
@@ -46,20 +42,10 @@ ending in `/` approves every module under that path.
 | `github.com/pelletier/go-toml/v2` | TOML parsing for MCP configuration (`internal/toml`) |
 | `golang.org/x/oauth2` | Google credentials for the Vertex AI deployment |
 | `github.com/aws/aws-sdk-go-v2`, `github.com/aws/aws-sdk-go-v2/…` | AWS configuration and credentials for the Bedrock deployment |
-| `google.golang.org/grpc` | the sandbox agent and gateway protocols' transport (sandbox and gatewayd modules) |
-| `google.golang.org/protobuf` | the protobuf runtime of the generated sandbox protocol code |
-| `github.com/gokrazy/rsync` | the in-process rsync protocol for sandbox `LocalDir` transfers (sandbox module) |
-| `github.com/landlock-lsm/go-landlock` | the sandbox agent's own Landlock confinement (sandbox module) |
 
 Adding a direct dependency means adding it there, with its reason, and a
-ruling here. The same list covers the nested `sandbox` module, whose direct
-dependencies (grpc, protobuf and, since spec 14, the rsync protocol) stay out
-of the root module's graph.
-It also covers the nested `sandbox/gatewayd` module (spec 19), which adds no
-module: it requires only the root and sandbox modules and grpc directly
-(protobuf only if a hand-written file imported it), and its graph holds
-nothing the sandbox module's lacks. And it covers the nested `mcpserve` module
-(spec 23), which adds no module either: it requires only the root module and
+ruling here. The same list covers the nested `mcpserve` module (spec 23),
+which adds no module: it requires only the root module and
 the MCP Go SDK directly, the SDK at the version the root requires, and its
 graph holds nothing the root module's lacks. The
 `codesearch` module is separate and not covered: its zoekt graph stays out of
@@ -125,9 +111,7 @@ module:
 | `github.com/stretchr/testify` | `v1.11.1` → `v1.12.1` | not linked: the Anthropic SDK's tests import it. The SDK requires `v1.12.1`, so minimum version selection raises it |
 | `go.yaml.in/yaml/v3` | `v3.0.5` | not linked: `testify` `v1.12.1` requires it |
 
-No other version moved. The nested `sandbox` module replaces the root module, so
-its graph gains the SDK and `ajson` (`testify` and `yaml/v3` are not in its
-graph). Importing the SDK's root package
+No other version moved. Importing the SDK's root package
 links the whole of its API surface, not only `Chat`.
 
 ## `github.com/ollama/ollama`
@@ -194,24 +178,15 @@ required by the Ollama module, and `gopkg.in/check.v1` to
 tests (`go mod why`), so they are not linked. The root `go.mod` lists 7 new
 indirect lines and `go.sum` gains 35 and drops 6.
 
-The nested `sandbox` module replaces the root module, so its graph gains the
-Ollama module, `easyjson` and `go-ordered-map` (both linked) and `kr/pretty`
-and `go-internal` (not linked), and raises only `gopkg.in/check.v1`: spec 14's
-D-1 had already lifted `x/crypto`, `x/net`, `x/text` and `x/mod` there.
 `mcpserve` raises the same three `x/*` versions the root does.
 
 **The root package imports both providers (spec 29).** `agentkit.Resolve`
 builds the OpenRouter and Ollama clients, so every module that imports the root
 package compiles both SDKs. Go refuses that build (`go: updates to go.mod
 needed`) unless the module lists the modules providing the packages, so
-`sandbox`, `mcpserve`, `examples/gateway`, `examples/harness` and
-`examples/sandbox` each gained seven `// indirect` lines (the two SDKs,
-`ajson`, `easyjson`, `go-ordered-map`, `google/uuid` and `yaml.v3`) and their
-`go.sum` hashes. In the `sandbox` module that expands the graph by the 57
-modules the SDKs' `go.mod` files name and raises `testify` to `v1.12.1` and
-`golang.org/x/exp` to `v0.0.0-20250218142911-aa4b98e5adaa`; none of the 57 is
-linked (`go list -deps -test ./...` in the module), and the sandbox agent
-binary links neither SDK. The root module's `go.mod` does not change.
+`mcpserve` gained seven `// indirect` lines (the two SDKs, `ajson`,
+`easyjson`, `go-ordered-map`, `google/uuid` and `yaml.v3`) and their `go.sum`
+hashes. The root module's `go.mod` does not change.
 
 **The SDK's line limit.** `Client.Chat` reads the response with a
 `bufio.Scanner` whose largest line is 8,000,000 bytes (`maxBufferSize =
@@ -360,132 +335,6 @@ re-implementing SigV4 credentials would be neither smaller nor safer.
 **What is pulled in.** `github.com/aws/smithy-go` and the AWS SDK's internal,
 SSO, SSO-OIDC and STS modules, which `config` needs for the credential chain.
 
-## `google.golang.org/grpc`
-
-**Used by.** The sandbox packages: the generated clients and servers of both
-protocols in `sandbox/internal/sandboxpb`, the agent service in
-`sandbox/internal/agent`, the host side in `sandbox/internal/attach`, and the
-gateway client in `sandbox/gateway`. Since spec 19 also the gateway server,
-`sandbox/gatewayd` and its `agentkit-gateway` command, a nested module of its
-own that requires grpc directly at the sandbox module's version. Nothing
-outside `sandbox/` imports it. Since spec 14 the sandbox tree is a nested
-module, and grpc is a direct requirement of `sandbox/go.mod`; in the root
-module it is indirect again, as it was before spec 13.
-
-**Version.** `v1.64.1`, promoted from an indirect requirement at the version
-already in `go.sum`, so `go list -m all` did not change. Upgrading it is a
-separate ruling. `protoc-gen-go-grpc` v1.5.1 output needs v1.64.0 or later
-(`grpc.SupportPackageIsVersion9`).
-
-**Why this module.** PRD 11 (D2) chose an AgentKit gRPC protocol over MCP for
-the sandbox, so tool schemas come from the `tools` package byte for byte and
-`ToolMetadata` survives the trip. gRPC brings HTTP/2 multiplexing over one
-pipe, per-call cancellation that reaches the agent as a cancelled context,
-streaming for tar transfer, and message size limits. A hand-rolled framing
-over stdio would have to rebuild each of those.
-
-**What is pulled in.** `golang.org/x/net` (HTTP/2), `golang.org/x/sys`,
-`golang.org/x/text` and `google.golang.org/genproto/googleapis/rpc`, all
-already in the module graph through the Vertex AI dependencies. `x/net` stays
-indirect.
-
-## `google.golang.org/protobuf`
-
-**Used by.** The generated code of both protocols in
-`sandbox/internal/sandboxpb`, which the gateway client and the gatewayd
-module reach through it; a direct requirement of the nested `sandbox`
-module, and only an indirect one of `sandbox/gatewayd`, whose hand-written
-files do not import it.
-
-**Version.** `v1.36.11`, promoted from an indirect requirement at the version
-already in `go.sum`. `make proto` pins `protoc-gen-go` to the same version.
-Upgrading it is a separate ruling.
-
-**Why this module.** It is the runtime that `protoc-gen-go` output requires;
-gRPC uses it to marshal every message.
-
-**What is pulled in.** Nothing that was not already in the graph.
-
-## `github.com/gokrazy/rsync`
-
-**Used by.** `sandbox/internal/rsyncx` only, in the nested `sandbox` module;
-the agent's `Rsync` service and the host's `attach` code reach it through
-that package. Files that import it are `//go:build !windows`; Windows gets
-stubs that refuse `LocalDir` at run time.
-
-**Version.** `v0.3.8`. Adding it raised, by minimum version selection and
-only in the sandbox module's graph, `golang.org/x/crypto` v0.40.0→v0.46.0,
-`golang.org/x/net` v0.41.0→v0.47.0, `golang.org/x/text` v0.27.0→v0.32.0,
-`golang.org/x/mod` v0.25.0→v0.30.0, `golang.org/x/tools` v0.34.0→v0.39.0 and
-`github.com/BurntSushi/toml` v0.3.1→v1.6.0: v0.3.1 to v0.3.8 all require
-`x/crypto` v0.46.0. The root module's graph does not change.
-
-**Why this module.** Both ends of a transfer run in-process, in the host's
-code and in the agent, so nothing has to be installed on either side; it
-moves only changed files (the quick check over size and modification time,
-and delta transfer); and the bytes travel over the agent protocol's own
-`Rsync` stream, so a gateway can relay them like any other stream.
-
-**How it is used, and why so narrowly.** v0.3.8's exclude rules are unusable
-here: a pattern with `*`, `?` or `[` panics, matching is not anchored, an
-excluded file drops its later siblings, and `--delete` ignores every rule
-([ADR 05](adr/05-keep-the-sandbox-in-its-own-module-and-sync-through-a-filtered-view.md)). AgentKit therefore never passes it
-a rule or `--delete`: the sending side serves a filtered, read-only `fs.FS`
-through an `rsyncd` server, the receiving side runs an `rsyncclient`
-receiver, and AgentKit decides what to delete.
-
-**Every constructor restricts nothing.** `rsyncd.NewServer` applies Landlock
-to the whole process when it has modules, and `rsyncclient` does as a
-receiver, unless given `DontRestrict()`. In the local provider the process is
-the embedder. Each is called in exactly one function of `rsyncx`, always with
-`DontRestrict()`.
-
-**Protocol 27 limits.** No xattrs, no ACLs, MD4 checksums; owner, group,
-devices and hard links are not transferred (the options are `-r -l -t -p`).
-
-**What is pulled in** (`go mod why -m`; "linked" means in the agent's and
-host's binary through `rsyncx`):
-
-| Module | Why | Linked |
-|---|---|---|
-| `github.com/landlock-lsm/go-landlock` | `rsyncd` → `internal/restrict` (and, since spec 15, `confine` directly) | yes, never called by `rsyncd` (`DontRestrict`) |
-| `kernel.org/pub/linux/libs/security/libcap/psx` | go-landlock's syscalls | on Linux |
-| `github.com/mmcloughlin/md4` | the receiver's protocol-27 checksums | yes |
-| `github.com/google/renameio/v2` | the receiver's atomic writes | yes |
-| `github.com/google/shlex` | `rsyncclient` → `internal/maincmd` | yes |
-| `github.com/coreos/go-systemd` | `internal/maincmd` (socket activation) | on Linux |
-| `github.com/BurntSushi/toml` | `internal/rsyncdconfig` | yes |
-
-## `github.com/landlock-lsm/go-landlock`
-
-**Used by.** `sandbox/internal/confine` directly, in the nested `sandbox`
-module, and only from `//go:build linux` files; a `!linux` stub reports ABI
-0. Only `agentkit-sandboxd` imports `confine`, so the agent confines its own
-process before any other work and nothing the `local` provider runs inside an
-embedder can reach it. `rsyncd` imports it too (`internal/restrict`), and
-`rsyncx` always passes `DontRestrict()`, so that path never applies a ruleset.
-
-**Version.** `v0.0.0-20250303204525-1544bccde3a3`, the version gokrazy/rsync
-v0.3.8 already selected. Spec 15 promoted it to a direct requirement and
-moved no version: the sandbox module's `go list -m all` was unchanged.
-
-**Why this module.** A ruleset must reach every thread of a Go process, and
-the runtime makes threads behind the program's back. go-landlock applies
-`no_new_privs` and the ruleset to all threads at once: through
-`syscall.AllThreadsSyscall` in a non-cgo build, and through psx, which wraps
-`pthread_create`, in a cgo build.
-
-**What is pulled in.** `kernel.org/pub/linux/libs/security/libcap/psx`
-(on Linux, for the all-thread calls) and `golang.org/x/sys`. Both stay
-indirect.
-
-**Why `BestEffort` is never used.** It downgrades to whatever the kernel
-offers and succeeds silently, without restricting anything, on a kernel
-without Landlock. The agent instead applies a configuration of exactly the
-ABI it chose (V2, V3 or V4), reports that choice in `Hello`, and an embedder
-can make too little a `Create` failure with `Spec.RequireLandlock`. No code
-calls a method named `BestEffort`.
-
 ## Rejected
 
 PRD 09 §4 records libraries that were considered and rejected, so they are not
@@ -498,10 +347,6 @@ name code that has since been deleted; they are kept as the record.
 
 | Area | Candidate | Why not |
 |---|---|---|
-| Sandbox container provider (`sandbox/podman`) | `github.com/docker/docker/client` (the Docker Go client) | PRD 11 D4: the provider drives the CLI. The client brings a large dependency graph into the sandbox module for what a pure argument builder and `tools.RunArgv` already do, against the allowlist rule. |
-| Sandbox container provider (`sandbox/podman`) | `github.com/containers/podman/v5/pkg/bindings` (the Podman Go bindings) | PRD 11 D4, as for the Docker client: a very large dependency graph (much of podman itself), and it reaches only podman. |
-| Sandbox agent confinement | raw Landlock syscalls through `golang.org/x/sys/unix` | The syscalls are simple; reaching every thread is not. A per-thread `landlock_restrict_self` leaves the runtime's other threads unconfined, and doing it right means re-implementing go-landlock's all-thread plumbing (psx under cgo, `AllThreadsSyscall` without). |
-| Sandbox `LocalDir` transfer | an external `rsync` binary | It must be installed on both sides, at compatible versions; it runs as a subprocess outside the agent protocol, so a gateway cannot relay it as a stream; and the agent would hand the embedder's environment to another program. |
 | Provider argument salvage | JSON-repair libraries | They close a truncated string; salvage drops the incomplete member, so `{"path":"/etc/pas` never becomes a valid call. |
 | Provider transport retry | `cenkalti/backoff`, `go-retryablehttp` | The code was the header policy, not the curve; savings under 60 lines. (The transport is now the SDK's.) |
 | Provider SSE / NDJSON readers | `r3labs/sse`, `launchdarkly/eventsource` | They reconnect and replay `Last-Event-ID`, which the streaming contract forbids. |

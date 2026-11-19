@@ -9,12 +9,10 @@
 package testutil
 
 import (
-	"archive/tar"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -143,26 +141,6 @@ func SameJSON(a, b []byte) bool {
 		return false
 	}
 	return reflect.DeepEqual(x, y)
-}
-
-// Tar is a tar stream of regular files, mode 0644, in sorted name order.
-func Tar(t testing.TB, files map[string]string) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	for _, name := range slices.Sorted(maps.Keys(files)) {
-		body := files[name]
-		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tw.Write([]byte(body)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
 }
 
 // Golden compares got with the file at path. Run with -update to rewrite the

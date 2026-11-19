@@ -87,8 +87,8 @@ stream, err := agent.Stream(ctx, task)
 
 `guard.Restricted` is a floor, not a sandbox: `go` alone can run arbitrary code
 through a test file or a generator. Replace it with a policy that knows your
-workload rather than widening the allowlist, or run the tools in a
-[sandbox](../sandbox).
+workload rather than widening the allowlist, or run the agent inside a
+sandbox your platform provides.
 
 ## Further reading
 
