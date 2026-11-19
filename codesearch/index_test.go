@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"maps"
@@ -883,5 +884,75 @@ func TestAnIndexDirThatCannotBeWrittenStoresNothing(t *testing.T) {
 				t.Errorf("something was written under the read-only index directory: %v", entries)
 			}
 		})
+	}
+}
+
+func TestAStoredIndexThatCannotBeUsedIsRebuiltAndReplaced(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		prepare func(t *testing.T, store string)
+	}{
+		{"an empty store", func(t *testing.T, store string) {
+			if err := os.RemoveAll(store); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(store, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"another root", func(t *testing.T, store string) { editManifest(t, store, "root", "/somewhere/else") }},
+		{"another format version", func(t *testing.T, store string) { editManifest(t, store, "format_version", storeFormatVersion+1) }},
+		{"a manifest that is not JSON", func(t *testing.T, store string) {
+			if err := os.WriteFile(filepath.Join(store, "manifest.json"), []byte("{not json"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a truncated shard", func(t *testing.T, store string) {
+			shards, _ := filepath.Glob(filepath.Join(store, "index-*", "*.zoekt"))
+			if len(shards) == 0 {
+				t.Fatal("no shard to truncate")
+			}
+			if err := os.Truncate(shards[0], 0); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ws := openWorkspace(t, testutil.Tree(t, needleFiles))
+			indexDir := t.TempDir()
+			a := indexFor(t, ws, Options{IndexDir: indexDir})
+			want := find(t, a, "needle")
+			if err := a.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store := storeOf(ws, indexDir)
+			c.prepare(t, store)
+			b := indexFor(t, ws, Options{IndexDir: indexDir})
+			r := find(t, b, "needle")
+			if b.BuildCount() != 1 {
+				t.Errorf("BuildCount = %d, want 1", b.BuildCount())
+			}
+			if !slices.Equal(paths(r), paths(want)) || !slices.Equal(slices.Sorted(maps.Keys(r.Data)), slices.Sorted(maps.Keys(want.Data))) {
+				t.Errorf("result = %v %v, want %v %v", paths(r), slices.Sorted(maps.Keys(r.Data)), paths(want), slices.Sorted(maps.Keys(want.Data)))
+			}
+			m := readManifest(t, store)
+			if m["root"] != ws.Root() || fmt.Sprint(m["format_version"]) != fmt.Sprint(storeFormatVersion) {
+				t.Errorf("manifest after the rebuild = %v", m)
+			}
+		})
+	}
+}
+
+// editManifest sets key in a store's manifest to v.
+func editManifest(t *testing.T, store, key string, v any) {
+	t.Helper()
+	m := readManifest(t, store)
+	m[key] = v
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store, "manifest.json"), b, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

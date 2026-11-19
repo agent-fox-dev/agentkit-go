@@ -350,3 +350,49 @@ func TestAFileDeletedByAShellCommandLeavesTheResults(t *testing.T) {
 		t.Errorf("keepMarker found in %v", got)
 	}
 }
+
+func TestASecondIndexLoadsTheStoredIndexInsteadOfBuilding(t *testing.T) {
+	ws := openWorkspace(t, testutil.Tree(t, needleFiles))
+	indexDir := t.TempDir()
+	a := indexFor(t, ws, Options{IndexDir: indexDir})
+	ra := find(t, a, "needle")
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b := indexFor(t, ws, Options{IndexDir: indexDir})
+	rb := find(t, b, "needle")
+	if b.BuildCount() != 0 || b.RevalCount() < 1 {
+		t.Fatalf("BuildCount %d, RevalCount %d; want 0 and at least 1", b.BuildCount(), b.RevalCount())
+	}
+	if !slices.Equal(paths(rb), paths(ra)) {
+		t.Fatalf("paths = %v, want %v", paths(rb), paths(ra))
+	}
+}
+
+func TestARebuildPastFivePercentIsStoredForTheNextIndex(t *testing.T) {
+	ws := openWorkspace(t, testutil.Tree(t, filler(100)))
+	indexDir := t.TempDir()
+	a := indexFor(t, ws, Options{IndexDir: indexDir})
+	find(t, a, "token000")
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before := readManifest(t, storeOf(ws, indexDir))["index"]
+	for i := range 6 {
+		testutil.WriteTree(t, ws.Root(), map[string]string{fmt.Sprintf("f%03d.go", i): fmt.Sprintf("package pkg\n// updated%03d here\nfunc F%03d() {}\n", i, i)})
+	}
+	b := indexFor(t, ws, Options{IndexDir: indexDir})
+	if r := find(t, b, "updated"); len(paths(r)) != 6 || b.BuildCount() != 1 {
+		t.Fatalf("after 6%% changed: %d files, BuildCount %d; want 6 and 1", len(paths(r)), b.BuildCount())
+	}
+	if after := readManifest(t, storeOf(ws, indexDir))["index"]; after == before {
+		t.Fatalf("the rebuild was not stored: the manifest still names %v", after)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatal(err)
+	}
+	c := indexFor(t, ws, Options{IndexDir: indexDir})
+	if r := find(t, c, "updated"); len(paths(r)) != 6 || c.BuildCount() != 0 {
+		t.Fatalf("the next index: %d files, BuildCount %d; want 6 and 0", len(paths(r)), c.BuildCount())
+	}
+}

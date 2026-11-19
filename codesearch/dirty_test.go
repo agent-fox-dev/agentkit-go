@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
 )
 
 // filler is n small Go files, enough that a few dirty paths stay under the
@@ -435,5 +438,94 @@ func TestAFileTheWalkFoundGoneIsFoundAgainWhenItComesBack(t *testing.T) {
 				t.Errorf("bAgain found in %v, want [b.go]", got)
 			}
 		})
+	}
+}
+
+func TestALaterIndexAnswersAsAFreshBuildAfterChanges(t *testing.T) {
+	files := with(filler(100), map[string]string{"f.txt": "aaaa content here\n", "gone.txt": "goneToken content\n"})
+	for _, c := range []struct {
+		name   string
+		change func(t *testing.T, root string)
+	}{
+		{"an edit that changes the size", func(t *testing.T, root string) {
+			testutil.WriteTree(t, root, map[string]string{"f.txt": "bbbb content here, longer\n"})
+		}},
+		{"a modification time alone", func(t *testing.T, root string) {
+			later := time.Now().Add(time.Hour)
+			if err := os.Chtimes(filepath.Join(root, "f.txt"), later, later); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a new file", func(t *testing.T, root string) {
+			testutil.WriteTree(t, root, map[string]string{"n.txt": "newFileToken\n"})
+		}},
+		{"a deleted file", func(t *testing.T, root string) {
+			if err := os.Remove(filepath.Join(root, "gone.txt")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ws := openWorkspace(t, testutil.Tree(t, files))
+			indexDir := t.TempDir()
+			a := indexFor(t, ws, Options{IndexDir: indexDir})
+			find(t, a, "token000")
+			if err := a.Close(); err != nil {
+				t.Fatal(err)
+			}
+			c.change(t, ws.Root())
+			b := indexFor(t, ws, Options{IndexDir: indexDir})
+			fresh := indexFor(t, ws, Options{})
+			for _, q := range []string{"aaaa", "bbbb", "newFileToken", "goneToken", "token042"} {
+				if got, want := paths(find(t, b, q)), paths(find(t, fresh, q)); !slices.Equal(got, want) {
+					t.Errorf("%s: the loaded index found %v, a fresh build %v", q, got, want)
+				}
+			}
+			if b.BuildCount() != 0 {
+				t.Errorf("BuildCount = %d, want 0: the stored index was not reused", b.BuildCount())
+			}
+		})
+	}
+}
+
+// storeHelperEnv names, for the helper process, the workspace and index
+// directory it stores an index of.
+const storeHelperEnv = "CODESEARCH_STORE_HELPER"
+
+// TestHelperProcessStoresAnIndex is not a test: run as a child process by
+// another test, it stores the index of the workspace its environment names
+// and exits, so the index is written by another process.
+func TestHelperProcessStoresAnIndex(t *testing.T) {
+	spec := os.Getenv(storeHelperEnv)
+	if spec == "" {
+		t.Skip("run only as another test's helper process")
+	}
+	root, indexDir, _ := strings.Cut(spec, string(os.PathListSeparator))
+	idx := indexFor(t, openWorkspace(t, root), Options{IndexDir: indexDir})
+	find(t, idx, "token000")
+}
+
+func TestARacyEditIsFoundByTheNextProcess(t *testing.T) {
+	ws := openWorkspace(t, testutil.Tree(t, filler(100)))
+	indexDir := t.TempDir()
+	cmd := osexec.Command(os.Args[0], "-test.run=^TestHelperProcessStoresAnIndex$", "-test.count=1")
+	cmd.Env = append(os.Environ(), storeHelperEnv+"="+ws.Root()+string(os.PathListSeparator)+indexDir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the helper process: %v\n%s", err, out)
+	}
+	idx := indexFor(t, ws, Options{IndexDir: indexDir})
+	sameSizeEdit(t, idx, "f010.go", "package pkg\n// toXXX010\nfunc F010() {}\n")
+	if r := find(t, idx, "toXXX010"); !slices.Equal(paths(r), []string{"f010.go"}) {
+		t.Fatalf("toXXX010 found in %v, want [f010.go]", paths(r))
+	}
+	if n := idx.BuildCount(); n != 0 {
+		t.Fatalf("BuildCount = %d, want 0: the other process's hashes did not match this one's", n)
+	}
+	content, err := os.ReadFile(filepath.Join(ws.Root(), "f011.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contentHash(content) != contentHash(slices.Clone(content)) {
+		t.Fatal("contentHash differs for the same bytes")
 	}
 }

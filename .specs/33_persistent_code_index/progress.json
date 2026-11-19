@@ -3,7 +3,7 @@
   "spec_id": "33",
   "spec_name": "persistent_code_index",
   "schema_version": 3,
-  "updated_at": "2026-11-19T20:58:11Z",
+  "updated_at": "2026-11-19T21:02:36Z",
   "tasks": [
     {
       "id": 1,
@@ -94,7 +94,86 @@
     },
     {
       "id": 2,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-2.1",
+          "tests": [
+            {
+              "test": "./codesearch:TestASecondIndexLoadsTheStoredIndexInsteadOfBuilding",
+              "failed": {
+                "at": "2026-11-19T21:00:19Z",
+                "tree": "f88a29b3b6996a0716ec1cb36e44582ea71b932c"
+              },
+              "passed": {
+                "at": "2026-11-19T21:02:34Z",
+                "tree": "c5a268a0a51280613caedc29986e7a9b4c5a22cc"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.2",
+          "tests": [
+            {
+              "test": "./codesearch:TestALaterIndexAnswersAsAFreshBuildAfterChanges",
+              "failed": {
+                "at": "2026-11-19T21:00:19Z",
+                "tree": "f88a29b3b6996a0716ec1cb36e44582ea71b932c"
+              },
+              "passed": {
+                "at": "2026-11-19T21:02:34Z",
+                "tree": "c5a268a0a51280613caedc29986e7a9b4c5a22cc"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.3",
+          "tests": [
+            {
+              "test": "./codesearch:TestARacyEditIsFoundByTheNextProcess",
+              "failed": {
+                "at": "2026-11-19T21:00:19Z",
+                "tree": "f88a29b3b6996a0716ec1cb36e44582ea71b932c"
+              },
+              "passed": {
+                "at": "2026-11-19T21:02:34Z",
+                "tree": "c5a268a0a51280613caedc29986e7a9b4c5a22cc"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.4",
+          "no_red": "before loading exists every index builds, so an unusable store is rebuilt trivially; the test keeps it so once a stored index is loaded",
+          "tests": [
+            {
+              "test": "./codesearch:TestAStoredIndexThatCannotBeUsedIsRebuiltAndReplaced",
+              "passed": {
+                "at": "2026-11-19T21:02:34Z",
+                "tree": "c5a268a0a51280613caedc29986e7a9b4c5a22cc"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.5",
+          "tests": [
+            {
+              "test": "./codesearch:TestARebuildPastFivePercentIsStoredForTheNextIndex",
+              "failed": {
+                "at": "2026-11-19T21:00:19Z",
+                "tree": "f88a29b3b6996a0716ec1cb36e44582ea71b932c"
+              },
+              "passed": {
+                "at": "2026-11-19T21:02:34Z",
+                "tree": "c5a268a0a51280613caedc29986e7a9b4c5a22cc"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 3,

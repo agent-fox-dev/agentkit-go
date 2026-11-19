@@ -4,7 +4,8 @@ package codesearch
 
 import (
 	"context"
-	"hash/maphash"
+	"crypto/sha256"
+	"encoding/binary"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -156,12 +157,13 @@ func (dt *dirtyTracker) isGone(rel string) bool {
 // window 02_symbol_navigation_tools uses.
 const racyWindow = 2 * time.Second
 
-// contentSeed seeds contentHash. The hashes never leave the process.
-var contentSeed = maphash.MakeSeed()
-
 // contentHash is the hash recorded for an indexed file's content, to compare
-// with the content a racy file has now.
-func contentHash(b []byte) uint64 { return maphash.Bytes(contentSeed, b) }
+// with the content a racy file has now. It is the first eight bytes of the
+// content's SHA-256, so a hash a stored index carries compares in any process.
+func contentHash(b []byte) uint64 {
+	sum := sha256.Sum256(b)
+	return binary.BigEndian.Uint64(sum[:8])
+}
 
 // indexedFileInfo holds the (size, mtime) of a file at index time, when it
 // was indexed, and a hash of the content that was indexed.

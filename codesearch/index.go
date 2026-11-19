@@ -645,6 +645,24 @@ func (idx *Index) build(ctx context.Context, onlyIfUnbuilt bool) error {
 	// Sweep old sibling run directories.
 	idx.sweepOldRuns()
 
+	// A complete stored index of this workspace is loaded instead of built,
+	// and the whole tree revalidated against it before the query is answered.
+	if out, err := idx.load(runDir); err == nil {
+		idx.mu.Lock()
+		idx.runDir = runDir
+		idx.lastTouch = time.Now()
+		idx.indexedFiles = out.indexedFiles
+		idx.outlineFiles = out.outlineFiles
+		idx.stats = out.stats
+		idx.fileInfos = out.fileInfos
+		idx.built = true
+		idx.partial = false
+		idx.partialReason = ""
+		idx.mu.Unlock()
+		idx.dirty.markRevalidateAll()
+		return nil
+	}
+
 	result, err := idx.doBuild(buildCtx, ctx, runDir)
 	if err != nil {
 		os.RemoveAll(runDir)

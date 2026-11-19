@@ -498,6 +498,7 @@ func (idx *Index) rebuild(ctx context.Context, oldRunDir string, oldOverlay *ove
 	idx.retireOverlay(oldOverlay)
 	idx.retireDir(oldRunDir)
 
+	idx.store(rebuildRunDir, result)
 	return nil
 }
 
