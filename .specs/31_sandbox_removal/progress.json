@@ -3,7 +3,7 @@
   "spec_id": "31",
   "spec_name": "sandbox_removal",
   "schema_version": 3,
-  "updated_at": "2026-11-19T16:12:16Z",
+  "updated_at": "2026-11-19T16:14:24Z",
   "tasks": [
     {
       "id": 1,
@@ -143,7 +143,22 @@
     },
     {
       "id": 2,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-4.4",
+          "no_red": "doc comments are text, not behaviour; steering forbids testing documentation content, so PATH-1's shell search verifies them; this test proves the reworded packages still build and vet",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T16:14:12Z",
+                "tree": "2868ab5b16876931897f1e36ae98cac23cfaee56"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 3,

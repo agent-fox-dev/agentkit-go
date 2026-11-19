@@ -1,7 +1,6 @@
 // mcpserve is a SEPARATE MODULE: it serves a Runner's tools over MCP to a
-// harness on the same machine. It is the one module besides sandbox/gatewayd
-// that listens on a socket, kept out of the root and sandbox modules so the
-// library itself listens on none.
+// harness on the same machine. It is the one module that listens on a
+// socket, kept out of the root module so the library itself listens on none.
 module github.com/agent-fox-dev/agentkit-go/mcpserve
 
 go 1.27

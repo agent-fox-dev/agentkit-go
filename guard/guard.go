@@ -15,18 +15,15 @@
 //
 // Restricted is a floor for unattended safety, not a sandbox: an allowlist
 // wide enough to run a build is escapable through the allowed programs' own
-// configuration and subprocess surfaces. It remains that floor whatever runs
-// the tools.
+// configuration and subprocess surfaces. On a host without a sandbox it is
+// the only boundary there is.
 //
-// A sandbox is the boundary the guard never claimed to be. AllowAll is a
-// reasonable choice only when every shell tool the agent can reach is a
-// proxy from a sandbox whose provider reports sandbox.IsolationContainer or
-// sandbox.IsolationMicroVM (sandbox/podman), under sandbox.NetworkNone (or
-// with egress the embedder accepts), with Spec.Resources set, and with the
-// files exported from it treated as untrusted. It is never reasonable with
-// the local provider (sandbox/local), which isolates nothing, or with any
-// local shell tool in the set. agentkit.New still requires a Guard either
-// way.
+// A sandbox is the boundary the guard never claimed to be, and AgentKit does
+// not provide one: isolation belongs to the platform that runs the process.
+// AllowAll is a reasonable choice only for a process that already runs
+// inside an isolation boundary someone else owns, with its network and the
+// files that leave it treated accordingly. It is never reasonable on a
+// developer's host. agentkit.New still requires a Guard either way.
 package guard
 
 import (
@@ -48,11 +45,10 @@ var ShellToolNames = []string{"execute", "run_command"}
 // that never blocks. Passing it is an affirmative act — the embedder has
 // said, in code, that this agent runs an unrestricted shell.
 //
-// It is reasonable only when every shell tool the agent can reach is a proxy
-// from a sandbox whose provider reports IsolationContainer or
-// IsolationMicroVM, under NetworkNone (or egress the embedder accepts), with
-// Resources set and exported files treated as untrusted; never with the
-// local provider or with a local shell tool in the set.
+// It is reasonable only for a process that already runs inside an isolation
+// boundary someone else owns, such as a sandbox its platform created; never
+// on a host where the shell reaches the developer's own files and
+// credentials.
 func AllowAll(context.Context, core.BeforeToolCallContext) core.BeforeToolCallDecision {
 	return core.BeforeToolCallDecision{}
 }

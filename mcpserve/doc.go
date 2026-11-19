@@ -9,6 +9,5 @@
 // only the protocol, and the configuration text a harness needs to connect
 // (Endpoint.ClaudeConfig and Endpoint.PiConfig).
 //
-// It lives in its own module so the root and sandbox modules listen on no
-// socket.
+// It lives in its own module so the root module listens on no socket.
 package mcpserve

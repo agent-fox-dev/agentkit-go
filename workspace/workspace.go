@@ -3,8 +3,8 @@
 // it and the directory walk that honours them.
 //
 // Open turns a directory into a *Workspace. The built-in tools
-// (tools.For), the code-search index and the sandbox tree are all built for
-// one, so ignore configuration is given once, to Open.
+// (tools.For) and the code-search index are both built for one, so ignore
+// configuration is given once, to Open.
 //
 // The package imports only the standard library and doublestar, so every
 // other package of the module can depend on it.
@@ -31,12 +31,8 @@ type Options struct {
 // read and write anything the process can, and pretending otherwise would be
 // worse than admitting it. The boundary for `execute` is the BeforeToolCall
 // interceptor. See TestExecuteIsNotPathContained in package tools, whose name
-// is the documentation.
-//
-// Inside a sandbox whose agent reports a Landlock ABI
-// (sandbox.AgentInfo.Landlock), the agent's kernel ruleset confines
-// `execute`, and every process it starts, to the ruleset's writable roots.
-// Under the local provider, or on a kernel without Landlock, it does not.
+// is the documentation. Confining `execute` further is the job of a sandbox
+// around the whole process, which the platform that runs it provides.
 //
 // A Workspace is immutable after Open and safe for concurrent use. One not
 // obtained from Open is unsupported.
@@ -51,7 +47,7 @@ type Workspace struct {
 // Open resolves root to its absolute canonical form. An empty root means the
 // process working directory. A root that does not exist yet is kept in its
 // lexical absolute form and is not an error: containment still works against
-// it, and the sandbox and the tests open roots that are created later.
+// it, and a caller may open a root it creates later, as the tests do.
 //
 // Open reads no ignore file and starts no subprocess: the core.excludesFile
 // lookup is memoized and runs, at most once, when the rules are first used.
@@ -81,6 +77,6 @@ func Open(root string, opts Options) (*Workspace, error) {
 func (w *Workspace) Root() string { return w.root }
 
 // Ignore returns the workspace's ignore options, with the core.excludesFile
-// lookup memoized, so they can be passed on (to sandbox.LocalDir.Ignore, say)
-// and used without paying for another lookup.
+// lookup memoized, so they can be passed on to code that walks the same tree
+// without paying for another lookup.
 func (w *Workspace) Ignore() IgnoreOptions { return w.ignore }

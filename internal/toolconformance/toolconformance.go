@@ -1,8 +1,7 @@
 // Package toolconformance holds the tool conformance case table: every
 // built-in tool returns its documented error codes, and its Data conforms to
-// its declared OutputSchema. The tools package runs it against tools.For and
-// the sandbox package against proxy tools, so the two cannot drift. Only
-// tests import it.
+// its declared OutputSchema. The tools package runs it against tools.For.
+// Only tests import it.
 //
 // code_search lives in its own module and is covered in
 // codesearch/tool_test.go.
