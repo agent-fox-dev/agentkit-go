@@ -3,7 +3,7 @@
   "spec_id": "31",
   "spec_name": "sandbox_removal",
   "schema_version": 3,
-  "updated_at": "2026-11-19T16:19:01Z",
+  "updated_at": "2026-11-19T16:21:23Z",
   "tasks": [
     {
       "id": 1,
@@ -213,7 +213,61 @@
     },
     {
       "id": 5,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-1.2",
+          "no_red": "documentation is text, which steering forbids testing; PATH-1 and PATH-2's shell checks verify it; this test proves the tree still builds and vets",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T16:21:12Z",
+                "tree": "4e815c87428dcd960c1d5947f56430525af2688d"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-4.1",
+          "no_red": "documentation is text, which steering forbids testing; PATH-1 and PATH-2's shell checks verify it; this test proves the tree still builds and vets",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T16:21:12Z",
+                "tree": "4e815c87428dcd960c1d5947f56430525af2688d"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-4.2",
+          "no_red": "documentation is text, which steering forbids testing; PATH-1 and PATH-2's shell checks verify it; this test proves the tree still builds and vets",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T16:21:12Z",
+                "tree": "4e815c87428dcd960c1d5947f56430525af2688d"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-4.3",
+          "no_red": "documentation is text, which steering forbids testing; PATH-1 and PATH-2's shell checks verify it; this test proves the tree still builds and vets",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T16:21:12Z",
+                "tree": "4e815c87428dcd960c1d5947f56430525af2688d"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 6,
