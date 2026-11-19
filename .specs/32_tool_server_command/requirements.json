@@ -1,0 +1,533 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
+  "spec_id": "32",
+  "spec_name": "tool_server_command",
+  "schema_version": 3,
+  "requirements": [
+    {
+      "id": "REQ-1",
+      "title": "The command and its tool set",
+      "rationale": "A harness or a relay in someone else's sandbox needs AgentKit's tools without writing the Go that wires them up.",
+      "system": "agentkit-tools",
+      "criteria": [
+        {
+          "id": "REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "a subcommand runs with --dir naming an existing directory, or without --dir in an existing working directory",
+          "action": "open that directory as the workspace and serve, in this order, the tools of tools.For, then code_search, then code_mode bound to all of the others, under the names, descriptions and schemas their packages define",
+          "contract": "`agentkit-tools tools --dir D` exits 0 and its names are read_file, write_file, edit_file, list_files, find_files, search_files, file_outline, find_symbol, find_references, execute, run_command, code_search, code_mode; each entry's description and schemas equal those of the tool tools.For, codesearch.New or codemode.New builds over D",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a temporary tree D with a few Go files, written with testutil.Tree",
+              "the command binary built once for the package's tests in cmd/agentkit-tools/helpers_test.go (new)"
+            ],
+            "pseudocode": "in cmd/agentkit-tools/toolset_test.go (new): want = tools.For(workspace.Open(D), {Index: codesearch.New(ws)}) + codemode.New(those); for args in {['tools','--dir',D], ['tools'] run with D as working directory}: out = run(args); assert exit 0; got = parse(out.stdout); assert names(got) == names(want); for each: assert description and input_schema and output_schema equal want's, marshalled. On a platform where codesearch.New returns ErrUnsupported, want leaves code_search out"
+          }
+        },
+        {
+          "id": "REQ-1.2",
+          "pattern": "unwanted",
+          "condition": "--dir names a path that does not exist or is not a directory",
+          "action": "serve nothing and report the path",
+          "contract": "exit 2, nothing on stdout, exactly one line on stderr that contains the path",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in cmd/agentkit-tools/toolset_test.go, a table over the subcommands {mcp, call --request R, tools} x the paths {D/missing, D/a.go (a file)}: out = run(sub + ['--dir', path]); assert exit 2; assert stdout == ''; assert stderr has one line and contains path"
+          }
+        },
+        {
+          "id": "REQ-1.3",
+          "pattern": "unwanted",
+          "condition": "codesearch.New returns codesearch.ErrUnsupported",
+          "action": "serve the other tools without code_search, with code_mode bound to them, and say so once on stderr",
+          "contract": "exit 0 for `tools`; the listing is the serving order without code_search; stderr holds one line that names code_search",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the command's index constructor replaced, in the test, by one that returns codesearch.ErrUnsupported"
+            ],
+            "pseudocode": "in cmd/agentkit-tools/toolset_test.go: with the constructor replaced, run the command's entry point in-process with ['tools','--dir',D]; assert exit 0; assert names == the eleven built-ins + code_mode; assert code_mode's description declares no code_search; assert stderr is one line containing 'code_search'"
+          }
+        },
+        {
+          "id": "REQ-1.4",
+          "pattern": "ubiquitous",
+          "action": "give execute and run_command the command's own environment as tools.ReducedEnv reduces it",
+          "contract": "with ANTHROPIC_API_KEY=sk-fake in the command's environment, an execute call running `env` returns output that holds PATH and no ANTHROPIC_API_KEY",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an environment from testutil.Environ with ANTHROPIC_API_KEY=sk-fake added; never a real key"
+            ],
+            "pseudocode": "in cmd/agentkit-tools/toolset_test.go: request = {name: 'execute', input: {command: 'env'}}; out = run(['call','--dir',D,'--request',R], env); res = parse(out.stdout); assert res.ok; assert 'PATH=' in res.text; assert 'ANTHROPIC_API_KEY' not in res.text. Skipped where there is no POSIX shell"
+          }
+        },
+        {
+          "id": "REQ-1.5",
+          "pattern": "event_driven",
+          "condition": "the command runs as `agentkit-tools --version`",
+          "action": "print the version of the cmd/agentkit-tools module as the binary's build information records it, or (devel) when it records none",
+          "contract": "exit 0; stdout is the version and a newline; stderr is empty",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in cmd/agentkit-tools/toolset_test.go: out = run(['--version']); assert exit 0; assert out.stdout == '(devel)\\n' for the test-built binary; assert out.stderr == ''; and the version function, given a build info whose main module is cmd/agentkit-tools at v1.2.3, returns 'v1.2.3'"
+          }
+        },
+        {
+          "id": "REQ-1.6",
+          "pattern": "unwanted",
+          "condition": "the command runs with no subcommand, an unknown subcommand, or a flag its subcommand does not take",
+          "action": "print usage and serve nothing",
+          "contract": "exit 2, nothing on stdout, usage on stderr naming the subcommands mcp, call and tools",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in cmd/agentkit-tools/toolset_test.go, a table over the arguments {[], ['serve'], ['tools','--bogus'], ['mcp','--request',R], ['tools','--timeout','1s']}: out = run(args); assert exit 2; assert stdout == ''; assert stderr contains 'mcp', 'call' and 'tools'"
+          }
+        }
+      ]
+    },
+    {
+      "id": "REQ-2",
+      "title": "The guard and the tool selection",
+      "rationale": "The command's place is inside a sandbox, which is the boundary, but a bare-host user and a relay that wants fewer tools must be able to say so on the command line.",
+      "system": "agentkit-tools",
+      "criteria": [
+        {
+          "id": "REQ-2.1",
+          "pattern": "optional",
+          "condition": "--guard is absent or allow-all",
+          "action": "authorize every execute and run_command call with guard.AllowAll",
+          "contract": "a call of execute running `echo hi` is ok: true with hi in its text",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in cmd/agentkit-tools/toolset_test.go, a table over the guard arguments {none, ['--guard','allow-all'], ['--guard','restricted']}: request = {name: 'execute', input: {command: 'echo hi'}}; res = parse(run(['call','--dir',D,'--request',R] + guardArgs).stdout); assert exit 0; for none and allow-all: assert res.ok and 'hi' in res.text; for restricted: assert !res.ok and res.error == 'blocked_by_policy'. Skipped where there is no POSIX shell"
+          }
+        },
+        {
+          "id": "REQ-2.2",
+          "pattern": "optional",
+          "condition": "--guard is restricted",
+          "action": "authorize execute and run_command calls with guard.Restricted and its default options, returning a refused call as a tool result",
+          "contract": "a refused call is ok: false with error blocked_by_policy, and the command exits 0",
+          "check": {
+            "same_as": "REQ-2.1"
+          }
+        },
+        {
+          "id": "REQ-2.3",
+          "pattern": "unwanted",
+          "condition": "--guard has a value other than allow-all and restricted",
+          "action": "serve nothing and name the two values",
+          "contract": "exit 2, nothing on stdout, one line on stderr containing allow-all and restricted",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in cmd/agentkit-tools/toolset_test.go: out = run(['tools','--dir',D,'--guard','none']); assert exit 2; assert stdout == ''; assert stderr is one line containing 'allow-all' and 'restricted'"
+          }
+        },
+        {
+          "id": "REQ-2.4",
+          "pattern": "optional",
+          "condition": "--tools, --read-only or both are given",
+          "action": "serve only the tools that every given flag allows, in serving order whatever the order given, where --read-only leaves out write_file, edit_file, execute and run_command",
+          "contract": "`tools --tools code_search,read_file` lists [read_file, code_search]; `tools --read-only` lists the serving order without write_file, edit_file, execute and run_command; `tools --read-only --tools execute,read_file,code_mode` lists [read_file, code_mode]",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in cmd/agentkit-tools/toolset_test.go, a table of (flags, want names) over the three cases of the contract and ['--tools',' read_file , find_files'] (spaces trimmed): assert names(parse(run(['tools','--dir',D] + flags).stdout)) == want; the same selection applies to `mcp` and `call`, which build the tool set through the same function"
+          }
+        },
+        {
+          "id": "REQ-2.5",
+          "pattern": "ubiquitous",
+          "action": "bind code_mode to exactly the other tools that are served, and serve it only when --tools is absent or names it and at least one other tool is served",
+          "contract": "with --tools read_file,code_mode, code_mode's description declares read_file and no other tool, and a code_mode script that calls write_file gets a failed call; with --tools read_file, no code_mode is listed",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in cmd/agentkit-tools/toolset_test.go: l = parse(run(['tools','--dir',D,'--tools','read_file,code_mode']).stdout); cm = l['code_mode']; assert codemode.RenderSignature(read_file) in cm.description; for each other built-in t: assert t's signature not in it; res = call(code_mode, script that calls write_file) with the same --tools; assert the script saw a failed call (its returned value reports is_error); assert names(run tools --tools read_file) == ['read_file']"
+          }
+        },
+        {
+          "id": "REQ-2.6",
+          "pattern": "unwanted",
+          "condition": "--tools names a tool that does not exist, or the selection leaves no tool to serve",
+          "action": "serve nothing and say why",
+          "contract": "exit 2 and nothing on stdout; for an unknown name, one line on stderr that quotes it and lists every tool name; for an empty selection (`--tools code_mode`, `--read-only --tools execute`, `--tools ''`), one line on stderr saying no tool is selected",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in cmd/agentkit-tools/toolset_test.go, a table over {['--tools','read_file,reed'], ['--tools','code_mode'], ['--read-only','--tools','execute'], ['--tools','']}: out = run(['tools','--dir',D] + flags); assert exit 2; assert stdout == ''; for the unknown name assert stderr quotes 'reed' and contains every served name; otherwise assert stderr is one line"
+          }
+        }
+      ]
+    },
+    {
+      "id": "REQ-3",
+      "title": "One MCP session on stdio",
+      "rationale": "A harness in the same sandbox starts its MCP servers as child processes and speaks MCP on their stdin and stdout.",
+      "system": "agentkit-tools mcp",
+      "criteria": [
+        {
+          "id": "REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "an MCP client starts `agentkit-tools mcp` and speaks on its stdin and stdout",
+          "action": "serve one MCP session over the served tools as mcpserve.ServeStdio does, under the server name agentkit-tools and the command's version, until the client closes its end, then exit",
+          "contract": "tools/list returns the served tools in serving order; a tools/call returns the result's LLMText then each text block, as mcpserve serves it; stdout carries nothing but protocol frames; after the client closes stdin the command exits 0",
+          "check": {
+            "same_as": "PATH-1"
+          }
+        },
+        {
+          "id": "REQ-3.2",
+          "pattern": "state_driven",
+          "condition": "a session is open",
+          "action": "keep one code_search index open for the whole session, built by the first code_search call and invalidated by every write through write_file, edit_file and the shell tools",
+          "contract": "a code_search after an edit_file call finds the edited text in the same session",
+          "check": {
+            "same_as": "PATH-1"
+          }
+        },
+        {
+          "id": "REQ-3.3",
+          "pattern": "unwanted",
+          "condition": "a client sends a frame that breaks the wire limits",
+          "action": "end the session without serving the frame and report the broken rule without quoting the frame",
+          "contract": "exit 1; stderr holds exactly one line from the command, `agentkit-tools: mcp session ended: frame rejected: <rule>`, which contains no text of the frame",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the command binary started as `mcp --dir D` with its stdin and stdout piped"
+            ],
+            "pseudocode": "in cmd/agentkit-tools/mcp_test.go (new), mirroring TestAFrameThatBreaksTheWireLimitsEndsTheSessionUnserved in mcpserve/stdio_test.go: write an initialize frame, then a frame nested past wire.Defaults()'s depth limit whose keys include 'secret_marker'; wait for exit; assert exit 1; lines = command's stderr lines starting 'agentkit-tools:'; assert len(lines) == 1 and lines[0] starts with 'agentkit-tools: mcp session ended: frame rejected:'; assert 'secret_marker' not in stderr"
+          }
+        },
+        {
+          "id": "REQ-3.4",
+          "pattern": "event_driven",
+          "condition": "SIGINT or SIGTERM arrives while `mcp` serves a session or `call` runs a call",
+          "system": "agentkit-tools",
+          "action": "end the session or abandon the call, cancel every running tool call, and exit with the signal's status",
+          "contract": "exit 130 for SIGINT and 143 for SIGTERM; a `call` writes nothing to stdout",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a POSIX platform; skipped on Windows"
+            ],
+            "pseudocode": "in cmd/agentkit-tools/mcp_test.go, a table over (subcommand, signal) in {mcp, call} x {SIGINT, SIGTERM}: start the binary; for mcp, connect an MCP client and start a call of execute running `sleep 60`; for call, a request of execute running `sleep 60`; once the call has started, send the signal; assert the process ends within testutil.Within's bound, long before the sleep would; assert exit 130 or 143 as the signal; for call assert stdout == ''"
+          }
+        }
+      ]
+    },
+    {
+      "id": "REQ-4",
+      "title": "A single tool call from a file",
+      "rationale": "OpenShell's exec carries no stdin, so a caller outside the sandbox passes a file and reads stdout, one process per call.",
+      "system": "agentkit-tools call",
+      "criteria": [
+        {
+          "id": "REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "`call --request F` runs and F holds a JSON object with a non-empty string name and an object input, or no input",
+          "action": "run the call through the runner, with {} as the input when there is none, and write one JSON object to stdout: the result's ok, data, error, detail and metadata as core.ToolResult marshals them, and text, the result's LLMText followed by the text of each text block joined with a newline",
+          "contract": "exit 0 whether the tool succeeded or failed; stdout parses as exactly one JSON object; its text equals what the runner's result gives in-process; a failing tool is ok: false with its own error code",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in cmd/agentkit-tools/call_test.go (new), a table over requests {read_file of a.go; read_file of a missing file; list_files with no input}: write R; out = run(['call','--dir',D,'--request',R]); assert exit 0; dec = json decoder over stdout; res = dec.Decode(); assert dec has nothing more; want = agentkit runner over the same tool set, in-process, Call(name, input); assert res.ok == want.OK and res.error == want.Error and res.data == want.Data and res.text == want.LLMText(); and the text function, given a result with two core.TextBlock entries, returns LLMText + '\\n' + first + '\\n' + second"
+          }
+        },
+        {
+          "id": "REQ-4.2",
+          "pattern": "unwanted",
+          "condition": "the request file is missing, unreadable, larger than 16 MiB, not a JSON object, or has no non-empty string name, or --timeout does not parse or is not positive",
+          "action": "make no call",
+          "contract": "exit 2, nothing on stdout, exactly one line on stderr",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in cmd/agentkit-tools/call_test.go, a table over {no such file; a file with mode 000 (skipped as root and on Windows); 16 MiB + 1 byte; '[1]'; '{\"input\":{}}'; '{\"name\":\"\"}'; '{\"name\":7}'} and the flags {['--timeout','soon'], ['--timeout','0s'], ['--timeout','-1s']} with a valid request: out = run(['call','--dir',D,'--request',R] + flags); assert exit 2; assert stdout == ''; assert stderr is one line"
+          }
+        },
+        {
+          "id": "REQ-4.3",
+          "pattern": "unwanted",
+          "condition": "the request's input is present and is not a JSON object",
+          "action": "return the runner's result for it without running the tool",
+          "contract": "ok: false, error invalid_arguments, exit 0",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in cmd/agentkit-tools/call_test.go: R = {name: 'read_file', input: [1]}; res = parse(run(['call','--dir',D,'--request',R]).stdout); assert exit 0; assert !res.ok and res.error == 'invalid_arguments'"
+          }
+        },
+        {
+          "id": "REQ-4.4",
+          "pattern": "unwanted",
+          "condition": "the request names a tool that is not served, because no tool has that name or the selection leaves it out",
+          "action": "return a failed result without running anything",
+          "contract": "ok: false, error unknown_tool, exit 0",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in cmd/agentkit-tools/call_test.go, a table over {R names 'no_such_tool'; R names 'write_file' with --read-only}: res = parse(run(['call','--dir',D,'--request',R] + flags).stdout); assert exit 0; assert !res.ok and res.error == 'unknown_tool'; for the second, assert no file was written"
+          }
+        },
+        {
+          "id": "REQ-4.5",
+          "pattern": "unwanted",
+          "condition": "the call is still running when --timeout (default 10 minutes) has passed",
+          "action": "cancel the call and write a timeout result within 5 seconds of the deadline, whether or not the tool has returned",
+          "contract": "ok: false, error timeout, detail naming the duration, exit 0",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a POSIX shell; skipped on Windows"
+            ],
+            "pseudocode": "in cmd/agentkit-tools/call_test.go: R = {name: 'execute', input: {command: 'sleep 60', timeout_s: 120}}; out = run(['call','--dir',D,'--request',R,'--timeout','1s']) under testutil.Within's bound, which ends long before 60 s; res = parse(out.stdout); assert exit 0; assert !res.ok and res.error == 'timeout' and '1s' in res.detail; and the flag's default, parsed with no --timeout, is 10m"
+          }
+        },
+        {
+          "id": "REQ-4.6",
+          "pattern": "event_driven",
+          "condition": "a single call runs code_mode",
+          "action": "run the script and its nested calls in the same process, as in a session",
+          "contract": "the result's data holds the script's output, return_value and calls_completed, and text is codemode.FormatResultText of what it printed and returned",
+          "check": {
+            "same_as": "PATH-3"
+          }
+        }
+      ]
+    },
+    {
+      "id": "REQ-5",
+      "title": "The tool listing",
+      "rationale": "A relay answers tools/list without holding a session, so it needs the served definitions from one process.",
+      "system": "agentkit-tools tools",
+      "criteria": [
+        {
+          "id": "REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "`agentkit-tools tools` runs",
+          "action": "write the served tool definitions to stdout as one JSON array of objects with exactly the keys name, description, input_schema and output_schema, in serving order",
+          "contract": "exit 0; input_schema is the tool's input schema as JSON marshals it, or {\"type\":\"object\"} when it declares none; output_schema is its output schema, or null when it declares none",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in cmd/agentkit-tools/list_test.go (new): the listing function over [a tool with both schemas, a core.Tool with nil InputSchema and nil OutputSchema] returns entries whose keys are exactly the four; the first's schemas equal json.Marshal of its own; the second's input_schema == {\"type\":\"object\"} and output_schema == null; and run(['tools','--dir',D]) prints one JSON array and exits 0"
+          }
+        }
+      ]
+    },
+    {
+      "id": "REQ-6",
+      "title": "The module, the example and the docs",
+      "rationale": "The command must not grow the root module's graph, a newcomer needs a runnable example to replace examples/harness, and steering treats an undocumented command as a regression.",
+      "system": "repository",
+      "criteria": [
+        {
+          "id": "REQ-6.1",
+          "pattern": "ubiquitous",
+          "action": "hold the command as the nested module github.com/agent-fox-dev/agentkit-go/cmd/agentkit-tools in cmd/agentkit-tools, list it and examples/toolserver in MODULES and in the doc target, and leave the root go.mod and go.sum without a new requirement",
+          "contract": "`go list -m` in cmd/agentkit-tools prints the module path; MODULES names cmd/agentkit-tools and examples/toolserver; `git diff <base> -- go.mod go.sum` prints nothing; `make doc` writes the command's package doc under docs/generated/cmd/agentkit-tools/",
+          "check": {
+            "same_as": "PATH-4"
+          }
+        },
+        {
+          "id": "REQ-6.2",
+          "pattern": "event_driven",
+          "condition": "`go run .` runs in examples/toolserver",
+          "system": "examples/toolserver",
+          "action": "build the command, start it on a sample directory, list the tools, make calls in mcp mode and in call mode, and print what each returned, offline and with no API key",
+          "contract": "exit 0; stdout shows the tool names and a code_search hit from each mode, and a final line saying the example completed",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an environment from testutil.Environ with every provider key dropped",
+              "the go toolchain on PATH"
+            ],
+            "pseudocode": "in examples/toolserver/main_test.go (new), as TestTheProgramRunsTheDemo in examples/indexedsearch/main_test.go does: res = testutil.GoRun(t, '', '.', env); assert res.Exit == 0; assert 'code_mode' in res.Stdout; assert a code_search hit from the session and from the single call in res.Stdout; assert the completion line; on a platform without zoekt, the example says code_search is not served and still exits 0"
+          }
+        },
+        {
+          "id": "REQ-6.3",
+          "pattern": "ubiquitous",
+          "action": "document the command in docs/cli.md (both modes, the listing, every flag, the request and result formats and the exit codes) and say what changed in README.md, docs/guide.md, docs/architecture.md, docs/development.md, docs/DEPS.md, docs/releasing.md and examples/README.md, each Contents index matching its headings",
+          "contract": "docs/cli.md has an agentkit-tools section naming mcp, call, tools, --dir, --guard, --tools, --read-only, --request, --timeout and --version and the exit codes 0, 1, 2, 130 and 143; docs/releasing.md tags cmd/agentkit-tools/ with a release; examples/README.md lists examples/toolserver",
+          "check": {
+            "same_as": "PATH-4"
+          }
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "PATH-1",
+      "title": "A harness beside the directory works through an MCP session",
+      "steps": [
+        {
+          "actor": "harness",
+          "action": "starts `agentkit-tools mcp --dir <checkout>` as a child process and initializes an MCP session on its stdin and stdout"
+        },
+        {
+          "actor": "harness",
+          "action": "lists the tools and calls code_search for a word in the checkout"
+        },
+        {
+          "actor": "agentkit-tools",
+          "action": "builds the code_search index and returns the hit"
+        },
+        {
+          "actor": "harness",
+          "action": "calls edit_file to add a new word to a file, then code_search for that word"
+        },
+        {
+          "actor": "agentkit-tools",
+          "action": "revalidates the invalidated index and returns the edited file"
+        },
+        {
+          "actor": "harness",
+          "action": "closes stdin; agentkit-tools exits 0"
+        }
+      ],
+      "smoke": {
+        "real_components": [
+          "the agentkit-tools binary",
+          "the MCP Go SDK client over CommandTransport",
+          "mcpserve",
+          "the codesearch index on zoekt",
+          "the tools of tools.For"
+        ],
+        "setup": [
+          "a temporary checkout of a few Go files, one holding the word needle",
+          "the binary built from cmd/agentkit-tools; skipped where codesearch.New returns ErrUnsupported"
+        ],
+        "end_state": [
+          "tools/list names the thirteen tools in serving order",
+          "the first code_search returns the file holding needle",
+          "after edit_file adds fresh_marker to another file, code_search for fresh_marker returns that file",
+          "after the client closes, the process has exited 0 and wrote nothing but protocol frames to stdout"
+        ],
+        "pseudocode": "in cmd/agentkit-tools/mcp_test.go: cs = mcp.NewClient(impl, nil).Connect(ctx, &mcp.CommandTransport{Command: exec.Command(bin, 'mcp', '--dir', D)}, nil); assert names(cs.ListTools()) == serving order; assert 'a.go' in text(cs.CallTool(code_search, {query: 'needle'})); cs.CallTool(edit_file, add 'fresh_marker' to b.go); assert 'b.go' in text(cs.CallTool(code_search, {query: 'fresh_marker'})); cs.Close(); assert the process exit code == 0"
+      }
+    },
+    {
+      "id": "PATH-2",
+      "title": "A relay outside the sandbox makes single calls",
+      "steps": [
+        {
+          "actor": "relay",
+          "action": "runs `agentkit-tools tools --dir <checkout>` and reads the definitions it answers tools/list from"
+        },
+        {
+          "actor": "relay",
+          "action": "writes a request file for code_search and runs `agentkit-tools call --dir <checkout> --request <file>`"
+        },
+        {
+          "actor": "agentkit-tools",
+          "action": "builds the index, runs the call, writes one JSON result to stdout and exits 0"
+        },
+        {
+          "actor": "relay",
+          "action": "writes a request for an unknown tool, runs call again, and reads ok: false, error unknown_tool, exit 0"
+        }
+      ],
+      "smoke": {
+        "real_components": [
+          "the agentkit-tools binary, one process per call",
+          "the codesearch index on zoekt",
+          "the request and result files"
+        ],
+        "setup": [
+          "a temporary checkout holding needle in a.go",
+          "the binary built from cmd/agentkit-tools"
+        ],
+        "end_state": [
+          "the listing is a JSON array in serving order",
+          "the code_search result is ok: true and its text names a.go",
+          "the unknown tool's result is ok: false with error unknown_tool",
+          "every process exited 0 and wrote exactly one JSON value to stdout"
+        ],
+        "pseudocode": "in cmd/agentkit-tools/call_test.go: l = parse(run(['tools','--dir',D]).stdout); assert names(l) == serving order; res = parse(run(['call','--dir',D,'--request',write({name:'code_search', input:{query:'needle'}})]).stdout); assert res.ok and 'a.go' in res.text; res2 = parse(run(call with {name:'nope'}).stdout); assert !res2.ok and res2.error == 'unknown_tool'; every exit == 0"
+      }
+    },
+    {
+      "id": "PATH-3",
+      "title": "A script runs many tool calls in one single call",
+      "steps": [
+        {
+          "actor": "relay",
+          "action": "writes a request for code_mode whose script searches, reads three files with parallel([call(read_file, ...), ...]) and assigns a summary to result, and runs `agentkit-tools call`"
+        },
+        {
+          "actor": "agentkit-tools",
+          "action": "runs the script and its four nested calls in the same process"
+        },
+        {
+          "actor": "relay",
+          "action": "reads one result holding only what the script printed and returned"
+        }
+      ],
+      "smoke": {
+        "real_components": [
+          "the agentkit-tools binary",
+          "code mode",
+          "the codesearch index",
+          "read_file"
+        ],
+        "setup": [
+          "a temporary checkout with three Go files that hold needle"
+        ],
+        "end_state": [
+          "the result is ok: true, exit 0",
+          "data.output is exactly what the script printed and data.return_value is the summary it returned",
+          "data.calls_completed lists one code_search and three read_file calls",
+          "text equals codemode.FormatResultText(output, return_value)"
+        ],
+        "pseudocode": "in cmd/agentkit-tools/call_test.go: script = 'h = code_search(query=\"needle\")\\nfiles = parallel([call(read_file, path=p) for p in [\"a.go\", \"b.go\", \"c.go\"]])\\nprint(\"read\", len(files))\\nresult = {\"files\": len(files)}'; res = parse(run(['call','--dir',D,'--request',write({name:'code_mode', input:{script: script}})]).stdout); assert res.ok; assert res.data.output == 'read 3\\n'; assert res.data.return_value.files == 3; assert len(res.data.calls_completed) == 4; assert res.text == codemode.FormatResultText(res.data.output, res.data.return_value)"
+      }
+    },
+    {
+      "id": "PATH-4",
+      "title": "A maintainer runs the example and the checks",
+      "steps": [
+        {
+          "actor": "maintainer",
+          "action": "runs `go run .` in examples/toolserver"
+        },
+        {
+          "actor": "agentkit-tools",
+          "action": "is built by the example and serves a sample directory in mcp mode and in call mode"
+        },
+        {
+          "actor": "maintainer",
+          "action": "runs `make check` and `make doc` at the repository root"
+        },
+        {
+          "actor": "Makefile",
+          "action": "runs fmt, vet, lint and the short tests in every module MODULES lists, cmd/agentkit-tools and examples/toolserver among them, and writes the generated docs"
+        },
+        {
+          "actor": "maintainer",
+          "action": "reads docs/cli.md for the command's modes, flags and exit codes"
+        }
+      ],
+      "smoke": {
+        "real_components": [
+          "the Makefile",
+          "the go toolchain",
+          "golangci-lint",
+          "the example program",
+          "the agentkit-tools binary",
+          "git"
+        ],
+        "setup": [
+          "a checkout of the branch, <base> the commit it starts from",
+          "provider credentials scrubbed from the environment (env -u ANTHROPIC_API_KEY -u OPENROUTER_API_KEY)"
+        ],
+        "end_state": [
+          "`go run .` in examples/toolserver exits 0 and prints the listing and a code_search hit from each mode",
+          "`make check` exits 0 and its output shows the tests of cmd/agentkit-tools and of examples/toolserver",
+          "`git diff <base> -- go.mod go.sum` prints nothing",
+          "`make doc` leaves `git status --porcelain` empty and docs/generated/cmd/agentkit-tools/ exists",
+          "docs/cli.md documents mcp, call, tools, every flag and the exit codes 0, 1, 2, 130 and 143, and examples/README.md lists examples/toolserver"
+        ],
+        "pseudocode": "a shell session, not a committed test: `(cd examples/toolserver && env -u ANTHROPIC_API_KEY -u OPENROUTER_API_KEY go run .)` exits 0; `env -u ANTHROPIC_API_KEY -u OPENROUTER_API_KEY make check` exits 0 with lines for cmd/agentkit-tools and examples/toolserver; `git diff <base> -- go.mod go.sum` is empty; `make doc && git status --porcelain` is empty; grep docs/cli.md for each subcommand, flag and exit code"
+      }
+    }
+  ]
+}
