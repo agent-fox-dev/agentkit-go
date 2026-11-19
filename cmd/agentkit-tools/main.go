@@ -14,12 +14,18 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"runtime/debug"
 	"strings"
 )
 
-func main() { os.Exit(runMain(os.Args[1:], os.Stdout, os.Stderr)) }
+func main() {
+	// zoekt reports its shards through the standard logger; stderr carries
+	// the command's own lines and the MCP server's log.
+	log.SetOutput(io.Discard)
+	os.Exit(runMain(os.Args[1:], os.Stdout, os.Stderr))
+}
 
 const usage = `usage: agentkit-tools <command> [flags]
 
@@ -35,6 +41,8 @@ flags of every command:
   --guard allow-all|restricted  the guard of execute and run_command (default allow-all)
   --tools a,b,c                 serve only the named tools
   --read-only                   leave out write_file, edit_file, execute and run_command
+  --index-dir <path>            keep the code_search index there for later processes
+                                (default: $AGENTKIT_INDEX_DIR, else a temporary index)
 
 flags of call:
   --request <file>       the request file: {"name": string, "input": object}

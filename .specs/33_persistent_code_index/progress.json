@@ -3,7 +3,7 @@
   "spec_id": "33",
   "spec_name": "persistent_code_index",
   "schema_version": 3,
-  "updated_at": "2026-11-19T21:10:16Z",
+  "updated_at": "2026-11-19T21:15:50Z",
   "tasks": [
     {
       "id": 1,
@@ -276,7 +276,86 @@
     },
     {
       "id": 5,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-5.1",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestTheIndexDirComesFromTheFlagThenTheVariable",
+              "failed": {
+                "at": "2026-11-19T21:11:34Z",
+                "tree": "6c1ff4f927054ecd8de3c96641cd9d76473d506f"
+              },
+              "passed": {
+                "at": "2026-11-19T21:15:42Z",
+                "tree": "7c547e650cc929495c4c37f5d22ebc6da19ccdf0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-5.2",
+          "no_red": "without an index directory the command already keeps its index in a temporary directory that Close removes; the test keeps it so once the flag exists",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestWithoutAnIndexDirTheIndexLeavesNothingBehind",
+              "passed": {
+                "at": "2026-11-19T21:15:42Z",
+                "tree": "7c547e650cc929495c4c37f5d22ebc6da19ccdf0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-5.3",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestAnIndexDirInsideTheServedDirectoryIsRefused",
+              "failed": {
+                "at": "2026-11-19T21:11:34Z",
+                "tree": "6c1ff4f927054ecd8de3c96641cd9d76473d506f"
+              },
+              "passed": {
+                "at": "2026-11-19T21:15:42Z",
+                "tree": "7c547e650cc929495c4c37f5d22ebc6da19ccdf0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-5.4",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestAnIndexDirThatCannotBeWrittenFallsBackToATemporaryIndex",
+              "failed": {
+                "at": "2026-11-19T21:11:34Z",
+                "tree": "6c1ff4f927054ecd8de3c96641cd9d76473d506f"
+              },
+              "passed": {
+                "at": "2026-11-19T21:15:42Z",
+                "tree": "7c547e650cc929495c4c37f5d22ebc6da19ccdf0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-5.5",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestASingleCallWithAStoredIndexIsAFifthOfTheBuild",
+              "failed": {
+                "at": "2026-11-19T21:11:34Z",
+                "tree": "6c1ff4f927054ecd8de3c96641cd9d76473d506f"
+              },
+              "passed": {
+                "at": "2026-11-19T21:15:42Z",
+                "tree": "7c547e650cc929495c4c37f5d22ebc6da19ccdf0"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 6,

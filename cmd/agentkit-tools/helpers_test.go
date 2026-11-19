@@ -204,3 +204,21 @@ func (s *started) wait(d time.Duration) int {
 		return -1
 	}
 }
+
+// waitExit waits up to 20 s for a session's command to exit and returns its
+// exit code, failing the test when it does not.
+func waitExit(t *testing.T, s *session) int {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		_ = s.cmd.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return s.cmd.ProcessState.ExitCode()
+	case <-time.After(20 * time.Second):
+		t.Fatal("the command did not exit")
+		return -1
+	}
+}
