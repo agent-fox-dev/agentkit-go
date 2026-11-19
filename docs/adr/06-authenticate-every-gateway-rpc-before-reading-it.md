@@ -1,6 +1,6 @@
 # ADR 06: Authenticate every gateway RPC before reading it
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 08](08-leave-sandboxes-to-the-platform-that-runs-them.md)
 - **Date:** 2026-10-25 (records decisions taken between 2026-08 and 2026-10)
 
 ## Context
