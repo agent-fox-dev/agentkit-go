@@ -23,6 +23,7 @@ in the [architecture](architecture.md) document.
 - [Using tools from MCP servers](#using-tools-from-mcp-servers)
 - [Running tools without a model](#running-tools-without-a-model)
 - [Serving tools to another harness over MCP](#serving-tools-to-another-harness-over-mcp)
+- [Serving the tools from the command line](#serving-the-tools-from-the-command-line)
 - [Indexed code search](#indexed-code-search)
 - [Testing without a model](#testing-without-a-model)
 - [Troubleshooting](#troubleshooting)
@@ -402,6 +403,40 @@ harness that starts your program as a child. Every call goes through
 `Runner.Call`, so a guard block reaches the harness as an error result.
 Options and limits:
 [MCP serving](configuration.md#mcp-serving-mcpserveoptions).
+
+## Serving the tools from the command line
+
+When the tools should work inside a sandbox someone else runs, and nothing
+there is written in Go, the `agentkit-tools` command serves them for one
+directory: the built-in tools, then `code_search`, then `code_mode` over the
+others.
+
+```bash
+go install github.com/agent-fox-dev/agentkit-go/cmd/agentkit-tools@latest
+```
+
+A harness in the same sandbox starts it as an MCP server, for example with
+Claude Code's `--mcp-config`:
+
+```json
+{"mcpServers": {"agentkit": {"command": "agentkit-tools", "args": ["mcp", "--dir", "/work/checkout"]}}}
+```
+
+A relay that can only start a process and read its output, with no stdin,
+makes one call per process from a request file, and answers `tools/list`
+from `agentkit-tools tools`:
+
+```bash
+echo '{"name": "code_search", "input": {"query": "needle"}}' > /tmp/request.json
+agentkit-tools call --dir /work/checkout --request /tmp/request.json
+```
+
+It prints one JSON object, the result with the text a session would serve,
+and exits 0 whether the tool succeeded or not. The shell guard defaults to
+`allow-all`, since the sandbox is the boundary; on a bare host pass
+`--guard restricted`. `--tools` and `--read-only` narrow what is served. Every
+flag and exit code is in [cli.md](cli.md#agentkit-tools), and
+[`examples/toolserver`](../examples/toolserver) runs both modes offline.
 
 ## Indexed code search
 

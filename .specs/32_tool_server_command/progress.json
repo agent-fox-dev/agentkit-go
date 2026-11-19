@@ -3,7 +3,7 @@
   "spec_id": "32",
   "spec_name": "tool_server_command",
   "schema_version": 3,
-  "updated_at": "2026-11-19T18:38:57Z",
+  "updated_at": "2026-11-19T18:42:18Z",
   "tasks": [
     {
       "id": 1,
@@ -437,7 +437,35 @@
     },
     {
       "id": 6,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-6.1",
+          "no_red": "the module layout is a property of the tree, verified by PATH-4's shell check; this test builds and vets every module MODULES lists, cmd/agentkit-tools and examples/toolserver among them",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T18:42:02Z",
+                "tree": "a7ef575c367ccced863bac3507c0e306be85e2ab"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-6.3",
+          "no_red": "documentation is text, which steering forbids testing; PATH-4's shell check verifies it; this test proves the modules the docs describe build",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T18:42:02Z",
+                "tree": "a7ef575c367ccced863bac3507c0e306be85e2ab"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 7,

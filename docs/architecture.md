@@ -21,6 +21,7 @@ disagree, fix this file.
 - [Nested tool calls](#nested-tool-calls)
 - [Code mode](#code-mode)
 - [MCP serving](#mcp-serving)
+- [The `agentkit-tools` command](#the-agentkit-tools-command)
 - [MCP client](#mcp-client)
 - [Symbol and reference navigation](#symbol-and-reference-navigation)
   - [`tools.References`](#toolsreferences)
@@ -29,7 +30,7 @@ disagree, fix this file.
 ## Shape
 
 One Go module, `github.com/agent-fox-dev/agentkit-go` (`go 1.27`), plus
-three nested modules with their own `go.mod`, none of them in the root build
+five nested modules with their own `go.mod`, none of them in the root build
 graph:
 
 - [`codesearch/`](../codesearch), the zoekt-backed index;
@@ -38,9 +39,14 @@ graph:
   the same machine. It requires the root module through `replace ../`,
   directly requires nothing else but the MCP Go SDK at the root's version, and
   its graph holds no module the root's lacks;
+- [`cmd/agentkit-tools/`](../cmd/agentkit-tools) (`…/cmd/agentkit-tools`),
+  the `agentkit-tools` command (below). It requires the root, codesearch and
+  mcpserve modules through `replace` and no third-party module directly;
 - [`examples/indexedsearch/`](../examples/indexedsearch), the example program
   that walks through the code-search index on a sample project. It requires the
-  root and codesearch modules through `replace`.
+  root and codesearch modules through `replace`;
+- [`examples/toolserver/`](../examples/toolserver), the example program that
+  builds `agentkit-tools`, a tool of its module, and drives it in both modes.
 
 cgo is allowed only in `//go:build cgo` files, each with a pure-Go fallback;
 `internal/policy` builds every module in the Makefile's `MODULES` for the four
@@ -71,8 +77,9 @@ an embedder configures.
 
 First-party imports, from
 `go list -f '{{.ImportPath}}: {{join .Imports " "}}' ./...` (tests excluded),
-run in the root module and in `codesearch` and `mcpserve`. The nested example
-module `examples/indexedsearch` is a program and not listed. A package marked "tests
+run in the root module and in `codesearch`, `mcpserve` and `cmd/agentkit-tools`.
+The nested example modules `examples/indexedsearch` and `examples/toolserver`
+are programs and not listed. A package marked "tests
 only" exists for tests: it holds only test files, or only test files import it.
 
 | Package | Imports (first-party) | Notable third-party |
@@ -100,6 +107,7 @@ only" exists for tests: it holds only test files, or only test files import it.
 | `codemode` | `core`, `schema`, `tools` | `go.starlark.net` |
 | `mcp` | `core`, `schema`, `wire`, `internal/diag`, `internal/toml` | `github.com/modelcontextprotocol/go-sdk` |
 | `mcpserve` (nested module) | `.` (root, `agentkit`), `core`, `mcp`, `wire` | `github.com/modelcontextprotocol/go-sdk` |
+| `cmd/agentkit-tools` (nested module, a program) | `.` (root, `agentkit`), `codemode`, `codesearch`, `core`, `guard`, `mcpserve`, `tools`, `wire`, `workspace` | |
 | `prompt` | `core`, `guard`, `tools` | |
 | `.` (root, `agentkit`) | `core`, `catalog`, `guard`, `prompt`, `provider`, `provider/anthropic`, `provider/openrouter`, `provider/ollama` | |
 | `examples/{agentdemo,codemode,codingagent,customtools,mcp}` (programs) | `.`, `codemode`, `core`, `guard`, `mcp`, `provider/anthropic`, `provider/faux`, `schema`, `tools`, `wire`, `workspace`, by program | |
@@ -165,6 +173,7 @@ What follows from it:
 | `internal/toolconformance` | Tests only: the conformance case table of the built-in tools, run against `tools.For`. |
 | `internal/providerconformance` | Tests only: the opt-in live tests of the three providers (below). Its only non-test file is `doc.go`. |
 | `mcpserve` | The MCP server (nested module): one MCP tool per tool of an `agentkit.Runner`, every call through `Runner.Call`, served on stdio (`ServeStdio`) or on loopback HTTP behind a bearer token (`ServeLoopback`). |
+| `cmd/agentkit-tools` | The `agentkit-tools` command (nested module): the tool set of one directory, served as an MCP session (`mcp`), as one call from a request file (`call`) or as a listing (`tools`). |
 
 ## The embedder's path
 
@@ -492,6 +501,31 @@ panicking. The SDK closes a session gracefully and cancels a call only when its
 client asks, so each session and each endpoint carries a lifetime, passed as a
 value of the context the SDK server is connected with, which a call's context
 also obeys; closing a session or an endpoint cancels the calls still running.
+
+## The `agentkit-tools` command
+
+`cmd/agentkit-tools` is a program over the hands, with no code of its own
+beyond the wiring and the command line ([ADR 09](adr/09-serve-the-tools-from-one-command.md)):
+
+```
+--dir               checked first: workspace.Open accepts a root that does not exist
+workspace.Open      the served directory
+codesearch.New      the index (none where zoekt does not run), in a temporary directory
+tools.For           the built-in tools with that index; the shell tools get
+                    tools.ReducedEnv of the process environment
+--tools/--read-only choose from them, in serving order
+codemode.New        code_mode over exactly the chosen tools
+agentkit.NewRunner  with guard.AllowAll or guard.Restricted (--guard)
+  tools             definitions of Runner.Tools() as JSON
+  call              one Runner.Call, its result and the text a session serves
+  mcp               mcpserve.New(runner).ServeStdio
+```
+
+Every command builds the same tool set through one function, so `tools`,
+`call` and `mcp` serve the same tools under the same guard. `call` runs one
+call per process under `--timeout`, and `mcp` and `call` turn SIGINT and
+SIGTERM into exits 130 and 143. The index is closed, and its directory
+removed, when the command ends.
 
 ## MCP client
 
