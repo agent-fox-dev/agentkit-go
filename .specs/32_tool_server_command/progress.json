@@ -3,7 +3,7 @@
   "spec_id": "32",
   "spec_name": "tool_server_command",
   "schema_version": 3,
-  "updated_at": "2026-11-19T18:18:01Z",
+  "updated_at": "2026-11-19T18:20:32Z",
   "tasks": [
     {
       "id": 1,
@@ -125,7 +125,105 @@
     },
     {
       "id": 2,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-2.1",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestTheGuardFlagChoosesHowTheShellIsAuthorized",
+              "failed": {
+                "at": "2026-11-19T18:18:59Z",
+                "tree": "58c4d4ccfd4415307284ae66028c4b2a61b6299e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:20:24Z",
+                "tree": "ef3c1582535ddb07d522b6742392e382980f3822"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.2",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestTheGuardFlagChoosesHowTheShellIsAuthorized",
+              "failed": {
+                "at": "2026-11-19T18:18:59Z",
+                "tree": "58c4d4ccfd4415307284ae66028c4b2a61b6299e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:20:24Z",
+                "tree": "ef3c1582535ddb07d522b6742392e382980f3822"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.3",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestAnUnknownGuardIsRefused",
+              "failed": {
+                "at": "2026-11-19T18:18:59Z",
+                "tree": "58c4d4ccfd4415307284ae66028c4b2a61b6299e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:20:24Z",
+                "tree": "ef3c1582535ddb07d522b6742392e382980f3822"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.4",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestToolsAndReadOnlyChooseWhatIsServed",
+              "failed": {
+                "at": "2026-11-19T18:18:59Z",
+                "tree": "58c4d4ccfd4415307284ae66028c4b2a61b6299e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:20:24Z",
+                "tree": "ef3c1582535ddb07d522b6742392e382980f3822"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.5",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestCodeModeIsBoundToExactlyTheServedTools",
+              "failed": {
+                "at": "2026-11-19T18:18:59Z",
+                "tree": "58c4d4ccfd4415307284ae66028c4b2a61b6299e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:20:24Z",
+                "tree": "ef3c1582535ddb07d522b6742392e382980f3822"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.6",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestASelectionThatNamesNoToolOrLeavesNoneIsRefused",
+              "failed": {
+                "at": "2026-11-19T18:18:59Z",
+                "tree": "58c4d4ccfd4415307284ae66028c4b2a61b6299e"
+              },
+              "passed": {
+                "at": "2026-11-19T18:20:24Z",
+                "tree": "ef3c1582535ddb07d522b6742392e382980f3822"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 3,

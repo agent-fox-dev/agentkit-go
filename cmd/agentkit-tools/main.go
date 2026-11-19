@@ -31,7 +31,10 @@ commands:
   agentkit-tools --version prints the version.
 
 flags of every command:
-  --dir <path>   the directory to serve (default: the working directory)
+  --dir <path>                  the directory to serve (default: the working directory)
+  --guard allow-all|restricted  the guard of execute and run_command (default allow-all)
+  --tools a,b,c                 serve only the named tools
+  --read-only                   leave out write_file, edit_file, execute and run_command
 
 flags of call:
   --request <file>       the request file: {"name": string, "input": object}

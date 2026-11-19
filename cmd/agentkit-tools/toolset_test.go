@@ -204,3 +204,132 @@ func TestAMisspelledCommandLinePrintsUsage(t *testing.T) {
 		})
 	}
 }
+
+func TestTheGuardFlagChoosesHowTheShellIsAuthorized(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX shell")
+	}
+	dir := sampleTree(t)
+	for _, c := range []struct {
+		guard string
+		ok    bool
+	}{{"", true}, {"allow-all", true}, {"restricted", false}} {
+		t.Run("guard="+c.guard, func(t *testing.T) {
+			s, err := open(settings{dir: dir, guard: c.guard}, os.Stderr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.close()
+			res := s.runner.Call(context.Background(), "execute", json.RawMessage(`{"command":"echo hi"}`))
+			if c.ok && (!res.OK || !strings.Contains(res.LLMText(), "hi")) {
+				t.Fatalf("echo hi under %q: %v %s %s", c.guard, res.OK, res.Error, res.LLMText())
+			}
+			if !c.ok && (res.OK || res.Error != "blocked_by_policy") {
+				t.Fatalf("echo hi under %q: ok %v, error %q; want blocked_by_policy", c.guard, res.OK, res.Error)
+			}
+		})
+	}
+}
+
+func TestAnUnknownGuardIsRefused(t *testing.T) {
+	res := run(t, "tools", "--dir", sampleTree(t), "--guard", "none")
+	if res.exit != 2 || res.stdout != "" {
+		t.Fatalf("exit %d, stdout %q", res.exit, res.stdout)
+	}
+	if l := lines(res.stderr); len(l) != 1 || !strings.Contains(l[0], "allow-all") || !strings.Contains(l[0], "restricted") {
+		t.Fatalf("stderr = %q, want one line naming allow-all and restricted", res.stderr)
+	}
+}
+
+func TestToolsAndReadOnlyChooseWhatIsServed(t *testing.T) {
+	dir := sampleTree(t)
+	readOnly := []string{"read_file", "list_files", "find_files", "search_files", "file_outline", "find_symbol", "find_references", "code_search", "code_mode"}
+	for _, c := range []struct {
+		flags []string
+		want  []string
+	}{
+		{[]string{"--tools", "code_search,read_file"}, []string{"read_file", "code_search"}},
+		{[]string{"--read-only"}, readOnly},
+		{[]string{"--read-only", "--tools", "execute,read_file,code_mode"}, []string{"read_file", "code_mode"}},
+		{[]string{"--tools", " read_file , find_files"}, []string{"read_file", "find_files"}},
+	} {
+		t.Run(strings.Join(c.flags, " "), func(t *testing.T) {
+			res := run(t, append([]string{"tools", "--dir", dir}, c.flags...)...)
+			if res.exit != 0 {
+				t.Fatalf("exit %d, stderr %s", res.exit, res.stderr)
+			}
+			if got := parseListing(t, res.stdout).names(); !slices.Equal(got, c.want) {
+				t.Fatalf("names = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestCodeModeIsBoundToExactlyTheServedTools(t *testing.T) {
+	dir := sampleTree(t)
+	res := run(t, "tools", "--dir", dir, "--tools", "read_file,code_mode")
+	if res.exit != 0 {
+		t.Fatalf("exit %d, stderr %s", res.exit, res.stderr)
+	}
+	var desc string
+	if err := json.Unmarshal(parseListing(t, res.stdout).get("code_mode")["description"], &desc); err != nil {
+		t.Fatal(err)
+	}
+	for _, tl := range wantTools(t, dir) {
+		if tl.Name == "code_mode" {
+			continue
+		}
+		if has := strings.Contains(desc, codemode.RenderSignature(tl)); has != (tl.Name == "read_file") {
+			t.Errorf("code_mode declares %s: %v", tl.Name, has)
+		}
+	}
+
+	s, err := open(settings{dir: dir, tools: new("read_file,code_mode")}, os.Stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.close()
+	script, _ := json.Marshal(map[string]string{"script": `result = write_file(path="made.txt", content="x")`})
+	if r := s.runner.Call(context.Background(), "code_mode", script); r.OK {
+		t.Fatalf("a script calling write_file succeeded: %s", r.LLMText())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "made.txt")); err == nil {
+		t.Fatal("the script wrote a file through a tool that is not served")
+	}
+
+	only := run(t, "tools", "--dir", dir, "--tools", "read_file")
+	if got := parseListing(t, only.stdout).names(); !slices.Equal(got, []string{"read_file"}) {
+		t.Fatalf("names = %v, want [read_file]", got)
+	}
+}
+
+func TestASelectionThatNamesNoToolOrLeavesNoneIsRefused(t *testing.T) {
+	dir := sampleTree(t)
+	for _, flags := range [][]string{
+		{"--tools", "read_file,reed"},
+		{"--tools", "code_mode"},
+		{"--read-only", "--tools", "execute"},
+		{"--tools", ""},
+	} {
+		t.Run(strings.Join(flags, " "), func(t *testing.T) {
+			res := run(t, append([]string{"tools", "--dir", dir}, flags...)...)
+			if res.exit != 2 || res.stdout != "" {
+				t.Fatalf("exit %d, stdout %q", res.exit, res.stdout)
+			}
+			l := lines(res.stderr)
+			if len(l) != 1 {
+				t.Fatalf("stderr = %q, want one line", res.stderr)
+			}
+			if flags[1] == "read_file,reed" {
+				if !strings.Contains(l[0], `"reed"`) {
+					t.Errorf("stderr does not quote reed: %s", l[0])
+				}
+				for _, n := range append(slices.Clone(builtinNames), "code_mode") {
+					if !strings.Contains(l[0], n) {
+						t.Errorf("stderr does not list %s: %s", n, l[0])
+					}
+				}
+			}
+		})
+	}
+}

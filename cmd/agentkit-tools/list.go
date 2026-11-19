@@ -60,7 +60,7 @@ func runTools(args []string, stdout, stderr io.Writer) int {
 	srv, err := open(s, stderr)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return 1
+		return exitCode(err)
 	}
 	defer srv.close()
 	defs, err := definitions(srv.runner.Tools())
