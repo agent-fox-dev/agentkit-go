@@ -7,6 +7,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/guard"
 	"github.com/agent-fox-dev/agentkit-go/provider/faux"
+	"github.com/agent-fox-dev/agentkit-go/runner"
 )
 
 func TestNew_RefusesAShellToolNoGuardAuthorizesBeforeAnyRequest(t *testing.T) {
@@ -28,11 +29,13 @@ func TestNew_RefusesAShellToolNoGuardAuthorizesBeforeAnyRequest(t *testing.T) {
 		fp := faux.New()
 		a, err := New(Config{Client: fp, Model: testModel, Toolset: c.ts})
 		_, rerr := NewRunner(c.ts)
+		_, perr := runner.New(c.ts)
 		switch {
-		case c.want == "" && (err != nil || rerr != nil):
-			t.Errorf("%s: New = %v, NewRunner = %v; want both to accept it", c.name, err, rerr)
-		case c.want != "" && (a != nil || !errors.Is(err, core.ErrUnguardedExecute) || err.Error() != c.want || rerr == nil || rerr.Error() != c.want):
-			t.Errorf("%s: New = %v, NewRunner = %v; want %q", c.name, err, rerr, c.want)
+		case c.want == "" && (err != nil || rerr != nil || perr != nil):
+			t.Errorf("%s: New = %v, NewRunner = %v, runner.New = %v; want all three to accept it", c.name, err, rerr, perr)
+		case c.want != "" && (a != nil || !errors.Is(err, core.ErrUnguardedExecute) || err.Error() != c.want || rerr == nil || rerr.Error() != c.want ||
+			!errors.Is(rerr, core.ErrUnguardedExecute) || !errors.Is(perr, core.ErrUnguardedExecute) || perr.Error() != c.want):
+			t.Errorf("%s: New = %v, NewRunner = %v, runner.New = %v; want %q", c.name, err, rerr, perr, c.want)
 		}
 		if fp.Calls() != 0 {
 			t.Errorf("%s: New sent a request", c.name)

@@ -1,4 +1,4 @@
-package agentkit
+package runner
 
 import (
 	"context"
@@ -13,21 +13,26 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/core"
 )
 
-// batchOutcome is what one batch produced. The three slices hold one entry per
-// call, in call order.
-type batchOutcome struct {
-	// messages are the ToolResultMessages as After left them: what an agent
+// Outcome is what one batch produced. The two slices hold one entry per call,
+// in call order.
+type Outcome struct {
+	// Messages are the ToolResultMessages as After left them: what an agent
 	// run records in its transcript.
-	messages []core.ToolResultMessage
-	// results are the calls' core.ToolResults, with Terminate set to each
+	Messages []core.ToolResultMessage
+	// Results are the calls' core.ToolResults, with Terminate set to each
 	// call's final vote. After's in-place edits to a message do not reach
 	// them.
-	results []core.ToolResult
-	// terminate is the OR of the final votes.
-	terminate bool
+	Results []core.ToolResult
+	// Terminate is the OR of the final votes.
+	Terminate bool
 }
 
-// run runs one batch of tool calls. It is three phases with distinct
+// RunTurn runs one batch of tool calls a model made in one turn: what an agent
+// loop calls for each assistant message that carries tool calls, and what
+// Batch calls with the Toolset's sink, no assistant and turn 0. A program that
+// writes its own model loop over a Runner calls it the same way.
+//
+// It is three phases with distinct
 // concurrency rules, and each phase is where it is because the natural Go
 // answer is wrong:
 //
@@ -52,7 +57,7 @@ type batchOutcome struct {
 // run the calls, and holds no lock of the runner's while it does. A nil emit
 // discards the events, and a panic in emit drops the event being delivered.
 // assistant and turnCount are the guard's context for a call a model made; a
-// runner's own Call and Batch pass nil and 0. run attaches no usage reporter: a
+// runner's own Call and Batch pass nil and 0. RunTurn attaches no usage reporter: a
 // context that carries one passes it through to the handlers, and the agent
 // loop attaches its own.
 //
@@ -60,7 +65,7 @@ type batchOutcome struct {
 // or the Guard blocked a call and voted to terminate. The vote is read only
 // after every call in the batch has finished, so a terminating call never cuts
 // its siblings short.
-func (r *Runner) run(ctx context.Context, emit func(core.Event), assistant *core.AssistantMessage, calls []core.ToolUseBlock, turnCount int) batchOutcome {
+func (r *Runner) RunTurn(ctx context.Context, emit func(core.Event), assistant *core.AssistantMessage, calls []core.ToolUseBlock, turnCount int) Outcome {
 	emit = safeSink(emit)
 	// report surfaces an error — a panicking interceptor — as an event. It
 	// takes no lock of the runner's, so it is safe inside the batch-scoped
@@ -279,7 +284,7 @@ func (r *Runner) run(ctx context.Context, emit func(core.Event), assistant *core
 		// No handler ran, so no tool voted: an aborted batch does not end
 		// the run on a tool's say-so. A Guard's own vote, cast in prepare,
 		// stands.
-		return batchOutcome{messages: msgs, results: results, terminate: slices.Contains(votes, true)}
+		return Outcome{Messages: msgs, Results: results, Terminate: slices.Contains(votes, true)}
 	}
 
 	sequential := len(thunks) <= 1
@@ -322,7 +327,7 @@ func (r *Runner) run(ctx context.Context, emit func(core.Event), assistant *core
 			msgs[i], results[i] = toolResultMessage(c, res), res
 		}
 	}
-	return batchOutcome{messages: msgs, results: results, terminate: slices.Contains(votes, true)}
+	return Outcome{Messages: msgs, Results: results, Terminate: slices.Contains(votes, true)}
 }
 
 // invokeHandler calls the tool, converting every failure mode into a result.

@@ -1,4 +1,4 @@
-package agentkit
+package runner
 
 import (
 	"fmt"
@@ -8,8 +8,8 @@ import (
 )
 
 // checkShellGuard refuses a resolved tool set that reaches a shell tool when
-// there is no guard to authorize it. NewRunner calls it, and New calls
-// NewRunner, so the refusal comes at construction, before any request or
+// there is no guard to authorize it. New calls it, and an agent is built on
+// New, so the refusal comes at construction, before any request or
 // stream exists.
 func checkShellGuard(g core.BeforeToolCall, resolved []core.Tool) error {
 	if g != nil {

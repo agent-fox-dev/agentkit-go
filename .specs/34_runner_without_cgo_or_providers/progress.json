@@ -3,7 +3,7 @@
   "spec_id": "34",
   "spec_name": "runner_without_cgo_or_providers",
   "schema_version": 3,
-  "updated_at": "2026-11-20T18:42:36Z",
+  "updated_at": "2026-11-20T18:48:40Z",
   "tasks": [
     {
       "id": 1,
@@ -143,7 +143,227 @@
     },
     {
       "id": 2,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-1.1",
+          "tests": [
+            {
+              "test": "./runner:TestCall_RunsOneCallAsABatchOfOne",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": "./runner:TestCall_AnswersEveryOutcomeWithACode",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": "./runner:TestBatch_UsesTheCallsIDsVerbatimAndRunsNothingForNoCalls",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": "./runner:TestRunner_EventsSink",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": "./runner:TestRunner_IsSafeForConcurrentUse",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": "./runner:TestRunner_RunsCodeModeAndTheToolsItBinds",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": "./runner:TestBatch_PreparesInCallOrderBeforeAnyHandler",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": "./runner:TestBatch_RunsHandlersConcurrentlyUnlessASequentialToolIsCalled",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": "./runner:TestCallNested_AnswersEachFailingCallWithAResultOfItsOwn",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": "./runner:TestCallNested_AbortsUnderACancelledContext",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": ".:TestNewRunner_KeepsThePolicysToolsInOrderAndCopiesThem",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.2",
+          "tests": [
+            {
+              "test": ".:TestNewRunner_RefusesAToolsetItCannotRunAndNewAgrees",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": ".:TestNew_RefusesAShellToolNoGuardAuthorizesBeforeAnyRequest",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.3",
+          "tests": [
+            {
+              "test": ".:TestRunnerAndToolsetAreTheRunnerPackagesTypes",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.4",
+          "tests": [
+            {
+              "test": "./runner:TestRunTurn_RunsAModelsBatchWithTheCallersSinkAssistantAndTurn",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": ".:TestRun_AnyVoteInTheBatchEndsTheRunOnceTheBatchIsDone",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": ".:TestCallNested_ReportsUsageToTheAgentAtOnce",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": ".:TestRunner_PassesTheCallersUsageReporterAndLeavesTheAgentsUsage",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 3,

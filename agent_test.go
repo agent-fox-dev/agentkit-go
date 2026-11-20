@@ -116,7 +116,7 @@ func TestAgent_StateAndRunnerAreUsableDuringARun(t *testing.T) {
 		_, _ = a.Usage(), a.Resolution()
 		return core.OKResult(nil)
 	})
-	a, _ = scripted(t, Toolset{Tools: []core.Tool{look, echo("echo", nil)}, Events: events.add},
+	a, _ = scripted(t, Toolset{Tools: []core.Tool{look, echo("echo", nil)}, Events: events.Add},
 		faux.Turn{Blocks: []core.ContentBlock{call("c1", "look", "{}")}, StopReason: core.StopReasonToolUse, Usage: reported(10, 5)}, faux.Text("done"))
 	evs, res, err := drain(t, context.Background(), a, "go")
 	if err != nil || during.msgs != 2 || !during.res.OK || !errors.Is(during.busy, core.ErrBusy) || during.runner != a.Runner() {
@@ -126,7 +126,7 @@ func TestAgent_StateAndRunnerAreUsableDuringARun(t *testing.T) {
 		t.Errorf("the runner's call reached the run: %d messages, %+v", len(res.Messages), res.Usage)
 	}
 	runStarts, _, _ := executions(evs)
-	sinkStarts, _, _ := executions(events.all())
+	sinkStarts, _, _ := executions(events.All())
 	if len(runStarts) != 1 || runStarts["c1"] != 1 || len(sinkStarts) != 1 || sinkStarts["c1"] != 0 {
 		t.Errorf("the run's stream saw %v and Toolset.Events %v; want the run's call on the stream and the runner's on Events", runStarts, sinkStarts)
 	}
