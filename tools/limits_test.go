@@ -3,6 +3,8 @@ package tools
 import (
 	"strings"
 	"testing"
+
+	"github.com/agent-fox-dev/agentkit-go/output"
 )
 
 func TestTruncationMarkersNameACallThatWorks(t *testing.T) {
@@ -42,5 +44,26 @@ func TestClampLimitAppliesTheDefaultAndTheCap(t *testing.T) {
 		if got := ClampLimit(c.n, 10, 100); got != c.want {
 			t.Errorf("ClampLimit(%d, 10, 100) = %d, want %d", c.n, got, c.want)
 		}
+	}
+}
+
+// The accumulator and its truncation types live in package output; the names
+// here are the same types, so a value passes either way with no conversion.
+func TestTheAccumulatorNamesAreTheOutputPackagesTypes(t *testing.T) {
+	var a *Accumulator = output.NewAccumulator(0, TruncateTail)
+	if a.Cap != DefaultByteLimit || a.Mode != output.TruncateTail {
+		t.Fatalf("a budget of zero is DefaultByteLimit: Cap %d, Mode %v", a.Cap, a.Mode)
+	}
+	var m output.TruncateMode = TruncateMiddle
+	here, there := NewAccumulator(4, m), output.NewAccumulator(4, output.TruncateMiddle)
+	for _, acc := range []*output.Accumulator{here, there} {
+		_, _ = acc.Write([]byte("0123456789"))
+	}
+	if got := here.String(); got != "01\n[6 bytes elided of 10 total.]\n89" || got != there.String() {
+		t.Fatalf("tools.NewAccumulator rendered %q, output.NewAccumulator %q", got, there.String())
+	}
+	var by output.TruncatedBy = TruncatedByBytes
+	if by != output.TruncatedByBytes || output.TruncatedBy(TruncatedByLines) != output.TruncatedByLines {
+		t.Fatalf("the truncation reasons differ: %q", by)
 	}
 }

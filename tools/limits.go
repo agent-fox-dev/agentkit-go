@@ -3,13 +3,15 @@ package tools
 import (
 	"fmt"
 	"strings"
+
+	"github.com/agent-fox-dev/agentkit-go/output"
 )
 
 // The tools' output limits. Two limits compose on every result — a line/entry
 // limit and a byte limit — and the result records WHICH one fired, because
 // "truncated" alone does not tell the model what to change.
 const (
-	DefaultByteLimit = 50 * 1024 // 50 KB, every tool
+	DefaultByteLimit = output.DefaultByteLimit // 50 KB, every tool
 
 	ReadLineLimit   = 2000
 	SearchMatchCap  = 100
@@ -34,11 +36,14 @@ const (
 // TruncatedBy names which limit fired. It is a closed enum: the 500-char
 // per-line cap in search gets its OWN marker rather than a third value, so the
 // enum stays closed and a consumer switching on it cannot miss a case.
-type TruncatedBy string
+//
+// It is output.TruncatedBy, which code mode uses without importing this
+// package.
+type TruncatedBy = output.TruncatedBy
 
 const (
-	TruncatedByLines TruncatedBy = "lines"
-	TruncatedByBytes TruncatedBy = "bytes"
+	TruncatedByLines = output.TruncatedByLines
+	TruncatedByBytes = output.TruncatedByBytes
 )
 
 // Marker strings. These are MODEL-VISIBLE and therefore part of the contract,

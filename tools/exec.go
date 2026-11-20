@@ -15,18 +15,26 @@ import (
 	"time"
 )
 
-// fileWriter is the interface the Accumulator's spill/log file writer must
-// satisfy. In production it is the *os.File itself; in tests it can be
-// replaced through wrapExecFile to inject write failures.
+// fileWriter is what the accumulator's log file writer must satisfy. In
+// production it is the *os.File itself; in tests it can be replaced through
+// wrapExecFile to inject write failures.
 type fileWriter interface {
 	io.Writer
 	io.Closer
 }
 
-// wrapExecFile wraps the *os.File used for the spill or log file. In
-// production it returns the file unchanged. Tests replace it to inject write
-// failures.
+// wrapExecFile wraps the *os.File used for the log file. In production it
+// returns the file unchanged. Tests replace it to inject write failures. The
+// spill file is the accumulator's own, and its failures are tested there.
 var wrapExecFile = func(w *os.File) fileWriter { return w }
+
+// logFile is the log destination handed to the accumulator: writes go through
+// the wrapped writer, and Close releases the file itself, so a writer a test
+// substitutes cannot leak the handle.
+type logFile struct {
+	io.Writer
+	io.Closer
+}
 
 // waitCmd calls cmd.Wait. Tests replace it to inject non-ExitError Wait
 // errors.
@@ -326,7 +334,7 @@ func collectIOErr(stdinW *os.File, stdinState *stdinCopier, acc *Accumulator, wa
 	}
 
 	var fileIOErr error
-	if fErr := acc.fileError(); fErr != nil {
+	if fErr := acc.FileError(); fErr != nil {
 		path := acc.SpillPath()
 		if path == "" {
 			path = "spill"
@@ -351,7 +359,7 @@ func setupAccumulator(opts ExecOptions) (*Accumulator, error) {
 		if err != nil {
 			return nil, err
 		}
-		acc.useFile(f, logAbs)
+		acc.UseFile(logFile{wrapExecFile(f), f}, logAbs)
 	} else {
 		acc.SpillDir, acc.SpillPrefix = opts.SpillDir, "agentkit-exec"
 	}

@@ -196,8 +196,8 @@ func (a *Agent) runTools(ctx context.Context, s *core.EventStream, assistant *co
 	// core.ReportUsage the moment it is spent, so the agent's usage (and a
 	// budget computed from it, by the next delegation in the same parallel
 	// batch) sees it at once rather than when the batch finalizes.
-	out := a.runner.run(core.WithUsageReporter(ctx, a.addUsage), s.Push, assistant, calls, turn)
-	return out.messages, out.terminate
+	out := a.runner.RunTurn(core.WithUsageReporter(ctx, a.addUsage), s.Push, assistant, calls, turn)
+	return out.Messages, out.Terminate
 }
 
 // endRun builds the run's result and pushes the terminal events. A run that

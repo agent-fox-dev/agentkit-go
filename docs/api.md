@@ -34,11 +34,13 @@ Import path prefix `github.com/agent-fox-dev/agentkit-go`.
 
 | Package | Purpose |
 |---|---|
-| `agentkit` (root) | The agent loop — `Config`, `New`, `Agent`, `Resolve` — and the tool side it runs on: `Toolset`, `NewRunner` and `Runner`, which run tool calls with no model. |
+| `agentkit` (root) | The agent loop: `Config`, `New`, `Agent`, `Resolve`. It runs its tool calls on a runner, and keeps `Toolset`, `Runner` and `NewRunner` as names for package `runner`'s. |
+| `runner` | The tool side with no model: `Toolset`, `New` and `Runner`, which run tool calls through the guard and the events. Where a tools-only program starts: it imports no provider and nothing that needs cgo. |
 | `core` | The shared vocabulary and every interface seam: `Tool`, `ToolResult`, `ToolPolicy`, messages, events, `ProviderClient`, `Model`, `Usage`, stop reasons, errors; `core.Named` picks tools by name. |
 | `schema` | JSON Schema values with typed combinators, `Parse`, `Validate` and `Coerce`. |
 | `workspace` | The project directory a scenario opens first: containment, ignore rules and the directory walk. |
 | `tools` | The eleven built-in file, search, navigation and shell tools (`tools.For`), the subprocess runner, and `tools.References` for reference search without a model. |
+| `output` | The bounded output buffer the tools and code mode share: `Accumulator`, `TruncateMode`, `TruncatedBy`. Standard library only; `tools` keeps its names for them as aliases. |
 | `guard` | The shell guard: `Allow`, `Restricted`, `AllowAll`, and the pure `Check` and `Commands` it is built on. |
 | `outline` | Declarations of a source file: Go always, fourteen more languages with cgo. |
 | `codemode` | A tool that runs a model-written Starlark script whose functions are other tools. |
@@ -58,7 +60,7 @@ Each is its own Go module, imported only when needed.
 
 | Module | Purpose |
 |---|---|
-| `…/mcpserve` | Serves a `Runner`'s tools over MCP: `mcpserve.New`, `Server.ServeStdio`, `Server.ServeLoopback`. |
+| `…/mcpserve` | Serves a `runner.Runner`'s tools over MCP: `mcpserve.New`, `Server.ServeStdio`, `Server.ServeLoopback`. |
 | `…/codesearch` | Indexed code search on zoekt: `codesearch.New`, added to the tools with `tools.Options{Index: idx}`. |
 
 ## Identifiers, in the order an application uses them
@@ -102,10 +104,16 @@ is used by the **agent loop** and by **`mcpserve`**.
 
 | Identifier | Shape |
 |---|---|
-| `agentkit.Toolset` | `Tools []core.Tool`, `Policy core.ToolPolicy`, `Guard core.BeforeToolCall`, `After core.AfterToolCall`, `Events func(core.Event)` |
-| `agentkit.NewRunner` | `NewRunner(ts Toolset) (*Runner, error)`; refuses what `New` refuses, with the same errors |
+| `runner.Toolset` | `Tools []core.Tool`, `Policy core.ToolPolicy`, `Guard core.BeforeToolCall`, `After core.AfterToolCall`, `Events func(core.Event)` |
+| `runner.New` | `New(ts Toolset) (*Runner, error)`; refuses what `agentkit.New` refuses, with the same errors |
 | `Runner.Tools`, `Runner.Reachable` | The resolved tools in policy order; those plus everything they reach through wrappers |
 | `Runner.Call`, `Runner.Batch` | `Call(ctx, name string, input json.RawMessage) core.ToolResult`, `Batch(ctx, calls ...core.ToolUseBlock) []core.ToolResult`; outside every run, events to `Toolset.Events`; safe for concurrent use |
+| `Runner.RunTurn` | `RunTurn(ctx, emit func(core.Event), assistant *core.AssistantMessage, calls []core.ToolUseBlock, turnCount int) Outcome`: the batch of one model turn, with the caller's event sink and the guard's context. The agent loop calls it; so can a loop of your own |
+| `runner.Outcome` | `Messages []core.ToolResultMessage`, `Results []core.ToolResult`, `Terminate bool`: one message and one result per call, and the OR of the calls' terminate votes |
+| `agentkit.Toolset`, `agentkit.Runner`, `agentkit.NewRunner` | Aliases of `runner.Toolset` and `runner.Runner`, and a call to `runner.New`: a value of one is a value of the other |
+
+A program that only runs or serves tools imports `runner` and not the root
+package, and so links no model provider's SDK.
 
 ### Agent
 
@@ -124,7 +132,7 @@ is used by the **agent loop** and by **`mcpserve`**.
 
 | Identifier | Shape |
 |---|---|
-| `mcpserve.New` | `New(r *agentkit.Runner, opts Options) (*Server, error)`: one MCP tool per tool of `r.Tools()`, every call through `r.Call` |
+| `mcpserve.New` | `New(r *runner.Runner, opts Options) (*Server, error)`: one MCP tool per tool of `r.Tools()`, every call through `r.Call` |
 | `mcpserve.Options` | `Name`, `Version`, `Instructions`, `Logger *slog.Logger` |
 | `Server.ServeStdio` | `ServeStdio(ctx) error`: one session on stdin and stdout |
 | `Server.ServeLoopback` | `ServeLoopback(ctx) (*Endpoint, error)`: Streamable HTTP on `127.0.0.1` with a fresh bearer token |

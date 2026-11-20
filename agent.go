@@ -17,8 +17,6 @@
 package agentkit
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"sync"
 	"time"
@@ -193,14 +191,6 @@ func (a *Agent) Resolution() Resolution {
 	r := a.res
 	r.Model = cloneModel(r.Model)
 	return r
-}
-
-func newID(prefix string) string {
-	var b [8]byte
-	// rand.Read from crypto/rand cannot fail on any supported platform; since
-	// Go 1.24 it panics rather than returning an error.
-	_, _ = rand.Read(b[:])
-	return prefix + "_" + hex.EncodeToString(b[:])
 }
 
 // Messages returns the agent's transcript: every message of every run, as

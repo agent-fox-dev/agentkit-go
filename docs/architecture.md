@@ -60,11 +60,16 @@ AgentKit is two parts:
   them is the job of the sandbox the platform runs them in
   ([ADR 08](adr/08-leave-sandboxes-to-the-platform-that-runs-them.md)).
   Each is usable without the driver.
+- **The runner**: package `runner`. It holds `Toolset`, `New` and `Runner`,
+  with the batch engine and the nested caller behind them: what runs a tool
+  call through the guard and the events, with no model. It imports `core` and
+  `guard` only, so a program that only runs tools links neither a provider's
+  SDK nor the tree-sitter grammars
+  ([ADR 10](adr/10-keep-the-runner-and-the-output-buffer-free-of-cgo-and-providers.md)).
 - **One driver**: the root package, `agentkit`. It holds `Config`, `New`, the
-  `Agent` and the loop, and the tool side the loop runs on: `Toolset`,
-  `NewRunner` and `Runner`, with the batch engine and the nested caller behind
-  it. Nothing else. The driver is the loop over a runner; the runner needs no
-  driver.
+  `Agent` and the loop. Nothing else: `Toolset`, `Runner` and `NewRunner` are
+  its names for the runner package's. The driver is the loop over a runner;
+  the runner needs no driver.
 
 The root module listens on no socket and serves no MCP. It is a library: one
 nested module listens, `mcpserve`, which serves a runner's tools over MCP, on
@@ -97,21 +102,23 @@ only" exists for tests: it holds only test files, or only test files import it.
 | `core` | `schema` | |
 | `catalog` | `core` | |
 | `guard` | `core` | |
+| `runner` | `core`, `guard` | |
+| `output` | none | |
 | `provider/faux` | `core` | |
 | `provider` | `core`, `schema` | |
 | `provider/anthropic` | `core`, `provider`, `schema`, `wire` | `github.com/anthropics/anthropic-sdk-go`, `golang.org/x/oauth2`, `github.com/aws/aws-sdk-go-v2` |
 | `provider/openrouter` | `core`, `provider` | `github.com/OpenRouterTeam/go-sdk`, and the `ajson` module it requires |
 | `provider/ollama` | `catalog`, `core`, `provider` | `github.com/ollama/ollama/api` |
 | `workspace` | none | `github.com/bmatcuk/doublestar/v4` |
-| `tools` | `core`, `outline`, `schema`, `workspace` | `github.com/bmatcuk/doublestar/v4` |
-| `codemode` | `core`, `schema`, `tools` | `go.starlark.net` |
+| `tools` | `core`, `outline`, `output`, `schema`, `workspace` | `github.com/bmatcuk/doublestar/v4` |
+| `codemode` | `core`, `output`, `schema` | `go.starlark.net` |
 | `mcp` | `core`, `schema`, `wire`, `internal/diag`, `internal/toml` | `github.com/modelcontextprotocol/go-sdk` |
-| `mcpserve` (nested module) | `.` (root, `agentkit`), `core`, `mcp`, `wire` | `github.com/modelcontextprotocol/go-sdk` |
+| `mcpserve` (nested module) | `core`, `mcp`, `runner`, `wire` | `github.com/modelcontextprotocol/go-sdk` |
 | `cmd/agentkit-tools` (nested module, a program) | `.` (root, `agentkit`), `codemode`, `codesearch`, `core`, `guard`, `mcpserve`, `tools`, `wire`, `workspace` | |
 | `prompt` | `core`, `guard`, `tools` | |
-| `.` (root, `agentkit`) | `core`, `catalog`, `guard`, `prompt`, `provider`, `provider/anthropic`, `provider/openrouter`, `provider/ollama` | |
+| `.` (root, `agentkit`) | `core`, `catalog`, `prompt`, `provider`, `provider/anthropic`, `provider/openrouter`, `provider/ollama`, `runner` | |
 | `examples/{agentdemo,codemode,codingagent,customtools,mcp}` (programs) | `.`, `codemode`, `core`, `guard`, `mcp`, `provider/anthropic`, `provider/faux`, `schema`, `tools`, `wire`, `workspace`, by program | |
-| `codesearch` (nested module) | `core`, `outline`, `schema`, `tools`, `workspace` | `github.com/sourcegraph/zoekt` |
+| `codesearch` (nested module) | `core`, `outline`, `output`, `schema`, `tools`, `workspace` | `github.com/sourcegraph/zoekt` |
 
 What follows from it:
 
@@ -122,11 +129,14 @@ What follows from it:
   seams: `Tool`, `ProviderClient`, `NestedCaller`, the interceptor types.
 - `workspace` imports nothing of the module: only the standard library and
   doublestar, so every package can depend on it.
-- `tools` imports `core`, `outline`, `schema` and `workspace`. `codemode`
-  imports `core` and `schema`, and `tools` for its output buffer
-  (`tools.Accumulator`). `mcp` imports `core` and `schema`, and `wire` for its
+- `tools` imports `core`, `outline`, `output`, `schema` and `workspace`.
+  `codemode` imports `core` and `schema`, and `output` for its output buffer
+  (`output.Accumulator`); it does not import `tools`, which would bring
+  `outline` and the tree-sitter grammars with it. `output` imports only the
+  standard library. `mcp` imports `core` and `schema`, and `wire` for its
   strict boundary. `guard` imports `core` and nothing else.
-- The root imports `core`, `catalog`, `guard`, `prompt`, `provider` and the
+- `runner` imports `core` and `guard` and nothing else of the module.
+- The root imports `core`, `catalog`, `prompt`, `provider`, `runner` and the
   three providers (`provider/anthropic`, `provider/openrouter` and
   `provider/ollama`), and neither `tools` nor `workspace` in non-test code. It
   reaches `tools` only through `prompt`, which takes the file-navigation tool
@@ -134,21 +144,27 @@ What follows from it:
   `Config.Client` is a `core.ProviderClient`, and `Resolve` (`resolve.go`) is
   the one place that names a provider package, to build the client of
   `Config.Provider`.
-- The root package is imported by `mcpserve` and by programs: this module's
-  `examples/` and the nested example module. No library package of the root
-  module imports it, so the tools, the guard and code mode do not depend on
-  the driver.
-- `mcpserve` imports the root (for `agentkit.Runner`), `core`, `mcp` (for its
-  pipe transport) and `wire`, and the MCP SDK. It imports neither `tools` nor
+- The root package is imported by programs only: this module's `examples/`,
+  the nested example modules and `cmd/agentkit-tools`. No library package
+  imports it, so the tools, the guard, code mode and `mcpserve` do not depend
+  on the driver.
+- `mcpserve` imports `runner` (for `runner.Runner`), `core`, `mcp` (for its
+  pipe transport) and `wire`, and the MCP SDK, and not the root. It imports neither `tools` nor
   `workspace`: it serves whatever tools a runner holds.
-- `codesearch` imports `core`, `outline`, `schema`, `tools` and `workspace`,
-  and not the root.
+- `codesearch` imports `core`, `outline`, `output`, `schema`, `tools` and
+  `workspace`, and not the root.
+- A test in `internal/policy` holds the tools-only packages to this: `runner`,
+  `codemode`, `core`, `schema`, `guard` and `mcpserve` may not come to import
+  a tree-sitter package, the root package, a provider or a provider's SDK.
+  It runs in `make check` ([development](development.md#the-quality-gate)).
 
 ## Packages
 
 | Package | Owns |
 |---|---|
-| `.` | `Config`, `New` and the `Agent` (`agent.go`; its surface is `Run`, `Stream`, `Messages`, `Usage`, `ReachableTools`, `Runner` and `Resolution`), `Resolve` and `Resolution` (`resolve.go`), the loop (`loop.go`), and the tool side the loop is built on: `Toolset`, `NewRunner` and `Runner` (`runner.go`), the runner's batch engine (`batch.go`), its nested caller (`nested.go`) and the unguarded-shell check (`execguard.go`). |
+| `.` | `Config`, `New` and the `Agent` (`agent.go`; its surface is `Run`, `Stream`, `Messages`, `Usage`, `ReachableTools`, `Runner` and `Resolution`), `Resolve` and `Resolution` (`resolve.go`), the loop (`loop.go`), and the names `Toolset`, `Runner` and `NewRunner` for the runner package's (`runner.go`). |
+| `runner` | The tool side with no model: `Toolset`, `New` and `Runner` (`runner.go`), the batch engine and `RunTurn` (`batch.go`), the nested caller (`nested.go`) and the unguarded-shell check (`execguard.go`). |
+| `output` | The bounded output buffer: `Accumulator`, its `TruncateMode` and the `TruncatedBy` reasons. |
 | `core` | Messages, content blocks, events and their JSON form (`MarshalEvent`), `EventStream`, `Tool`, `ToolResult`, `ToolPolicy`, argument preparation, interceptors, `ProviderClient`, `Request`, `StreamEvent`, `Model`, `Usage`, stop reasons, errors. |
 | `schema` | JSON Schema values and typed combinators; `Parse` decodes a schema document keeping property order; `Validate` and `Coerce` check and repair tool arguments. |
 | `catalog` | The embedded model catalog (`catalog.json`) of the three providers, `anthropic`, `openrouter` and `ollama`: context window, output cap, prices and thinking kind per row, with a per-provider default for an unlisted id, and a fixed tier table (SIMPLE, STANDARD, ADVANCED) per vendor that `Parse` checks against its rows. `Lookup` resolves a Claude id, the way `New` does; `Select` resolves a (provider, model, effort) triple for any of the three, offline. It imports `core` and the standard library only. |
@@ -159,7 +175,7 @@ What follows from it:
 | `provider/faux` | A scripted provider for offline tests and demos. |
 | `outline` | Declarations of a source file with line ranges. Go uses `go/ast` in every build. With cgo, Python, JavaScript, TypeScript/TSX, Java, Kotlin, C#, Scala, Rust, C, C++, PHP, Ruby, Lua and shell are parsed by tree-sitter grammars; without cgo they are `none`. `IsTestFile` is the test-file convention the symbol and reference ranking in `tools` uses. |
 | `workspace` | The workspace: the containment boundary (`Open`, `Resolve`, `Rel`, `CheckWriteTarget`), the layered ignore engine (`IgnoreOptions`, `NoGlobalExcludes`, `Ignore`, `Ignored`) and the directory walk (`Walk`), opened once and handed to the tools and the index. It imports only the standard library and doublestar. |
-| `tools` | The built-in tools (`For`), the output accumulator, process control and the runner (`Run`, `RunArgv`), glob, the symbol table behind `find_symbol` and the reference engine behind `find_references` (`References`). |
+| `tools` | The built-in tools (`For`), its names for the output accumulator of `output`, process control and the runner (`Run`, `RunArgv`), glob, the symbol table behind `find_symbol` and the reference engine behind `find_references` (`References`). |
 | `guard` | The shell boundary: `Check` (a pure decision on an argv), `Commands` (the simple commands a shell line runs, read once for every policy), `Restricted` (the interceptor over both), `Allow` (`Restricted` with only the allowlist), `AllowAll`. |
 | `codemode` | The code-mode tool (below). |
 | `prompt` | `Build(system, tools)`: the base prompt, then the active tools' guidelines, deduplicated in first-seen order. |
@@ -172,7 +188,7 @@ What follows from it:
 | `internal/testkit` | Test doubles over `core`: the scripted provider and tools. |
 | `internal/toolconformance` | Tests only: the conformance case table of the built-in tools, run against `tools.For`. |
 | `internal/providerconformance` | Tests only: the opt-in live tests of the three providers (below). Its only non-test file is `doc.go`. |
-| `mcpserve` | The MCP server (nested module): one MCP tool per tool of an `agentkit.Runner`, every call through `Runner.Call`, served on stdio (`ServeStdio`) or on loopback HTTP behind a bearer token (`ServeLoopback`). |
+| `mcpserve` | The MCP server (nested module): one MCP tool per tool of a `runner.Runner`, every call through `Runner.Call`, served on stdio (`ServeStdio`) or on loopback HTTP behind a bearer token (`ServeLoopback`). |
 | `cmd/agentkit-tools` | The `agentkit-tools` command (nested module): the tool set of one directory, served as an MCP session (`mcp`), as one call from a request file (`call`) or as a listing (`tools`). |
 
 ## The embedder's path
@@ -188,18 +204,22 @@ tools.For           the built-in tools for that workspace; tools.Options sets
 shaping the set     core.Named picks tools by name; codemode.New binds some of
                     them into one code_mode tool; mcp Pool.Tools adds an MCP
                     server's tools
-agentkit.Toolset    the tool side of an agent as a value: Tools, the Policy
-                    that selects from them, Guard, After and an Events sink
-agentkit.NewRunner  checks the toolset, resolves the policy and owns the
-                    pipeline that runs a tool call
+runner.Toolset      the tool side as a value: Tools, the Policy that selects
+                    from them, Guard, After and an Events sink
+                    (agentkit.Toolset is the same type)
+runner.New          checks the toolset, resolves the policy and owns the
+                    pipeline that runs a tool call (agentkit.NewRunner calls
+                    it)
   Runner.Call/Batch   run tool calls with no model
   agentkit.New        the agent loop over the runner: Config.Toolset goes to
-                      NewRunner, and Agent.Runner returns the runner
+                      runner.New, and Agent.Runner returns the runner
   mcpserve.New        the runner's tools served over MCP, on stdio or on
                       loopback HTTP
 ```
 
-Nothing below `agentkit.Toolset` knows which of the three uses it has. The
+Nothing below `runner.Toolset` knows which of the three uses it has. A
+program that stops at `Runner.Call` or `mcpserve.New` never imports the root
+package. The
 pipeline is the runner's, once: a call a model makes in a run, a call an
 embedder makes with `Runner.Call` and a call an MCP client makes through
 `mcpserve` pass through the same steps, described next.
@@ -208,7 +228,8 @@ embedder makes with `Runner.Call` and a call an MCP client makes through
 
 `Runner.Call(ctx, name, input)` is a batch of one: it makes a
 `core.ToolUseBlock` with a generated `call_` id and runs it through
-`Runner.Batch`, which is the engine (`batch.go`) the agent loop calls too. The
+`Runner.Batch`, which is the engine (`runner/batch.go`) the agent loop calls
+too, through `Runner.RunTurn`. The
 steps are the same for one call, for several, and for the calls of a model's
 turn. A `tools/call` that an MCP client makes through `mcpserve` is this call
 too: [MCP serving](#mcp-serving) describes how it reaches the runner.
@@ -290,7 +311,7 @@ Agent.Stream   claims the run slot (core.ErrBusy if taken), applies
          max_tokens: none run; each gets the fixed "not executed" result
          (this stays in the loop; the runner never sees these calls)
          otherwise the turn's calls go to the runner's batch engine
-           (Runner.run, batch.go) with the run's stream as the event sink,
+           (Runner.RunTurn, runner/batch.go) with the run's stream as the event sink,
            the assistant message and the turn count for the guard, and the
            agent's usage reporter on the context: prepare -> abort ->
            execute -> finalize, as in "Data flow of one call"; the loop
@@ -320,7 +341,7 @@ of a runner is [MCP serving](#mcp-serving), whose call is described there once.
 - **The abort decision for a tool batch is made once**, after prepare and
   before any handler starts. A cancelled batch runs all of its prepared
   handlers or none.
-- **The pipeline exists once**, in the runner (`Runner.run`, `batch.go`). A
+- **The pipeline exists once**, in the runner (`Runner.RunTurn`, `runner/batch.go`). A
   model's call in a run, `Runner.Call`, `Runner.Batch` and a `tools/call`
   through `mcpserve` all go through it, so each is prepared, guarded,
   finalized and reported the same way. There is no second copy of the steps
@@ -381,7 +402,7 @@ that turns tools into functions. It declares them up front in
   `Agent.ReachableTools()` are that closure over the resolved set, which is
   what a check like "this run is read-only" must inspect.
 - **Dispatch.** The runner's batch engine attaches a `nestedCaller`
-  (`nested.go`) to the context of every tool that declares `ReachableTools`,
+  (`runner/nested.go`) to the context of every tool that declares `ReachableTools`,
   whether the call came from an agent run, `Runner.Call` or `Runner.Batch`.
   It is bound to that call's id and name and to the wrapper's reachable tools.
   The tool calls `core.CallNested(ctx, calls...)`; with no caller attached (a
@@ -448,7 +469,7 @@ A run:
    `MaxOutputBytes` (`output_limit_exceeded`). A terminate vote from an
    interceptor stops the script and sets `Terminate` on its result.
 5. **Output.** Printed lines and the return value (`main()`, else `result`)
-   go into a `tools.Accumulator` in middle-truncation mode. Output past the
+   go into an `output.Accumulator` in middle-truncation mode. Output past the
    limit keeps its head and tail and is spilled to `SpillDir`.
 6. **Result.** The output text, with `Data` holding `output`, `return_value`
    and `calls_completed`. A failed or stopped script returns its error code

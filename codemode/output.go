@@ -8,14 +8,14 @@ import (
 	"go.starlark.net/starlark"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/output"
 )
 
 // newOutput is a script's output buffer: the same bounded accumulator the
 // shell tools use, keeping the head and tail of MaxOutputBytes and, unless
 // DisableSpill, writing everything to a file in SpillDir.
-func newOutput(opts Options) *tools.Accumulator {
-	acc := tools.NewAccumulator(opts.MaxOutputBytes, tools.TruncateMiddle)
+func newOutput(opts Options) *output.Accumulator {
+	acc := output.NewAccumulator(opts.MaxOutputBytes, output.TruncateMiddle)
 	if !opts.DisableSpill {
 		acc.SpillDir = opts.SpillDir
 		acc.SpillPrefix = "codemode"
@@ -31,7 +31,7 @@ func (r *runner) finishOutput(res *core.ToolResult, elapsed time.Duration) {
 	md := &core.ToolMetadata{DurationMS: elapsed.Milliseconds()}
 	if r.out.Truncated() {
 		md.Truncated = true
-		md.TruncatedBy = string(tools.TruncatedByBytes)
+		md.TruncatedBy = string(output.TruncatedByBytes)
 		md.TotalBytes = r.out.Total()
 		md.SpillPath = r.out.SpillPath()
 	} else if p := r.out.SpillPath(); p != "" {

@@ -15,7 +15,18 @@ to For.
 CONSTANTS
 
 const (
-	DefaultByteLimit = 50 * 1024 // 50 KB, every tool
+	// TruncateHead keeps the BEGINNING. Right for a file read or a listing,
+	// where the interesting part is at the top.
+	TruncateHead = output.TruncateHead
+	// TruncateTail keeps the END. Right for `execute`: a failing build puts
+	// its error at the end of the log, and head-truncation preserves the
+	// banner and discards the failure.
+	TruncateTail = output.TruncateTail
+	// TruncateMiddle keeps both ends and elides the centre.
+	TruncateMiddle = output.TruncateMiddle
+)
+const (
+	DefaultByteLimit = output.DefaultByteLimit // 50 KB, every tool
 
 	ReadLineLimit   = 2000
 	SearchMatchCap  = 100
@@ -40,6 +51,10 @@ const (
     limit and a byte limit — and the result records WHICH one fired, because
     "truncated" alone does not tell the model what to change.
 
+const (
+	TruncatedByLines = output.TruncatedByLines
+	TruncatedByBytes = output.TruncatedByBytes
+)
 const EditFileMaxBytes = 16 << 20
     EditFileMaxBytes is the largest file edit_file will load. The tool holds
     the whole file plus its normalised copy plus the result; a 500 MB log is not
@@ -284,58 +299,13 @@ func SymbolPartialMarker(reason string) string
 
 TYPES
 
-type Accumulator struct {
-	// Cap is the byte budget for the retained window.
-	Cap int
-	// Mode selects which end survives.
-	Mode TruncateMode
-	// SpillDir, when non-empty, enables the spill file.
-	SpillDir string
-	// SpillPrefix names the spill file.
-	SpillPrefix string
-
-	// Has unexported fields.
-}
-    Accumulator is a bounded rolling accumulator for subprocess output.
-
-    It retains a bounded HEAD and a bounded TAIL, discarding the middle as bytes
-    arrive, so peak memory is roughly 2×cap regardless of how much a subprocess
-    writes. The obvious alternative — buffer everything, truncate at the end —
-    is quadratic in output size and out-of-memories on precisely the runaway
-    command the cap exists to contain.
-
-    It also lazily spills the COMPLETE output to a file on first overflow,
-    so the full text stays available to the caller and the audit trail while
-    only the bounded window reaches the model.
+type Accumulator = output.Accumulator
+    Accumulator is the bounded output buffer of package output, under the name
+    it has always had here. The two are the same type.
 
 func NewAccumulator(capBytes int, mode TruncateMode) *Accumulator
-    NewAccumulator returns an accumulator with the given budget and mode.
-
-func (a *Accumulator) Close() error
-    Close releases the spill file handle.
-
-func (a *Accumulator) SpillPath() string
-    SpillPath returns the spill file path, or "" if nothing spilled. When a
-    file was installed via useFile, the path is always returned (even for empty
-    output).
-
-func (a *Accumulator) String() string
-    String renders the retained window, with a marker naming what was elided.
-
-    A truncation the model cannot act on costs a turn. Every marker therefore
-    names the number of bytes elided and, where one exists, the spill
-    path — which is reachable through `execute`, because `execute` is not
-    path-contained.
-
-func (a *Accumulator) Total() int64
-    Total reports every byte written, including discarded ones.
-
-func (a *Accumulator) Truncated() bool
-    Truncated reports whether anything was discarded.
-
-func (a *Accumulator) Write(p []byte) (int, error)
-    Write implements io.Writer, so an Accumulator can be handed straight to
-    exec.Cmd as its combined output sink.
+    NewAccumulator returns an accumulator with the given budget and mode. A
+    budget of zero or less means DefaultByteLimit. It is output.NewAccumulator.
 
 type Edit struct {
 	OldString string `json:"old_string"`
@@ -695,26 +665,15 @@ type SymbolQuery struct {
     method. Path is a slash-separated workspace-relative directory (empty for
     the whole workspace) and Kind is already lower-cased.
 
-type TruncateMode int
-    TruncateMode selects which end of the stream survives truncation.
+type TruncateMode = output.TruncateMode
+    TruncateMode selects which end of the stream survives truncation. It is
+    output.TruncateMode.
 
-const (
-	// TruncateHead keeps the BEGINNING. Right for a file read or a listing,
-	// where the interesting part is at the top.
-	TruncateHead TruncateMode = iota
-	// TruncateTail keeps the END. Right for `execute`: a failing build puts
-	// its error at the end of the log, and head-truncation preserves the
-	// banner and discards the failure.
-	TruncateTail
-	// TruncateMiddle keeps both ends and elides the centre.
-	TruncateMiddle
-)
-type TruncatedBy string
+type TruncatedBy = output.TruncatedBy
     TruncatedBy names which limit fired. It is a closed enum: the 500-char
     per-line cap in search gets its OWN marker rather than a third value,
     so the enum stays closed and a consumer switching on it cannot miss a case.
 
-const (
-	TruncatedByLines TruncatedBy = "lines"
-	TruncatedByBytes TruncatedBy = "bytes"
-)
+    It is output.TruncatedBy, which code mode uses without importing this
+    package.
+

@@ -6,15 +6,15 @@ import (
 	"fmt"
 	"log/slog"
 
-	agentkit "github.com/agent-fox-dev/agentkit-go"
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/runner"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // selfPath is this module's path, the one buildinfo.go looks for.
 const selfPath = "github.com/agent-fox-dev/agentkit-go/mcpserve"
 
-// toolRunner is the part of an *agentkit.Runner a Server uses. It is an
+// toolRunner is the part of a *runner.Runner a Server uses. It is an
 // interface so that a test can count the calls to Tools and record what Call
 // receives; New is the only constructor, and it takes the concrete type.
 type toolRunner interface {
@@ -39,7 +39,12 @@ type Server struct {
 // New refuses a runner that holds a tool whose schema cannot be served (it does
 // not marshal, or its top level is not an object with "type":"object"), naming
 // the tool, so the SDK is never handed a tool it would reject.
-func New(r *agentkit.Runner, opts Options) (*Server, error) {
+//
+// The runner is package runner's, which is also what agentkit.NewRunner and
+// an agent's Runner method return. This package imports runner and not the
+// root package, so a program that serves tools and calls no model links no
+// model provider through it.
+func New(r *runner.Runner, opts Options) (*Server, error) {
 	if r == nil {
 		return nil, fmt.Errorf("mcpserve: Runner is nil")
 	}

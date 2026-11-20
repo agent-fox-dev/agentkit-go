@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	agentkit "github.com/agent-fox-dev/agentkit-go"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	agentmcp "github.com/agent-fox-dev/agentkit-go/mcp"
+	"github.com/agent-fox-dev/agentkit-go/runner"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 	"github.com/agent-fox-dev/agentkit-go/wire"
 )
@@ -67,8 +67,8 @@ func blockingTool(started chan<- struct{}, observed chan<- error) core.Tool {
 	})
 }
 
-func runnerOf(ts ...core.Tool) *agentkit.Runner {
-	return must(agentkit.NewRunner(agentkit.Toolset{Tools: ts}))
+func runnerOf(ts ...core.Tool) *runner.Runner {
+	return must(runner.New(runner.Toolset{Tools: ts}))
 }
 
 // recorder wraps a toolRunner and keeps what each Call received and answered.

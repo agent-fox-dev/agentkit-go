@@ -3,19 +3,447 @@
   "spec_id": "34",
   "spec_name": "runner_without_cgo_or_providers",
   "schema_version": 3,
-  "updated_at": "",
+  "updated_at": "2026-11-20T18:51:43Z",
   "tasks": [
     {
       "id": 1,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-2.1",
+          "tests": [
+            {
+              "test": "./output:TestTheAccumulatorKeepsTheEndItsModeNames",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            },
+            {
+              "test": "./output:TestTheAccumulatorIsBoundedRegardlessOfVolume",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            },
+            {
+              "test": "./output:TestTheAccumulatorSpillsTheCompleteOutputLazily",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.2",
+          "tests": [
+            {
+              "test": "./tools:TestTheAccumulatorNamesAreTheOutputPackagesTypes",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.3",
+          "tests": [
+            {
+              "test": "./tools:TestTheRetainedWindowFollowsMaxBytesAndKeepHead",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            },
+            {
+              "test": "./tools:TestTheLogFile",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            },
+            {
+              "test": "./codemode:TestTruncatedOutputIsSpilledUnlessDisabled",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            },
+            {
+              "test": "./codemode:TestASpilledResultReachesTheTranscriptWithItsMetadata",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.4",
+          "tests": [
+            {
+              "test": "./output:TestTheAccumulatorKeepsItsWindowWhenItsFileStopsTakingWrites",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            },
+            {
+              "test": "./tools:TestAByteMovingFailureIsReportedInIOErrAndStopsNothing",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 2,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-1.1",
+          "tests": [
+            {
+              "test": "./runner:TestCall_RunsOneCallAsABatchOfOne",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": "./runner:TestCall_AnswersEveryOutcomeWithACode",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": "./runner:TestBatch_UsesTheCallsIDsVerbatimAndRunsNothingForNoCalls",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": "./runner:TestRunner_EventsSink",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": "./runner:TestRunner_IsSafeForConcurrentUse",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": "./runner:TestRunner_RunsCodeModeAndTheToolsItBinds",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": "./runner:TestBatch_PreparesInCallOrderBeforeAnyHandler",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": "./runner:TestBatch_RunsHandlersConcurrentlyUnlessASequentialToolIsCalled",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": "./runner:TestCallNested_AnswersEachFailingCallWithAResultOfItsOwn",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": "./runner:TestCallNested_AbortsUnderACancelledContext",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": ".:TestNewRunner_KeepsThePolicysToolsInOrderAndCopiesThem",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.2",
+          "tests": [
+            {
+              "test": ".:TestNewRunner_RefusesAToolsetItCannotRunAndNewAgrees",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": ".:TestNew_RefusesAShellToolNoGuardAuthorizesBeforeAnyRequest",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.3",
+          "tests": [
+            {
+              "test": ".:TestRunnerAndToolsetAreTheRunnerPackagesTypes",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.4",
+          "tests": [
+            {
+              "test": "./runner:TestRunTurn_RunsAModelsBatchWithTheCallersSinkAssistantAndTurn",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": ".:TestRun_AnyVoteInTheBatchEndsTheRunOnceTheBatchIsDone",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": ".:TestCallNested_ReportsUsageToTheAgentAtOnce",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            },
+            {
+              "test": ".:TestRunner_PassesTheCallersUsageReporterAndLeavesTheAgentsUsage",
+              "failed": {
+                "at": "2026-11-20T18:46:54Z",
+                "tree": "512c4b81797d071cc2a818f45ac2bd042c00ccd8"
+              },
+              "passed": {
+                "at": "2026-11-20T18:48:37Z",
+                "tree": "6c56fb76d264b72b9105a2d1f65f380282019cf0"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 3,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-1.5",
+          "tests": [
+            {
+              "test": "./internal/policy:TestToolsOnlyPackagesLinkNoGrammarAndNoProvider",
+              "failed": {
+                "at": "2026-11-20T18:50:18Z",
+                "tree": "2bbbb880309d93608aa477eb475252b9bddd6cf0"
+              },
+              "passed": {
+                "at": "2026-11-20T18:51:42Z",
+                "tree": "3b8f787684f5e70ab9d638259cc38c8dd5c2e7ec"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.1",
+          "tests": [
+            {
+              "test": "./internal/policy:TestToolsOnlyPackagesLinkNoGrammarAndNoProvider",
+              "failed": {
+                "at": "2026-11-20T18:50:18Z",
+                "tree": "2bbbb880309d93608aa477eb475252b9bddd6cf0"
+              },
+              "passed": {
+                "at": "2026-11-20T18:51:42Z",
+                "tree": "3b8f787684f5e70ab9d638259cc38c8dd5c2e7ec"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.2",
+          "no_red": "it exercises the gate's own listing and violations functions, which are test code written with this test; there is no production code whose absence could make it fail first",
+          "tests": [
+            {
+              "test": "./internal/policy:TestTheDependencyGateNamesWhatBroughtAForbiddenPackageIn",
+              "passed": {
+                "at": "2026-11-20T18:51:42Z",
+                "tree": "3b8f787684f5e70ab9d638259cc38c8dd5c2e7ec"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.3",
+          "tests": [
+            {
+              "test": "./internal/policy:TestToolsOnlyPackagesLinkNoGrammarAndNoProvider",
+              "failed": {
+                "at": "2026-11-20T18:50:18Z",
+                "tree": "2bbbb880309d93608aa477eb475252b9bddd6cf0"
+              },
+              "passed": {
+                "at": "2026-11-20T18:51:42Z",
+                "tree": "3b8f787684f5e70ab9d638259cc38c8dd5c2e7ec"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.4",
+          "no_red": "it exercises the gate's own listing function, which is test code written with this test; there is no production code whose absence could make it fail first",
+          "tests": [
+            {
+              "test": "./internal/policy:TestTheDependencyGateFailsWhenItCannotListAPackage",
+              "passed": {
+                "at": "2026-11-20T18:51:42Z",
+                "tree": "3b8f787684f5e70ab9d638259cc38c8dd5c2e7ec"
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

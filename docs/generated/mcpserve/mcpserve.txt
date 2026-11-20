@@ -1,7 +1,7 @@
 package mcpserve // import "github.com/agent-fox-dev/agentkit-go/mcpserve"
 
-Package mcpserve serves one agentkit.Runner's tools over MCP to a harness that
-is not AgentKit's own model loop: Claude Code, Pi, or any MCP client on the same
+Package mcpserve serves one runner.Runner's tools over MCP to a harness that is
+not AgentKit's own model loop: Claude Code, Pi, or any MCP client on the same
 machine.
 
 It is the one AgentKit module that serves MCP, and it serves one runner's tools
@@ -79,7 +79,7 @@ type Server struct {
     safe for concurrent use: it may serve any number of loopback endpoints and
     one stdio session at the same time, all over the same tool set.
 
-func New(r *agentkit.Runner, opts Options) (*Server, error)
+func New(r *runner.Runner, opts Options) (*Server, error)
     New builds a Server over the tools of r. It reads r.Tools() once, and serves
     that set for the Server's whole lifetime.
 
@@ -88,6 +88,11 @@ func New(r *agentkit.Runner, opts Options) (*Server, error)
     New refuses a runner that holds a tool whose schema cannot be served (it
     does not marshal, or its top level is not an object with "type":"object"),
     naming the tool, so the SDK is never handed a tool it would reject.
+
+    The runner is package runner's, which is also what agentkit.NewRunner and an
+    agent's Runner method return. This package imports runner and not the root
+    package, so a program that serves tools and calls no model links no model
+    provider through it.
 
 func (s *Server) ServeLoopback(ctx context.Context) (*Endpoint, error)
     ServeLoopback serves the tools over Streamable HTTP on a loopback port, for

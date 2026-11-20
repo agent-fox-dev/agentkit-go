@@ -12,7 +12,7 @@ import (
 	"go.starlark.net/syntax"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
-	"github.com/agent-fox-dev/agentkit-go/tools"
+	"github.com/agent-fox-dev/agentkit-go/output"
 )
 
 // fileOptions is the Starlark dialect scripts are written in: while loops,
@@ -28,7 +28,7 @@ type runner struct {
 	parent context.Context
 	ctx    context.Context
 	thread *starlark.Thread
-	out    *tools.Accumulator
+	out    *output.Accumulator
 	seq    int
 	// funcs are the bound tools' functions by name, for parallel and call.
 	funcs map[string]*starlark.Builtin

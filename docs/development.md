@@ -34,7 +34,8 @@ talks to a model uses a scripted provider or a local fake of the vendor's API.
 
 ```
 *.go                    the root package: the agent loop (agentkit.Config, agentkit.New)
-                        and the runner (agentkit.Toolset, agentkit.NewRunner)
+runner/                 the runner (runner.Toolset, runner.New): tool calls with no model
+output/                 the bounded output buffer the tools and code mode share
 core/ schema/ wire/     shared types, JSON Schema values, bounded parsing of untrusted JSON
 provider/               the anthropic, openrouter, ollama and faux providers
 catalog/                the embedded model catalog and its tiers
@@ -111,6 +112,25 @@ cross-target build and vet of every module in `MODULES` (linux/amd64,
 linux/arm64, darwin/arm64 and windows/amd64 with cgo off) and the host build
 with cgo on. It is a manual step for maintainers before a release or a merge;
 contributors and coding agents run `make check` only.
+
+One gate in `internal/policy` runs in `make check` too, because it takes
+seconds and nothing else would notice the regression:
+`TestToolsOnlyPackagesLinkNoGrammarAndNoProvider`. It lists, with cgo enabled,
+everything that `runner`, `codemode`, `core`, `schema` and `guard` of the root
+module and `mcpserve` in its own module import, and fails when one of them
+reaches a tree-sitter package, the root package, a package under `provider/`,
+or a package of `anthropic-sdk-go`, `OpenRouterTeam/go-sdk`, `ollama/ollama`,
+`github.com/aws/` or `cloud.google.com/`. Then it builds those packages with
+`CGO_ENABLED=0`. A failure is one line per forbidden package, with the
+shortest chain of imports that leads to it:
+
+```
+…/mcpserve depends on github.com/agent-fox-dev/agentkit-go: …/mcpserve -> github.com/agent-fox-dev/agentkit-go
+```
+
+The package before the last arrow is the one that brought it in: remove that
+import, or move what it needs into a package a tools-only program may link
+([ADR 10](adr/10-keep-the-runner-and-the-output-buffer-free-of-cgo-and-providers.md)).
 
 The direct-dependency allowlist ([DEPS.md](DEPS.md)), the rule that only the
 nested `mcpserve` module opens a listening socket, and the exported API of the

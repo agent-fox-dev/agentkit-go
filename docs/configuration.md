@@ -224,7 +224,10 @@ W-token context window`.
 The tool side of an agent. `Config.Toolset` gives an agent one, and
 `agentkit.NewRunner(ts)` builds a `Runner` from one with no model: the agent
 holds the `Runner` it runs its calls through, and `Agent.Runner()` returns it.
-The zero `Toolset` has no tools, which is valid.
+The zero `Toolset` has no tools, which is valid. `agentkit.Toolset` and
+`agentkit.Runner` are aliases of `runner.Toolset` and `runner.Runner`, and
+`agentkit.NewRunner` calls `runner.New`: a program that only runs tools uses
+package `runner` directly.
 
 | Field | Meaning / default |
 |---|---|
@@ -1093,7 +1096,7 @@ diagnostic.
 ## MCP serving (`mcpserve.Options`)
 
 `mcpserve` is a nested module, `github.com/agent-fox-dev/agentkit-go/mcpserve`.
-`mcpserve.New(r *agentkit.Runner, opts mcpserve.Options) (*mcpserve.Server, error)`
+`mcpserve.New(r *runner.Runner, opts mcpserve.Options) (*mcpserve.Server, error)`
 serves the tools of a runner to a harness on the same machine. A `Server` is
 immutable and safe for concurrent use; it may serve any number of loopback
 endpoints and one stdio session at once, over the same tools.
