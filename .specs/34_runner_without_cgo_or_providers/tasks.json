@@ -1,0 +1,143 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
+  "spec_id": "34",
+  "spec_name": "runner_without_cgo_or_providers",
+  "schema_version": 3,
+  "test_commands": {
+    "all_tests": "make check",
+    "linter": "make lint",
+    "spec_tests": "go test -short -count=1 ./runner/... ./output/... ./codemode/... ./tools/... ./internal/policy/..."
+  },
+  "dependencies": [],
+  "tasks": [
+    {
+      "id": 1,
+      "title": "Move the accumulator and its truncation types into the output package",
+      "criteria": [
+        "REQ-2"
+      ],
+      "steps": [
+        "Move the three accumulator tests from tools/accumulator_test.go to output/accumulator_test.go, written against the output package, add the behaviours of REQ-2.2 to tools/limits_test.go, and confirm they fail",
+        "Create the package github.com/agent-fox-dev/agentkit-go/output, importing only the standard library, with a package comment saying it is the bounded output buffer the tools and code mode share and why it is apart from tools; move Accumulator, NewAccumulator, TruncateMode with TruncateHead, TruncateTail and TruncateMiddle from tools/accumulator.go, and TruncatedBy with TruncatedByLines and TruncatedByBytes from tools/limits.go, with their comments",
+        "Keep the default capacity in output as an exported constant of 50 KB, and define tools.DefaultByteLimit from it so the two cannot drift",
+        "Export what tools/exec.go calls across the new boundary: UseFile, which installs an already opened destination (an io.WriteCloser and its path) so SpillPath reports the path from the start and no temporary file is created, and FileError, which returns the first spill or log write error. Behaviour is what useFile and fileError do today",
+        "In tools, declare Accumulator, TruncateMode and TruncatedBy as aliases of the output types, the five constants as the output constants, and NewAccumulator as a function with its present signature that calls output.NewAccumulator; delete tools/accumulator.go's implementation",
+        "Keep the write-failure seam where each write happens: tools/exec.go still wraps the log file it opens (wrapExecFile) before handing it to UseFile, so the log case of TestAByteMovingFailureIsReportedInIOErrAndStopsNothing stays in tools; the failure of a spill file the accumulator creates itself is tested in output/accumulator_test.go through a seam private to that package, and the spill case leaves the tools test",
+        "Change codemode/output.go and codemode/runtime.go to import output, so codemode no longer imports tools, and change the truncation names in codesearch/tool.go to output's; run the codemode, tools and codesearch tests and confirm the markers, spill paths and byte counts are unchanged without regenerating any golden file",
+        "Run `make doc`, and add the output package to the package table of docs/api.md and to the package graph and package table of docs/architecture.md, saying that tools keeps its names as aliases"
+      ],
+      "touches": [
+        "output/accumulator.go",
+        "output/accumulator_test.go",
+        "output/doc.go",
+        "tools/accumulator.go",
+        "tools/accumulator_test.go",
+        "tools/limits.go",
+        "tools/limits_test.go",
+        "tools/exec.go",
+        "tools/exec_test.go",
+        "codemode/output.go",
+        "codemode/runtime.go",
+        "codesearch/tool.go",
+        "docs/api.md",
+        "docs/architecture.md",
+        "docs/generated"
+      ],
+      "done_when": [
+        "`go list -deps ./codemode` lists no path containing tree-sitter and no github.com/agent-fox-dev/agentkit-go/tools",
+        "`go list -deps ./output` lists only standard-library packages and output itself",
+        "`git status --short tools/testdata codemode codesearch` shows no changed golden file"
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Move the runner into the runner package and run the agent loop through RunTurn",
+      "criteria": [
+        "REQ-1.1",
+        "REQ-1.2",
+        "REQ-1.3",
+        "REQ-1.4"
+      ],
+      "steps": [
+        "Move the tests of runner_test.go, batch_test.go and nested_test.go that drive only a Runner to runner/runner_test.go, runner/batch_test.go and runner/nested_test.go, with a runner/helpers_test.go holding the helpers they use from the root helpers_test.go (doubles many packages need go to internal/testkit); add the RunTurn behaviours of REQ-1.4 to runner/batch_test.go and the three-way refusal table and the type-identity behaviours of REQ-1.2 and REQ-1.3 to the root runner_test.go and execguard_test.go; confirm they fail",
+        "Create the package github.com/agent-fox-dev/agentkit-go/runner, importing only the standard library, core and guard, with a package comment saying it runs tool calls with no model and is where a tools-only program starts; move Toolset, Runner with Call, Batch, Tools and Reachable, the batch executor, the nested-call pipeline, the tool-tree checks and the shell-guard check from runner.go, batch.go, nested.go and execguard.go, with their comments, and the id generator they use from agent.go",
+        "Name the constructor runner.New(Toolset) (*Runner, error); it makes NewRunner's checks in NewRunner's order and returns the same errors with the same text, the `agentkit:` prefix included",
+        "Export the batch entry the loop calls as Runner.RunTurn(ctx, emit, assistant, calls, turnCount) returning runner.Outcome{Messages, Results, Terminate}, with the behaviour and the documentation of the unexported run and batchOutcome: events to emit and never to Toolset.Events, a nil emit discards, no usage reporter attached. Batch calls it with the Toolset's sink, a nil assistant and turn 0, as today",
+        "In the root package, declare Runner and Toolset as aliases of the runner types and NewRunner as a function with its present signature that calls runner.New, keeping the doc comments an embedder reads there; delete the moved code from the root",
+        "Change the agent loop to call RunTurn on the agent's runner with the run's stream as the sink and its usage reporter on the context, and read Messages and Terminate from the Outcome; Agent.Runner, Agent.ReachableTools and New's validation stay as they are",
+        "Keep the tests that need an agent run in the root package (the ones through New, Run and the faux provider) and confirm they pass unchanged, and that examples/ and cmd/agentkit-tools build and pass without an edit",
+        "Run `make doc`; in docs/api.md add the runner package to the package table and rewrite the `Toolset and runner` section around runner.New, runner.Runner and Runner.RunTurn, naming the root names as aliases; in docs/architecture.md update the shape, the package graph, the package table and the two data-flow sections that name runner.go, batch.go and Runner.run; in docs/guide.md make `Running tools without a model` start from runner.New and say that a tools-only program imports runner and not the root package"
+      ],
+      "touches": [
+        "runner/doc.go",
+        "runner/runner.go",
+        "runner/batch.go",
+        "runner/nested.go",
+        "runner/execguard.go",
+        "runner/runner_test.go",
+        "runner/batch_test.go",
+        "runner/nested_test.go",
+        "runner/execguard_test.go",
+        "runner/helpers_test.go",
+        "runner.go",
+        "batch.go",
+        "nested.go",
+        "execguard.go",
+        "agent.go",
+        "loop.go",
+        "runner_test.go",
+        "batch_test.go",
+        "nested_test.go",
+        "execguard_test.go",
+        "helpers_test.go",
+        "internal/testkit",
+        "docs/api.md",
+        "docs/architecture.md",
+        "docs/guide.md",
+        "docs/generated"
+      ],
+      "done_when": [
+        "`go list -deps ./runner` lists, of this module, only runner, core, guard, schema and internal packages, and no provider",
+        "`git diff --stat main -- examples cmd` is empty",
+        "every code snippet changed in docs/guide.md compiles against the new API"
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Serve MCP from the runner package and gate the tools-only packages in make check",
+      "criteria": [
+        "REQ-1.5",
+        "REQ-3"
+      ],
+      "steps": [
+        "Add internal/policy/toolsonly_test.go with the behaviours of REQ-3 and the three-source table of REQ-1.5 to mcpserve/server_test.go; confirm the dependency test fails on mcpserve, which still imports the root package",
+        "Change mcpserve.New to take a *runner.Runner from the runner package and remove mcpserve's import of the root package from its non-test code; update the package comment in mcpserve/doc.go and the comments that say agentkit.Runner; mcpserve/helpers_test.go builds its runners with runner.New, and only the table case that proves the alias imports the root package",
+        "Write the listing helper in the test: `go list -deps -json` for given packages in a given directory with CGO_ENABLED=1, decoded into a graph of import path to imports; a failed command or an empty listing is an error carrying the command, the directory and the output",
+        "Write the violations function over that graph: a breadth-first walk from each root that reports, for each forbidden package reached, the shortest chain from the root, as `ROOT depends on FORBIDDEN: ROOT -> … -> IMPORTER -> FORBIDDEN`; the forbidden paths are those of design decision 9 of the PRD, kept in one list with a comment giving the reason and citing ADR 10",
+        "Write the test that does not skip under -short: the listing and the violations check for ./runner, ./codemode, ./core, ./schema and ./guard in the repository root and for . in mcpserve, then `go build` of the same packages in both directories with CGO_ENABLED=0; and the table that proves the check finds a real violation, over the tools package (tree-sitter through outline) and the root package (provider/anthropic)",
+        "Extend the package comment of internal/policy to say it also holds the tools-only dependency gate and that this one runs under -short",
+        "Write docs/adr/10-keep-the-runner-and-the-output-buffer-free-of-cgo-and-providers.md: the context (what a tools-only program linked), the decision (the runner and output packages, the root aliases, RunTurn as the loop's entry, the forbidden list and the gate in make check as the one accepted import-graph test), and that it moves the runner out of the root package, further than PRD 02 and ADR 01 did",
+        "Run `make doc`; in docs/api.md give mcpserve.New its new parameter type; in docs/architecture.md say mcpserve imports runner and no longer the root, and link ADR 10; in docs/development.md describe the gate under the make check section: what it lists, what it forbids and how to read its failure line"
+      ],
+      "touches": [
+        "mcpserve/server.go",
+        "mcpserve/doc.go",
+        "mcpserve/helpers_test.go",
+        "mcpserve/server_test.go",
+        "mcpserve/call_test.go",
+        "internal/policy/toolsonly_test.go",
+        "internal/policy/builds_test.go",
+        "docs/adr/10-keep-the-runner-and-the-output-buffer-free-of-cgo-and-providers.md",
+        "docs/api.md",
+        "docs/architecture.md",
+        "docs/development.md",
+        "docs/generated"
+      ],
+      "done_when": [
+        "`go -C mcpserve list -deps .` lists no tree-sitter path, no provider package, no provider SDK and not the root package",
+        "`go test -short -count=1 ./internal/policy` passes and runs the new test, not skipping it",
+        "`go -C cmd/agentkit-tools test -short -count=1 ./...` passes with no edit to the command"
+      ]
+    }
+  ]
+}

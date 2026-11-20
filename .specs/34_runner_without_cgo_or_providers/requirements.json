@@ -1,0 +1,188 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
+  "spec_id": "34",
+  "spec_name": "runner_without_cgo_or_providers",
+  "schema_version": 3,
+  "requirements": [
+    {
+      "id": "REQ-1",
+      "title": "The runner in a package of its own",
+      "rationale": "A program that only runs tools links the package it imports whole, so the runner has to live where no provider and no cgo package is imported.",
+      "system": "runner package",
+      "criteria": [
+        {
+          "id": "REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "a program calls runner.New with a Toolset the runner can run",
+          "action": "validate it with the checks agentkit.NewRunner makes today, in the same order (every registered tool, the policy's resolution, every resolved tool, then the shell guard), copy its Tools, and return a *runner.Runner whose Call, Batch, Tools and Reachable do what agentkit.Runner's do today, code mode and nested calls included",
+          "contract": "(*runner.Runner, nil); Call returns one core.ToolResult and Batch one per call in call order, with the error codes unknown_tool, invalid_arguments, blocked_by_policy, panic, handler_error and aborted and the call id \"call_\" plus 16 lowercase hex characters, as today",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "tools built with internal/testkit and the package's own helpers; no agent and no provider"
+            ],
+            "pseudocode": "the tests of runner_test.go, batch_test.go and nested_test.go that drive only a Runner move to runner/runner_test.go, runner/batch_test.go and runner/nested_test.go and build it with runner.New: TestNewRunner_KeepsThePolicysToolsInOrderAndCopiesThem, TestCall_RunsOneCallAsABatchOfOne, TestCall_AnswersEveryOutcomeWithACode (table over unknown_tool, invalid_arguments, blocked_by_policy, panic, handler_error, aborted), TestBatch_UsesTheCallsIDsVerbatimAndRunsNothingForNoCalls, TestRunner_EventsSink, TestRunner_IsSafeForConcurrentUse, TestRunner_RunsCodeModeAndTheToolsItBinds, the TestBatch_* tests and the TestCallNested_* tests that need no agent run; each asserts what it asserts today, unchanged"
+          }
+        },
+        {
+          "id": "REQ-1.2",
+          "pattern": "unwanted",
+          "condition": "the Toolset holds a tool with neither or both of Handler and Execute, a tool that reaches itself directly or through others, a Terminating tool behind a wrapper, or a shell tool reachable with a nil Guard",
+          "action": "refuse it at the first failing check, with the error and the error text agentkit.NewRunner returns today, from runner.New, agentkit.NewRunner and agentkit.New alike",
+          "contract": "a nil runner and an error whose text is, by case: `agentkit: tool \"NAME\" has neither Handler nor Execute`; `agentkit: tool \"NAME\" sets both Handler and Execute; exactly one`; `agentkit: reachable tools cycle detected: a -> b -> a`; `agentkit: terminating tool \"NAME\" cannot be reached through wrapper \"WRAPPER\"`; an error that wraps core.ErrUnguardedExecute and ends ` (tool \"NAME\")` or ` (wrapper \"WRAPPER\" reached shell tool \"NAME\")`",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "extends TestNewRunner_RefusesAToolsetItCannotRunAndNewAgrees in runner_test.go (root package) and TestNew_RefusesAShellToolNoGuardAuthorizesBeforeAnyRequest in execguard_test.go: for each row of their tables call runner.New(ts), agentkit.NewRunner(ts) and agentkit.New(Config{Toolset: ts}); assert each returns a nil value and err.Error() == row.want for all three; for the shell rows assert errors.Is(err, core.ErrUnguardedExecute) for all three"
+          }
+        },
+        {
+          "id": "REQ-1.3",
+          "pattern": "ubiquitous",
+          "system": "root package",
+          "action": "for any Toolset, make agentkit.Runner and agentkit.Toolset the same types as runner.Runner and runner.Toolset, so that a value of one is a value of the other with no conversion: agentkit.NewRunner returns what runner.New returns, Config.Toolset takes a runner.Toolset, and Agent.Runner returns the *runner.Runner the agent runs its calls through, the same pointer on every call",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an agent built with agentkit.New over provider/faux"
+            ],
+            "pseudocode": "in runner_test.go (root package), extending TestNewRunner_KeepsThePolicysToolsInOrderAndCopiesThem: ts := runner.Toolset{Tools: ...}; var r *agentkit.Runner; r, err = runner.New(ts); a := agentkit.New(Config{Client: faux, Toolset: ts}); var ar *runner.Runner = a.Runner(); assert ar == a.Runner(); assert names(r.Tools()) == names(ar.Tools()); r2, _ := agentkit.NewRunner(ts); assert r2.Call(ctx, \"echo\", in).Text == r.Call(ctx, \"echo\", in).Text"
+          }
+        },
+        {
+          "id": "REQ-1.4",
+          "pattern": "event_driven",
+          "condition": "a caller, the agent loop among them, calls Runner.RunTurn with a context, an event sink, the assistant message that made the calls, the calls and the turn count",
+          "action": "run the calls through the pipeline Batch uses, deliver every execution event of the batch to emit and none to Toolset.Events, give the Guard the assistant message and the turn count, attach no usage reporter of its own, and return a runner.Outcome holding one transcript message and one result per call in call order and the OR of the calls' final terminate votes",
+          "contract": "runner.Outcome{Messages []core.ToolResultMessage, Results []core.ToolResult, Terminate bool}; Messages are the messages as After left them; a nil sink discards the events and a panic in the sink drops the event being delivered; zero calls return an Outcome with empty slices and emit nothing",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a runner over a voting tool, a tool whose After hook edits its message, and a recording Guard"
+            ],
+            "pseudocode": "in runner/batch_test.go: out := r.RunTurn(ctx, log.add, assistant, []core.ToolUseBlock{a, b}, 3); assert len(out.Messages) == 2 and len(out.Results) == 2 in call order; assert out.Terminate when one call voted; assert the Guard saw Assistant == assistant and TurnCount == 3; assert log holds the start, end and result events and the Toolset.Events sink received none; assert the After hook's edit is in out.Messages and not in out.Results; r.RunTurn(ctx, nil, nil, calls, 0) does not panic. The agent-level tests that prove the loop still uses it stay in the root package and pass unchanged: TestRun_AnyVoteInTheBatchEndsTheRunOnceTheBatchIsDone, TestCallNested_ReportsUsageToTheAgentAtOnce, TestRunner_PassesTheCallersUsageReporterAndLeavesTheAgentsUsage"
+          }
+        },
+        {
+          "id": "REQ-1.5",
+          "pattern": "event_driven",
+          "condition": "a program calls mcpserve.New with a *runner.Runner, whether it came from runner.New, from agentkit.NewRunner or from Agent.Runner",
+          "system": "mcpserve",
+          "action": "build the Server over the runner's tools as today, with mcpserve importing the runner package and not the root package",
+          "contract": "(*mcpserve.Server, nil), one MCP tool per tool of the runner's Tools(); a nil runner is still the error `mcpserve: Runner is nil`",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the in-memory MCP session of mcpserve/helpers_test.go"
+            ],
+            "pseudocode": "in mcpserve/server_test.go, extending TestASessionSeesTheServerInfoAndTheToolsAsTheyWereAtNew: runnerOf in mcpserve/helpers_test.go builds with runner.New; a table over the three sources {runner.New(ts), agentkit.NewRunner(ts), agentkit.New(cfg).Runner()}: srv, err := mcpserve.New(r, Options{}); assert err == nil; assert the session lists the same tool names for each. TestNewRefusesANilRunnerOrAToolWhoseSchemaCannotBeServed passes unchanged"
+          }
+        }
+      ]
+    },
+    {
+      "id": "REQ-2",
+      "title": "The accumulator outside tools",
+      "rationale": "Code mode needs the bounded output buffer and nothing else of tools, and tools brings tree-sitter with it.",
+      "system": "output package",
+      "criteria": [
+        {
+          "id": "REQ-2.1",
+          "pattern": "ubiquitous",
+          "action": "provide the accumulator from a package that imports only the standard library, doing what tools.Accumulator does today: keep the head, the tail or both halves of at most Cap bytes by its TruncateMode, count every byte written, render the kept window around the marker `[N bytes elided of T total.]`, or `[N bytes elided of T total. Full output: PATH]` when it spilled, and write the complete output to a file `SpillPrefix-*.log` in SpillDir, creating the directory with mode 0700 and the file at the first write and never before",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "TestTheAccumulatorKeepsTheEndItsModeNames, TestTheAccumulatorIsBoundedRegardlessOfVolume and TestTheAccumulatorSpillsTheCompleteOutputLazily move from tools/accumulator_test.go to output/accumulator_test.go and assert what they assert today against output.NewAccumulator, output.TruncateHead, output.TruncateTail and output.TruncateMiddle"
+          }
+        },
+        {
+          "id": "REQ-2.2",
+          "pattern": "ubiquitous",
+          "system": "tools package",
+          "action": "for any value of them, keep tools.Accumulator, tools.TruncateMode and tools.TruncatedBy as the same types as output.Accumulator, output.TruncateMode and output.TruncatedBy, tools.NewAccumulator doing what output.NewAccumulator does, and tools.TruncateHead, TruncateTail, TruncateMiddle, TruncatedByLines and TruncatedByBytes as the same constants, with a capacity of zero or less meaning tools.DefaultByteLimit",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in tools/limits_test.go: var a *tools.Accumulator = output.NewAccumulator(0, tools.TruncateTail); assert a.Cap == tools.DefaultByteLimit; var m output.TruncateMode = tools.TruncateMiddle; b := tools.NewAccumulator(4, m); write \"0123456789\" to b and to output.NewAccumulator(4, output.TruncateMiddle); assert both String() equal; var by output.TruncatedBy = tools.TruncatedByBytes; assert by == output.TruncatedByBytes"
+          }
+        },
+        {
+          "id": "REQ-2.3",
+          "pattern": "ubiquitous",
+          "action": "for any tool that bounds its output through the accumulator (the shell tools through tools.Exec, code_mode, code_search), leave the truncation marker, the spill file with its directory and name, and the byte counts in the result and its metadata as they are today, with codemode importing output and no longer tools",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a temporary spill directory"
+            ],
+            "pseudocode": "the existing tests pass with their assertions unchanged: TestTheRetainedWindowFollowsMaxBytesAndKeepHead and TestTheLogFile in tools/exec_test.go; TestTruncatedOutputIsSpilledUnlessDisabled in codemode/output_test.go; TestASpilledResultReachesTheTranscriptWithItsMetadata in codemode/codemode_test.go; TestAResultOverTheByteLimitIsCutToIt and TestAResultAtTheByteLimitIsNotCutMidLine in codesearch/search_test.go; the golden files of tools are not regenerated"
+          }
+        },
+        {
+          "id": "REQ-2.4",
+          "pattern": "unwanted",
+          "condition": "the spill directory cannot be created, the spill file cannot be created, or a write to the spill file or to a file installed with UseFile fails",
+          "action": "keep the bounded window, stop writing to the file, and hold the first error for FileError, so that tools.Exec still reports it",
+          "contract": "FileError() returns the first such error and nil otherwise; String() returns the kept window with the marker; a spill that never opened leaves SpillPath() empty and the marker without a path; tools.Exec joins `tools: writing PATH: ERR` into its IOErr, PATH being `spill` when there is no path",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in output/accumulator_test.go, the second half of TestTheAccumulatorSpillsTheCompleteOutputLazily: SpillDir under a regular file; write \"0123456789\" with Cap 4 and TruncateTail; assert FileError() != nil and String() == \"[6 bytes elided of 10 total.]\\n6789\"; a table case with a spill writer that fails on its second write, through a seam private to the package. In tools/exec_test.go, TestAByteMovingFailureIsReportedInIOErrAndStopsNothing keeps its log case with a failing writer handed to UseFile and asserts errors.Is(res.IOErr, sentinel) and the text `tools: writing <log path>: disk full`"
+          }
+        }
+      ]
+    },
+    {
+      "id": "REQ-3",
+      "title": "Keeping it so",
+      "rationale": "The import graph is the product here: one new import in any of these packages undoes the work and nothing else would notice.",
+      "system": "dependency check",
+      "criteria": [
+        {
+          "id": "REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "`make check` runs the short tests of the root module",
+          "action": "list, with cgo enabled, every package that runner, codemode, core, schema and guard of the root module and mcpserve in its own module import directly or transitively, and pass only when none of them is forbidden: a path containing `tree-sitter`, github.com/agent-fox-dev/agentkit-go itself, github.com/agent-fox-dev/agentkit-go/provider or a package under it, or a package of github.com/anthropics/anthropic-sdk-go, github.com/OpenRouterTeam/go-sdk, github.com/ollama/ollama, github.com/aws/ or cloud.google.com/",
+          "contract": "the test passes; `go test -short ./internal/policy` exits 0",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the repository's own modules and the Go toolchain; no network"
+            ],
+            "pseudocode": "in internal/policy/toolsonly_test.go, a test that does not skip under -short: for the root module run `go list -deps -json ./runner ./codemode ./core ./schema ./guard` with CGO_ENABLED=1 in testutil.RepoRoot(t), and `go list -deps -json .` in mcpserve; build the import graph from each package's ImportPath and Imports; assert violations(graph, roots) is empty, reporting each one with t.Errorf"
+          }
+        },
+        {
+          "id": "REQ-3.2",
+          "pattern": "unwanted",
+          "condition": "one of those packages comes to import a forbidden package, directly or through others",
+          "action": "fail, naming the package of the list it started from, the forbidden package, and the chain of imports between them, whose last link is the package that brought it in",
+          "contract": "the test fails with one line per violation of the form `ROOT depends on FORBIDDEN: ROOT -> … -> IMPORTER -> FORBIDDEN`, the shortest chain, and `go test` exits non-zero",
+          "check": {
+            "kind": "integration",
+            "pseudocode": "in internal/policy/toolsonly_test.go, a table over real packages that are known to break the rule, run through the same listing and the same violations function: {root: github.com/agent-fox-dev/agentkit-go/tools, forbidden contains \"tree-sitter\", brought in by github.com/agent-fox-dev/agentkit-go/outline}, {root: github.com/agent-fox-dev/agentkit-go, forbidden github.com/agent-fox-dev/agentkit-go/provider/anthropic, brought in by github.com/agent-fox-dev/agentkit-go}; assert one violation per forbidden package reached, that its message contains the root, the forbidden path and ` -> `, and that the link before the forbidden package is the expected importer"
+          }
+        },
+        {
+          "id": "REQ-3.3",
+          "pattern": "event_driven",
+          "condition": "`make check` runs the short tests of the root module",
+          "action": "build the same packages for the host with CGO_ENABLED=0, in the root module and in mcpserve, and fail with the compiler's output when a build fails",
+          "contract": "both builds exit 0 and write no binary into the source tree",
+          "check": {
+            "kind": "integration",
+            "pseudocode": "in the same test of internal/policy/toolsonly_test.go: run `go build ./runner ./codemode ./core ./schema ./guard` in the repository root and `go build .` in mcpserve, each with CGO_ENABLED=0 added to the environment; assert each exits 0, else t.Errorf with the command, the directory and its combined output"
+          }
+        },
+        {
+          "id": "REQ-3.4",
+          "pattern": "unwanted",
+          "condition": "`go list` fails or lists nothing for one of the packages, as when a package of the list was renamed or removed",
+          "action": "fail, naming the command, its directory and its output, and report no package as clean",
+          "contract": "the test fails with `go list … in DIR: ERR` followed by the command's output; an empty listing is a failure, never a pass",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "in internal/policy/toolsonly_test.go: call the listing helper with a package path that does not exist (./nosuchpackage) in the repository root; assert it returns an error whose text contains the path and go's own message, and no graph"
+          }
+        }
+      ]
+    }
+  ]
+}
