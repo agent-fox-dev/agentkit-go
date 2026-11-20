@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/core"
+	"github.com/agent-fox-dev/agentkit-go/output"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 	"github.com/agent-fox-dev/agentkit-go/tools"
 
@@ -789,12 +790,12 @@ func (idx *Index) buildResult(files []searchResultFile, maxFiles, totalFiles int
 	if bytesTruncated {
 		r.Metadata = &core.ToolMetadata{
 			Truncated:   true,
-			TruncatedBy: string(tools.TruncatedByBytes),
+			TruncatedBy: string(output.TruncatedByBytes),
 		}
 	} else if moreThanMax {
 		r.Metadata = &core.ToolMetadata{
 			Truncated:   true,
-			TruncatedBy: string(tools.TruncatedByLines),
+			TruncatedBy: string(output.TruncatedByLines),
 		}
 	}
 

@@ -452,25 +452,21 @@ func (f *failingFile) Close() error { return nil }
 func TestAByteMovingFailureIsReportedInIOErrAndStopsNothing(t *testing.T) {
 	needPOSIX(t)
 	sentinel := errors.New("disk full")
-	for _, dest := range []string{"log", "spill"} {
-		t.Run(dest, func(t *testing.T) {
-			ff := &failingFile{err: sentinel}
-			orig := wrapExecFile
-			wrapExecFile = func(*os.File) fileWriter { return ff }
-			t.Cleanup(func() { wrapExecFile = orig })
-			opts := ExecOptions{MaxBytes: 4096, LogPath: filepath.Join(t.TempDir(), "run.log")}
-			if dest == "spill" {
-				opts = ExecOptions{MaxBytes: 4096, SpillDir: t.TempDir()}
-			}
-			// 200 KB arrives in several reads, so there are writes after the failure.
-			res, err := RunArgv(context.Background(), []string{"sh", "-c", "head -c 200000 /dev/zero; exit 3"}, opts)
-			if err != nil || !errors.Is(res.IOErr, sentinel) || res.Outcome != OutcomeExit || res.ExitCode != 3 || res.TotalBytes != 200000 {
-				t.Fatalf("%q exit %d total %d IOErr %v err %v", res.Outcome, res.ExitCode, res.TotalBytes, res.IOErr, err)
-			}
-			if n := ff.writes.Load(); n != 2 {
-				t.Fatalf("%d writes reached the file; it must stop at the first failure", n)
-			}
-		})
+	ff := &failingFile{err: sentinel}
+	orig := wrapExecFile
+	wrapExecFile = func(*os.File) fileWriter { return ff }
+	t.Cleanup(func() { wrapExecFile = orig })
+	logPath := filepath.Join(t.TempDir(), "run.log")
+	// 200 KB arrives in several reads, so there are writes after the failure.
+	res, err := RunArgv(context.Background(), []string{"sh", "-c", "head -c 200000 /dev/zero; exit 3"}, ExecOptions{MaxBytes: 4096, LogPath: logPath})
+	if err != nil || !errors.Is(res.IOErr, sentinel) || res.Outcome != OutcomeExit || res.ExitCode != 3 || res.TotalBytes != 200000 {
+		t.Fatalf("%q exit %d total %d IOErr %v err %v", res.Outcome, res.ExitCode, res.TotalBytes, res.IOErr, err)
+	}
+	if !strings.Contains(res.IOErr.Error(), "tools: writing ") || !strings.Contains(res.IOErr.Error(), "run.log: disk full") {
+		t.Fatalf("IOErr %q does not name the log file and the failure", res.IOErr)
+	}
+	if n := ff.writes.Load(); n != 2 {
+		t.Fatalf("%d writes reached the file; it must stop at the first failure", n)
 	}
 	if runtime.GOOS == "linux" {
 		res, err := RunArgv(context.Background(), []string{"sh", "-c", "echo x; exit 3"}, ExecOptions{LogPath: "/dev/full"})

@@ -3,11 +3,143 @@
   "spec_id": "34",
   "spec_name": "runner_without_cgo_or_providers",
   "schema_version": 3,
-  "updated_at": "",
+  "updated_at": "2026-11-20T18:42:36Z",
   "tasks": [
     {
       "id": 1,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-2.1",
+          "tests": [
+            {
+              "test": "./output:TestTheAccumulatorKeepsTheEndItsModeNames",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            },
+            {
+              "test": "./output:TestTheAccumulatorIsBoundedRegardlessOfVolume",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            },
+            {
+              "test": "./output:TestTheAccumulatorSpillsTheCompleteOutputLazily",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.2",
+          "tests": [
+            {
+              "test": "./tools:TestTheAccumulatorNamesAreTheOutputPackagesTypes",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.3",
+          "tests": [
+            {
+              "test": "./tools:TestTheRetainedWindowFollowsMaxBytesAndKeepHead",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            },
+            {
+              "test": "./tools:TestTheLogFile",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            },
+            {
+              "test": "./codemode:TestTruncatedOutputIsSpilledUnlessDisabled",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            },
+            {
+              "test": "./codemode:TestASpilledResultReachesTheTranscriptWithItsMetadata",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.4",
+          "tests": [
+            {
+              "test": "./output:TestTheAccumulatorKeepsItsWindowWhenItsFileStopsTakingWrites",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            },
+            {
+              "test": "./tools:TestAByteMovingFailureIsReportedInIOErrAndStopsNothing",
+              "failed": {
+                "at": "2026-11-20T18:40:32Z",
+                "tree": "081dc9946ad80055c695fd553345188ded573377"
+              },
+              "passed": {
+                "at": "2026-11-20T18:42:33Z",
+                "tree": "0d602f7234a618c068b8ac8a66e6247e5568c728"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 2,
