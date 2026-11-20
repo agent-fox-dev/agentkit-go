@@ -1,0 +1,182 @@
+package runner // import "github.com/agent-fox-dev/agentkit-go/runner"
+
+Package runner runs tool calls with no model. New turns a Toolset — the tools,
+the policy that selects among them, the guard, the after-interceptor and the
+event sink — into a Runner, whose Call and Batch run calls through the pipeline
+an agent run uses: argument preparation, the guard, the handler with a nested
+caller attached when the tool reaches other tools, the after-interceptor and the
+execution events. Code mode runs through it like any other tool.
+
+It is where a tools-only program starts: one that serves or calls tools and
+never calls a model. The package imports core and guard and nothing else of
+AgentKit, so such a program links neither a model provider's SDK nor the
+source tools' tree-sitter grammars. Package agentkit builds its Agent on a
+Runner and keeps Runner, Toolset and NewRunner as names for what is here
+(docs/adr/10-keep-the-runner-and-the-output-buffer-free-of-cgo-and-providers.md).
+
+TYPES
+
+type Outcome struct {
+	// Messages are the ToolResultMessages as After left them: what an agent
+	// run records in its transcript.
+	Messages []core.ToolResultMessage
+	// Results are the calls' core.ToolResults, with Terminate set to each
+	// call's final vote. After's in-place edits to a message do not reach
+	// them.
+	Results []core.ToolResult
+	// Terminate is the OR of the final votes.
+	Terminate bool
+}
+    Outcome is what one batch produced. The two slices hold one entry per call,
+    in call order.
+
+type Runner struct {
+	// Has unexported fields.
+}
+    Runner runs tool calls with no model: Call runs one and Batch runs several,
+    each through the steps a model's calls go through in an agent run — start
+    event, tool lookup, argument preparation, Guard, the handler with a nested
+    caller attached when the tool reaches other tools, After, end event.
+    That includes code mode: a code_mode tool called through a Runner runs its
+    script and the script's calls to the tools it binds.
+
+    A Runner is immutable after New returns, and safe for concurrent use by
+    any number of goroutines. Only a *Runner from New or from an agent's Runner
+    method is supported: the zero Runner has no validated tool set to stand on.
+
+func New(ts Toolset) (*Runner, error)
+    New validates ts and returns a Runner over it. It refuses a toolset that
+    could not be run safely: a tool with neither or both of Handler and Execute,
+    an invalid tool hierarchy, or a shell tool reachable with no Guard to
+    authorize it. The checks run in this order — every registered tool,
+    the policy's resolution, every resolved tool, then the shell guard — and
+    the first failure is returned with a nil Runner. agentkit.NewRunner is this
+    function, and agentkit.New makes the same checks by calling it, so the three
+    refuse exactly the same toolsets with the same errors. The error texts keep
+    the "agentkit:" prefix they have always had.
+
+    New copies ts.Tools, so a caller who changes its own slice afterwards does
+    not change the runner.
+
+func (r *Runner) Batch(ctx context.Context, calls ...core.ToolUseBlock) []core.ToolResult
+    Batch runs calls with the rules an agent applies to a turn's calls and
+    returns one result per call, in call order. A ToolExecutionStartEvent is
+    emitted for each call in order during a sequential prepare phase, which also
+    prepares arguments and runs Guard in call order; the abort decision is made
+    once, after prepare and before any handler starts, and a context that is
+    done aborts every call not yet finalized; handlers then run concurrently,
+    one goroutine per call, or in call order when at most one runs or a
+    Sequential tool is among the calls; and finalization (After, the end event,
+    the result event) is serialized under a mutex scoped to the batch.
+
+    Call ids are used verbatim, even when empty. Guard sees Batch = calls, Index
+    = the call's position, Assistant nil and TurnCount 0. Zero calls return an
+    empty slice and emit nothing.
+
+    A result's Terminate is the call's final vote: the handler's, unless After
+    returned a non-nil Terminate, which replaces it; true for a wrapper whose
+    nested call an interceptor terminated; and, for a call Guard blocked,
+    the guard decision's. Batch acts on no vote — ending a run is the caller's.
+    The text of a result equals the text of the ToolResultMessage the same
+    call produces in a run, unless After edited that message in place: the edit
+    reaches the message the ToolResultEvent carries, and not the result.
+
+func (r *Runner) Call(ctx context.Context, name string, input json.RawMessage) core.ToolResult
+    Call runs one tool call, as a batch of one, and returns its result. Every
+    outcome is a result: Call returns no Go error and does not panic.
+
+    The call's id is "call_" and 16 lowercase hex characters. An empty or
+    whitespace-only input means {}. The result's Error is a code:
+
+      - unknown_tool, for a name that is not in Tools, with the text a run
+        produces. Neither Guard nor a handler runs;
+      - invalid_arguments, for input that is not a JSON object, arguments that
+        fail the tool's schema, or arguments Guard returned that JSON cannot
+        carry;
+      - blocked_by_policy, for a call Guard blocked, with its reason ("blocked
+        by policy" when it gave none);
+      - panic and handler_error, for a handler that panicked or returned an
+        error;
+      - aborted ("Operation aborted"), for a context that is done before the
+        handler would start.
+
+    Guard sees ToolName, ToolUseID, Tool, Arguments and RawInput as in a run,
+    with Batch holding the one call, Index 0, Assistant nil, TurnCount 0 and no
+    parent. A nil Assistant is how a guard tells that no model made the call.
+    The result's Terminate is the call's final vote (see Batch).
+
+func (r *Runner) Reachable() []core.Tool
+    Reachable returns every tool the runner can call: the tools the policy
+    resolved, and everything those reach through wrappers. A check that a
+    toolset is read-only, say, has to look at this set rather than at the
+    top-level tools.
+
+func (r *Runner) RunTurn(ctx context.Context, emit func(core.Event), assistant *core.AssistantMessage, calls []core.ToolUseBlock, turnCount int) Outcome
+    RunTurn runs one batch of tool calls a model made in one turn: what an agent
+    loop calls for each assistant message that carries tool calls, and what
+    Batch calls with the Toolset's sink, no assistant and turn 0. A program that
+    writes its own model loop over a Runner calls it the same way.
+
+    It is three phases with distinct concurrency rules, and each phase is where
+    it is because the natural Go answer is wrong:
+
+     1. Prepare — strictly SEQUENTIAL, on the calling goroutine. Events,
+        argument preparation, validation and the authorization interceptor.
+        A blocked call is finalized inline here, so the policy observes a
+        deterministic order even though the handlers race.
+     2. Execute — parallel. ONLY the handler body runs outside the lock.
+        One goroutine per call, joined by sync.WaitGroup — never errgroup,
+        which returns the first error and cancels the siblings, when every call
+        in a batch needs a result.
+     3. Finalize — serialized under ONE BATCH-SCOPED mutex with a func-scoped
+        deferred unlock, so a panicking interceptor or event listener cannot
+        leak it and deadlock the remaining tool goroutines at the join.
+
+    Results are written by SLOT INDEX into pre-sized slices, so their order is
+    independent of completion order.
+
+    emit receives every execution event of the batch, from the goroutines that
+    run the calls, and holds no lock of the runner's while it does. A nil emit
+    discards the events, and a panic in emit drops the event being delivered.
+    assistant and turnCount are the guard's context for a call a model made;
+    a runner's own Call and Batch pass nil and 0. RunTurn attaches no usage
+    reporter: a context that carries one passes it through to the handlers,
+    and the agent loop attaches its own.
+
+    The batch's termination vote is true when any call that ran voted Terminate,
+    or the Guard blocked a call and voted to terminate. The vote is read only
+    after every call in the batch has finished, so a terminating call never cuts
+    its siblings short.
+
+func (r *Runner) Tools() []core.Tool
+    Tools returns the resolved tool set in policy order: what a model, an MCP
+    server or a prompt should see. Each call returns a fresh slice.
+
+type Toolset struct {
+	// Tools are the tools registered; Policy selects from them.
+	Tools []core.Tool
+	// Policy selects from Tools, and from what they reach through wrappers.
+	Policy core.ToolPolicy
+	// Guard authorizes every call. It is required when a shell tool is
+	// reachable.
+	Guard core.BeforeToolCall
+	// After sees every finished call, and may vote to end an agent run.
+	After core.AfterToolCall
+	// Events receives the execution events of the calls a Runner runs outside
+	// an agent run; a nil Events discards them. It may be called from several
+	// goroutines at once, so it must be safe for concurrent use, and it should
+	// not block: start events are emitted while a batch is prepared, and end
+	// and result events while a call is finalized, so a sink that waits for
+	// another call of the same batch to finish never returns. A sink may itself
+	// call Runner.Call. (*core.EventStream).Push is a
+	// conforming sink. During an agent run the run's stream receives the events
+	// of the run's calls and Events is not called for them.
+	Events func(core.Event)
+}
+    Toolset is the tool side of an agent: the tools, the policy that selects
+    among them, the guard that authorizes every call, the interceptor that
+    sees every result, and the sink for execution events. It holds no model,
+    so New builds from one what runs tool calls with no Agent, and agentkit's
+    Config.Toolset gives an Agent the same set. The zero Toolset has no tools,
+    which is valid.
+

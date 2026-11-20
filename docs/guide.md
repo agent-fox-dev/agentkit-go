@@ -37,8 +37,8 @@ you can stop at any layer and use it on its own:
 |---|---|---|
 | 1. Open a workspace | `workspace` | A project directory with its containment boundary and ignore rules. |
 | 2. Build tools for it | `tools` | The built-in file, search, navigation and shell tools. Add your own, MCP tools or code mode. |
-| 3. Describe the tool side | `agentkit.Toolset` | The tools, a policy that selects among them, the shell guard and an optional after-call hook. |
-| 4. Run tool calls | `agentkit.Runner` | Runs calls through validation, the guard and events — with or without a model. |
+| 3. Describe the tool side | `runner.Toolset` | The tools, a policy that selects among them, the shell guard and an optional after-call hook. |
+| 4. Run tool calls | `runner.Runner` | Runs calls through validation, the guard and events — with or without a model. |
 | 5. Drive a model | `agentkit.New` | The agent loop: sends the conversation to a provider, runs the tool calls it asks for, repeats until done. |
 
 The runner has two consumers besides your own code: the agent loop, and
@@ -359,18 +359,27 @@ size-capped, and calls are counted against a per-session limit
 
 ## Running tools without a model
 
-The agent loop is optional. `agentkit.NewRunner` turns a `Toolset` into a
-`Runner` that runs tool calls directly, through the same validation, guard
-and events a model's calls go through:
+The agent loop is optional. `runner.New` turns a `Toolset` into a `Runner`
+that runs tool calls directly, through the same validation, guard and events
+a model's calls go through:
 
 ```go
-runner, err := agentkit.NewRunner(agentkit.Toolset{Tools: ts, Guard: guard.Allow("go")})
+r, err := runner.New(runner.Toolset{Tools: ts, Guard: guard.Allow("go")})
 if err != nil {
 	return err
 }
-res := runner.Call(ctx, "find_symbol", json.RawMessage(`{"name":"Runner"}`))
+res := r.Call(ctx, "find_symbol", json.RawMessage(`{"name":"Runner"}`))
 fmt.Println(res.LLMText()) // what a model would read; res.Data holds the structured result
 ```
+
+Package `runner` (`github.com/agent-fox-dev/agentkit-go/runner`) is where a
+tools-only program starts: one that runs or serves tools and never calls a
+model. It imports none of the model providers, so such a program does not
+link their SDKs, and together with `codemode` and `mcpserve` it builds
+without cgo and without the tree-sitter grammars; those come with `tools`,
+when you add the source tools. `agentkit.Toolset`, `agentkit.Runner` and
+`agentkit.NewRunner` are the same types and the same constructor under the
+root package's names, so code written against them keeps working.
 
 Use it in tests, scripts, your own agent loop, or another harness. A failed
 call — unknown tool, bad arguments, a guard block — is a result with `OK`
@@ -386,7 +395,7 @@ AgentKit's tools and code mode while you keep the guard and policy on your
 side:
 
 ```go
-srv, err := mcpserve.New(runner, mcpserve.Options{Instructions: "The tools work on this checkout."})
+srv, err := mcpserve.New(r, mcpserve.Options{Instructions: "The tools work on this checkout."})
 if err != nil {
 	return err
 }
