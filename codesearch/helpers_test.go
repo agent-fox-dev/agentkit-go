@@ -4,8 +4,10 @@ package codesearch
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -206,4 +208,41 @@ func gone(path string) bool {
 func treeSitter() bool {
 	f, _ := outline.Outline(context.Background(), "/x/a.py", []byte("def f():\n    pass\n"), outline.Options{})
 	return f.Backend == outline.BackendTreeSitter
+}
+
+// needleFiles is a small tree whose Go files mention needle.
+var needleFiles = map[string]string{
+	"a.go": "package p\n\n// Needle mentions needle.\nfunc Needle() int { return 1 }\n",
+	"b.go": "package p\n\n// Other does not.\nfunc Other() int { return 2 }\n",
+	"c.go": "package p\n\n// Third mentions needle too.\nfunc Third() int { return 3 }\n",
+}
+
+// storeOf is the per-workspace store directory of ws under indexDir.
+func storeOf(ws *workspace.Workspace, indexDir string) string {
+	sum := sha256.Sum256([]byte(ws.Root()))
+	return filepath.Join(indexDir, fmt.Sprintf("agentkit-codesearch-%x", sum[:]))
+}
+
+// readManifest decodes the manifest of a store directory, or fails the test.
+func readManifest(t *testing.T, store string) map[string]any {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(store, "manifest.json"))
+	if err != nil {
+		t.Fatalf("reading the manifest: %v", err)
+	}
+	return testutil.Object(t, b)
+}
+
+// treeOf is every path under dir, relative and sorted.
+func treeOf(t *testing.T, dir string) []string {
+	t.Helper()
+	var out []string
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && p != dir {
+			rel, _ := filepath.Rel(dir, p)
+			out = append(out, rel)
+		}
+		return nil
+	})
+	return out
 }

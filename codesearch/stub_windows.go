@@ -17,6 +17,7 @@ type Options struct {
 	MaxBytes     int64
 	MaxBuildTime time.Duration
 	TempDir      string
+	IndexDir     string
 }
 
 // Index is the codesearch index stub for Windows. It implements tools.Index

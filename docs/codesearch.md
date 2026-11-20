@@ -11,6 +11,7 @@ in the configuration reference.
 - [Shape](#shape)
 - [Why it exists: the go/no-go gate](#why-it-exists-the-gono-go-gate)
 - [Differences from `search_files`](#differences-from-search_files)
+- [The stored index](#the-stored-index)
 - [Design decisions](#design-decisions)
 - [Test goldens](#test-goldens)
 
@@ -61,6 +62,66 @@ are not parameters and were not tuned after the data was seen.
 | Encoding | A byte-order mark is honoured: UTF-8 BOM stripped, UTF-16 transcoded | Bytes as stored |
 | Result grouping | By file, match order | By file, best chunks first |
 | Exhaustiveness | All matches up to cap | Ranked subset |
+
+## The stored index
+
+By default the index lives for one process: its shards are in a run directory
+under `Options.TempDir`, and `Close` deletes it. `Options.IndexDir` keeps it on
+disk instead, so a later process on the same workspace reuses it. The
+`agentkit-tools` command sets it from `--index-dir` or `AGENTKIT_INDEX_DIR`
+([cli.md](cli.md#flags)); the package itself reads no environment variable.
+
+**Where it lives.** One `IndexDir` holds the indexes of any number of
+workspaces, each in `IndexDir/agentkit-codesearch-<sha256 of the workspace
+root>/`:
+
+| Entry | Holds |
+|---|---|
+| `manifest.json` | The root, the format version (`1`), whether the index is partial and why, and the name of the current index directory. |
+| `index-<id>/` | Copies of the shards, and `state.json`: the indexed files, their outlines, each file's size, modification time, indexing time and content hash, the build statistics, and each shard's size and SHA-256. |
+| `lock` | The lock one process at a time holds while it loads or builds and stores. |
+
+`IndexDir` must lie outside the workspace, after resolving the symbolic links
+of its existing parts: `New` refuses one that is the root or inside it,
+otherwise the walk would index the shards.
+
+**Storing.** A completed build, and the rebuild that more than five percent
+of dirty files triggers, are written under a temporary name
+(`index-<id>.tmp`), renamed into place, and only then named by a new
+`manifest.json`, itself replaced by a rename; the index directories it no
+longer names are removed. A reader therefore follows a manifest to a complete
+index or to none. A store directory that cannot be created or written stores
+nothing, and the process keeps its run directory as it would without
+`IndexDir`. Changes a process finds by revalidation are not written back:
+only a build or a rebuild replaces the stored index.
+
+**Loading.** The first query (or `Symbols`, which never builds) of an index
+with nothing built loads the stored index when its manifest names this root
+and the current format version and it is not partial. The shards are copied
+into the process's own run directory and checked against the sizes and
+SHA-256 sums `state.json` records, so a store replaced by another process
+never deletes a file this one searches. The loaded index counts no build and
+is revalidated as a whole before it answers: files whose size or
+modification time changed, new files and deleted files are picked up, and a
+file indexed within the 2-second timestamp granule of its last write is
+compared by content. The content hash is the first eight bytes of the
+content's SHA-256, so it compares in any process. A store that is missing,
+names another root or another format version, is partial, or does not read
+back is built anew and replaced, and the caller sees the normal result.
+
+**Two processes at once.** The `lock` file carries an advisory `flock`, which
+the kernel releases when its holder exits, however it exits. A second process
+waits for it, abandonably with its context, up to 1.25 × `MaxBuildTime` plus
+5 seconds (the longest a build runs, and a margin for its store), then loads
+what the first stored. Past that bound it builds for itself in its own run
+directory and stores nothing. The build's wall-time bound starts after the
+wait. The lock is not available where zoekt is not ([the Windows
+stub](#the-windows-stub)).
+
+**Partial builds.** A build stopped by `MaxFiles`, `MaxBytes` or
+`MaxBuildTime` stores its index marked partial; the process that built it
+serves it with the partial marker, and the next process builds again and
+replaces it.
 
 ## Design decisions
 

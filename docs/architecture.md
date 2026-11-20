@@ -509,8 +509,11 @@ beyond the wiring and the command line ([ADR 09](adr/09-serve-the-tools-from-one
 
 ```
 --dir               checked first: workspace.Open accepts a root that does not exist
+--index-dir         outside the served directory, created and probed; or
+                    AGENTKIT_INDEX_DIR; or none
 workspace.Open      the served directory
-codesearch.New      the index (none where zoekt does not run), in a temporary directory
+codesearch.New      the index (none where zoekt does not run), stored under the
+                    index directory, else in a temporary directory
 tools.For           the built-in tools with that index; the shell tools get
                     tools.ReducedEnv of the process environment
 --tools/--read-only choose from them, in serving order
@@ -524,8 +527,11 @@ agentkit.NewRunner  with guard.AllowAll or guard.Restricted (--guard)
 Every command builds the same tool set through one function, so `tools`,
 `call` and `mcp` serve the same tools under the same guard. `call` runs one
 call per process under `--timeout`, and `mcp` and `call` turn SIGINT and
-SIGTERM into exits 130 and 143. The index is closed, and its directory
-removed, when the command ends.
+SIGTERM into exits 130 and 143. The index is closed when the command ends:
+a temporary one is removed with its directory, a stored one stays for the
+next process, which loads and revalidates it instead of building
+([the stored index](codesearch.md#the-stored-index)). The command discards
+the standard logger, through which zoekt reports its shards.
 
 ## MCP client
 

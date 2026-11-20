@@ -124,7 +124,7 @@ func TestADirectoryThatIsMissingOrAFileServesNothing(t *testing.T) {
 
 func TestWithoutCodeSearchOnThePlatformTheOtherToolsAreServed(t *testing.T) {
 	old := newIndex
-	newIndex = func(*workspace.Workspace) (tools.Index, error) { return nil, codesearch.ErrUnsupported }
+	newIndex = func(*workspace.Workspace, string) (tools.Index, error) { return nil, codesearch.ErrUnsupported }
 	t.Cleanup(func() { newIndex = old })
 
 	res := inProcess("tools", "--dir", sampleTree(t))

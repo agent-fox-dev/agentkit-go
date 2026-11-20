@@ -3,35 +3,433 @@
   "spec_id": "33",
   "spec_name": "persistent_code_index",
   "schema_version": 3,
-  "updated_at": "",
+  "updated_at": "2026-11-19T21:21:23Z",
   "tasks": [
     {
       "id": 1,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-1.1",
+          "no_red": "the behaviour with no IndexDir exists already; these tests must keep passing unchanged once IndexDir does",
+          "tests": [
+            {
+              "test": "./codesearch:TestCloseWaitsForTheFirstBuildAndRemovesItsRunDirectory",
+              "passed": {
+                "at": "2026-11-19T20:58:09Z",
+                "tree": "4d6f990f9cee04473170896e9329997b6a098db2"
+              }
+            },
+            {
+              "test": "./codesearch:TestShardsLiveInARunDirectoryPerIndex",
+              "passed": {
+                "at": "2026-11-19T20:58:09Z",
+                "tree": "4d6f990f9cee04473170896e9329997b6a098db2"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.2",
+          "tests": [
+            {
+              "test": "./codesearch:TestABuildIsStoredPerWorkspaceUnderIndexDir",
+              "failed": {
+                "at": "2026-11-19T20:55:37Z",
+                "tree": "ff1db84f16949aa01f86896558ce8f8b3636dde9"
+              },
+              "passed": {
+                "at": "2026-11-19T20:58:09Z",
+                "tree": "4d6f990f9cee04473170896e9329997b6a098db2"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.3",
+          "tests": [
+            {
+              "test": "./codesearch:TestAnIndexDirInsideTheWorkspaceIsRefused",
+              "failed": {
+                "at": "2026-11-19T20:55:37Z",
+                "tree": "ff1db84f16949aa01f86896558ce8f8b3636dde9"
+              },
+              "passed": {
+                "at": "2026-11-19T20:58:09Z",
+                "tree": "4d6f990f9cee04473170896e9329997b6a098db2"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.4",
+          "tests": [
+            {
+              "test": "./codesearch:TestAStoredIndexBecomesVisibleOnlyWhenComplete",
+              "failed": {
+                "at": "2026-11-19T20:55:37Z",
+                "tree": "ff1db84f16949aa01f86896558ce8f8b3636dde9"
+              },
+              "passed": {
+                "at": "2026-11-19T20:58:09Z",
+                "tree": "4d6f990f9cee04473170896e9329997b6a098db2"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.5",
+          "no_red": "before the store exists nothing is ever written under IndexDir, so the fallback holds trivially; the test keeps it true once storing exists",
+          "tests": [
+            {
+              "test": "./codesearch:TestAnIndexDirThatCannotBeWrittenStoresNothing",
+              "passed": {
+                "at": "2026-11-19T20:58:09Z",
+                "tree": "4d6f990f9cee04473170896e9329997b6a098db2"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 2,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-2.1",
+          "tests": [
+            {
+              "test": "./codesearch:TestASecondIndexLoadsTheStoredIndexInsteadOfBuilding",
+              "failed": {
+                "at": "2026-11-19T21:00:19Z",
+                "tree": "f88a29b3b6996a0716ec1cb36e44582ea71b932c"
+              },
+              "passed": {
+                "at": "2026-11-19T21:02:34Z",
+                "tree": "c5a268a0a51280613caedc29986e7a9b4c5a22cc"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.2",
+          "tests": [
+            {
+              "test": "./codesearch:TestALaterIndexAnswersAsAFreshBuildAfterChanges",
+              "failed": {
+                "at": "2026-11-19T21:00:19Z",
+                "tree": "f88a29b3b6996a0716ec1cb36e44582ea71b932c"
+              },
+              "passed": {
+                "at": "2026-11-19T21:02:34Z",
+                "tree": "c5a268a0a51280613caedc29986e7a9b4c5a22cc"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.3",
+          "tests": [
+            {
+              "test": "./codesearch:TestARacyEditIsFoundByTheNextProcess",
+              "failed": {
+                "at": "2026-11-19T21:00:19Z",
+                "tree": "f88a29b3b6996a0716ec1cb36e44582ea71b932c"
+              },
+              "passed": {
+                "at": "2026-11-19T21:02:34Z",
+                "tree": "c5a268a0a51280613caedc29986e7a9b4c5a22cc"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.4",
+          "no_red": "before loading exists every index builds, so an unusable store is rebuilt trivially; the test keeps it so once a stored index is loaded",
+          "tests": [
+            {
+              "test": "./codesearch:TestAStoredIndexThatCannotBeUsedIsRebuiltAndReplaced",
+              "passed": {
+                "at": "2026-11-19T21:02:34Z",
+                "tree": "c5a268a0a51280613caedc29986e7a9b4c5a22cc"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.5",
+          "tests": [
+            {
+              "test": "./codesearch:TestARebuildPastFivePercentIsStoredForTheNextIndex",
+              "failed": {
+                "at": "2026-11-19T21:00:19Z",
+                "tree": "f88a29b3b6996a0716ec1cb36e44582ea71b932c"
+              },
+              "passed": {
+                "at": "2026-11-19T21:02:34Z",
+                "tree": "c5a268a0a51280613caedc29986e7a9b4c5a22cc"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 3,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-3.1",
+          "tests": [
+            {
+              "test": "./codesearch:TestTwoIndexesOnOneStoreBuildOnce",
+              "failed": {
+                "at": "2026-11-19T21:03:55Z",
+                "tree": "68bd70ba9570348b7f1a9341505ba75b2490ee09"
+              },
+              "passed": {
+                "at": "2026-11-19T21:07:57Z",
+                "tree": "3ac52d7a012d154923389f10df8e98d93e5d2ec6"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.2",
+          "tests": [
+            {
+              "test": "./codesearch:TestAWaiterPastTheBoundBuildsForItself",
+              "failed": {
+                "at": "2026-11-19T21:03:55Z",
+                "tree": "68bd70ba9570348b7f1a9341505ba75b2490ee09"
+              },
+              "passed": {
+                "at": "2026-11-19T21:07:57Z",
+                "tree": "3ac52d7a012d154923389f10df8e98d93e5d2ec6"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.3",
+          "no_red": "before the lock exists nothing waits on it, so a killed holder cannot stall anyone; the test keeps that so once indexes wait for the lock",
+          "tests": [
+            {
+              "test": "./codesearch:TestALockHeldByAKilledProcessIsTakenAtOnce",
+              "passed": {
+                "at": "2026-11-19T21:07:57Z",
+                "tree": "3ac52d7a012d154923389f10df8e98d93e5d2ec6"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.4",
+          "no_red": "task 1 stores the partial flag and task 2's load treats a partial store as absent, so the behaviour exists before this task",
+          "tests": [
+            {
+              "test": "./codesearch:TestAPartialStoredIndexIsBuiltAgainByTheNextIndex",
+              "passed": {
+                "at": "2026-11-19T21:07:57Z",
+                "tree": "3ac52d7a012d154923389f10df8e98d93e5d2ec6"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 4,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-4.1",
+          "tests": [
+            {
+              "test": "./codesearch:TestSymbolsAnswersFromAStoredIndexWithoutBuilding",
+              "failed": {
+                "at": "2026-11-19T21:08:41Z",
+                "tree": "591325b377e0beecb39c147d7cb3741108aefa8e"
+              },
+              "passed": {
+                "at": "2026-11-19T21:10:14Z",
+                "tree": "26d8810fff4f2968a6a5f0736838d8e7d65cdc64"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-4.2",
+          "no_red": "Symbols declines every unbuilt index today, a partial or absent store included; the test keeps it so once Symbols loads complete stores",
+          "tests": [
+            {
+              "test": "./codesearch:TestSymbolsDeclinesAStoreItCannotAnswerFrom",
+              "passed": {
+                "at": "2026-11-19T21:10:14Z",
+                "tree": "26d8810fff4f2968a6a5f0736838d8e7d65cdc64"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 5,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-5.1",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestTheIndexDirComesFromTheFlagThenTheVariable",
+              "failed": {
+                "at": "2026-11-19T21:11:34Z",
+                "tree": "6c1ff4f927054ecd8de3c96641cd9d76473d506f"
+              },
+              "passed": {
+                "at": "2026-11-19T21:15:42Z",
+                "tree": "7c547e650cc929495c4c37f5d22ebc6da19ccdf0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-5.2",
+          "no_red": "without an index directory the command already keeps its index in a temporary directory that Close removes; the test keeps it so once the flag exists",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestWithoutAnIndexDirTheIndexLeavesNothingBehind",
+              "passed": {
+                "at": "2026-11-19T21:15:42Z",
+                "tree": "7c547e650cc929495c4c37f5d22ebc6da19ccdf0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-5.3",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestAnIndexDirInsideTheServedDirectoryIsRefused",
+              "failed": {
+                "at": "2026-11-19T21:11:34Z",
+                "tree": "6c1ff4f927054ecd8de3c96641cd9d76473d506f"
+              },
+              "passed": {
+                "at": "2026-11-19T21:15:42Z",
+                "tree": "7c547e650cc929495c4c37f5d22ebc6da19ccdf0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-5.4",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestAnIndexDirThatCannotBeWrittenFallsBackToATemporaryIndex",
+              "failed": {
+                "at": "2026-11-19T21:11:34Z",
+                "tree": "6c1ff4f927054ecd8de3c96641cd9d76473d506f"
+              },
+              "passed": {
+                "at": "2026-11-19T21:15:42Z",
+                "tree": "7c547e650cc929495c4c37f5d22ebc6da19ccdf0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-5.5",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestASingleCallWithAStoredIndexIsAFifthOfTheBuild",
+              "failed": {
+                "at": "2026-11-19T21:11:34Z",
+                "tree": "6c1ff4f927054ecd8de3c96641cd9d76473d506f"
+              },
+              "passed": {
+                "at": "2026-11-19T21:15:42Z",
+                "tree": "7c547e650cc929495c4c37f5d22ebc6da19ccdf0"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 6,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-6.1",
+          "no_red": "documentation is text, which steering forbids testing; PATH-4's shell check verifies it; this test proves the modules the docs describe build",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T21:18:07Z",
+                "tree": "d0e72b50f3f17860736cb21461b3cd1bb72f03bd"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 7,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "PATH-1",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestARelayReusesTheIndexAcrossSingleCalls",
+              "passed": {
+                "at": "2026-11-19T21:21:02Z",
+                "tree": "cbda44bf25b628a75ea3841f92cbafe6fa06894e"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-2",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestASessionsEditIsSeenByALaterSingleCall",
+              "passed": {
+                "at": "2026-11-19T21:21:02Z",
+                "tree": "cbda44bf25b628a75ea3841f92cbafe6fa06894e"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-3",
+          "tests": [
+            {
+              "test": "./cmd/agentkit-tools:TestTwoSingleCallsAtOnceStoreOneIndex",
+              "passed": {
+                "at": "2026-11-19T21:21:02Z",
+                "tree": "cbda44bf25b628a75ea3841f92cbafe6fa06894e"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-4",
+          "no_red": "PATH-4 ran as a shell session: make check exit 0; make doc clean; docs/generated/codesearch names IndexDir; the four docs name IndexDir, AGENTKIT_INDEX_DIR and --index-dir as REQ-6.1 lists, their anchors resolving",
+          "tests": [
+            {
+              "test": "./internal/policy:TestHostCgoBuildAndVet",
+              "passed": {
+                "at": "2026-11-19T21:21:02Z",
+                "tree": "cbda44bf25b628a75ea3841f92cbafe6fa06894e"
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

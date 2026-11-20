@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -25,6 +26,8 @@ type settings struct {
 	// tools is --tools as given, nil when the flag is absent.
 	tools    *string
 	readOnly bool
+	// indexDir is --index-dir as given, nil when the flag is absent.
+	indexDir *string
 }
 
 // register adds the flags of every command to fs.
@@ -33,6 +36,77 @@ func (s *settings) register(fs *flag.FlagSet) {
 	fs.StringVar(&s.guard, "guard", "allow-all", "")
 	fs.Func("tools", "", func(v string) error { s.tools = &v; return nil })
 	fs.BoolVar(&s.readOnly, "read-only", false, "")
+	fs.Func("index-dir", "", func(v string) error { s.indexDir = &v; return nil })
+}
+
+// indexDirEnv names the index directory when --index-dir is absent or empty.
+const indexDirEnv = "AGENTKIT_INDEX_DIR"
+
+// storeDir is the index directory --index-dir or AGENTKIT_INDEX_DIR names,
+// absolute, or "" when neither names one: then the index lives in a temporary
+// directory removed when the process ends. One that is the served directory
+// or lies inside it, after resolving symbolic links, is a refusal, so an index
+// is never checkpointed or committed with the work; nothing is created then.
+// One that cannot be created or written is said once on stderr, and the
+// process keeps a temporary index.
+func (s settings) storeDir(stderr io.Writer) (string, error) {
+	v := ""
+	if s.indexDir != nil {
+		v = *s.indexDir
+	}
+	if v == "" {
+		v = os.Getenv(indexDirEnv)
+	}
+	if v == "" {
+		return "", nil
+	}
+	abs, err := filepath.Abs(v)
+	if err != nil {
+		return "", &refusal{fmt.Sprintf("agentkit-tools: the index directory %s: %v", v, err)}
+	}
+	served, err := filepath.EvalSymlinks(s.dir)
+	if err != nil {
+		served = s.dir
+	}
+	if rel, err := filepath.Rel(served, resolveExisting(abs)); err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))) {
+		return "", &refusal{fmt.Sprintf("agentkit-tools: the index directory %s must be outside the served directory %s", v, s.dir)}
+	}
+	if err := probe(abs); err != nil {
+		fmt.Fprintf(stderr, "agentkit-tools: the index directory %s cannot be written, so the index is temporary for this process: %v\n", abs, err)
+		return "", nil
+	}
+	return abs, nil
+}
+
+// probe creates dir when it is missing and writes and removes a file in it.
+func probe(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".agentkit-tools-probe-*")
+	if err != nil {
+		return err
+	}
+	_ = f.Close()
+	return os.Remove(f.Name())
+}
+
+// resolveExisting is abs with the symbolic links of its longest existing
+// prefix resolved, and the rest appended as it is.
+func resolveExisting(abs string) string {
+	rest := ""
+	for p := abs; ; p = filepath.Dir(p) {
+		if _, err := os.Lstat(p); err == nil {
+			if r, err := filepath.EvalSymlinks(p); err == nil {
+				return filepath.Join(r, rest)
+			}
+			return abs
+		}
+		if filepath.Dir(p) == p {
+			return abs
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+	}
 }
 
 // refusal is a command line the command will not serve: a guard it does not
@@ -127,10 +201,11 @@ func (s *settings) checkDir() error {
 	return nil
 }
 
-// newIndex builds the code_search index of a workspace. It is a variable so a
-// test can stand in for a platform where zoekt does not run.
-var newIndex = func(ws *workspace.Workspace) (tools.Index, error) {
-	return codesearch.New(ws, codesearch.Options{})
+// newIndex builds the code_search index of a workspace, kept under indexDir
+// when it is not empty. It is a variable so a test can stand in for a
+// platform where zoekt does not run.
+var newIndex = func(ws *workspace.Workspace, indexDir string) (tools.Index, error) {
+	return codesearch.New(ws, codesearch.Options{IndexDir: indexDir})
 }
 
 // served is what a command serves: the runner over the tool set, and the index
@@ -159,12 +234,16 @@ func open(s settings, stderr io.Writer) (*served, error) {
 	if err != nil {
 		return nil, err
 	}
+	indexDir, err := s.storeDir(stderr)
+	if err != nil {
+		return nil, err
+	}
 	ws, err := workspace.Open(s.dir, workspace.Options{})
 	if err != nil {
 		return nil, fmt.Errorf("agentkit-tools: opening %s: %v", s.dir, err)
 	}
 	var opts tools.Options
-	idx, err := newIndex(ws)
+	idx, err := newIndex(ws, indexDir)
 	switch {
 	case errors.Is(err, codesearch.ErrUnsupported):
 		fmt.Fprintln(stderr, "agentkit-tools: code_search is not served: zoekt does not run on this platform")

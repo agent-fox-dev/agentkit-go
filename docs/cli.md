@@ -61,7 +61,11 @@ descriptions and schemas are the ones the packages define.
   by `tools.ReducedEnv`: credentials such as `ANTHROPIC_API_KEY` are removed
   and `PATH` is kept.
 - The `code_search` index lives in a temporary directory that is removed when
-  the process ends.
+  the process ends, unless `--index-dir` or `AGENTKIT_INDEX_DIR` names a
+  directory to keep it in: then a later process on the same directory loads
+  it, revalidates it against the tree and answers without building. Two
+  processes at once build it once. `find_symbol` answers from a complete
+  stored index too.
 
 ### `agentkit-tools mcp`
 
@@ -151,6 +155,7 @@ Flags follow the command.
 | `--guard allow-all\|restricted` | all | `allow-all` | The guard of `execute` and `run_command`. `allow-all` is `guard.AllowAll`, since the sandbox is the boundary; `restricted` is `guard.Restricted` with its default options, which blocks every shell call (`blocked_by_policy`). Any other value exits 2. |
 | `--tools a,b,c` | all | every tool | Serve only the named tools, in serving order whatever the order given. `code_mode` is served only when named, and bound to the other named tools. A name that is no tool exits 2 with a line that lists the tool names. |
 | `--read-only` | all | off | Leave out `write_file`, `edit_file`, `execute` and `run_command`. With `--tools`, a tool is served when both allow it. A selection that leaves nothing exits 2. |
+| `--index-dir <path>` | all | `$AGENTKIT_INDEX_DIR`, else none | Keep the `code_search` index there, so a later process on the same directory loads it instead of building ([the stored index](codesearch.md#the-stored-index)). The command creates it when missing. One that is the served directory or lies inside it exits 2 with a line saying it must be outside; one that cannot be created or written is said once on stderr, and the process keeps a temporary index. An empty value means unset. |
 | `--request <file>` | `call` | none | The request file. |
 | `--timeout <duration>` | `call` | `10m` | The bound on the call, a Go duration (`30s`, `10m`). One that does not parse or is not positive exits 2. |
 | `--version` | alone | | Print the version and exit 0. |
@@ -161,5 +166,5 @@ Flags follow the command.
 |---|---|
 | 0 | `tools` listed the tools; `call` wrote a result, whether the tool succeeded or not; `mcp` ended because the client closed its end; `--version`. |
 | 1 | The tool set could not be built, or an `mcp` session ended with an error, such as a rejected frame. |
-| 2 | The command line or the request file is refused: usage, `--dir`, `--guard`, `--tools`, `--read-only`, `--request`, `--timeout`. Nothing is served and nothing is written to stdout. |
+| 2 | The command line or the request file is refused: usage, `--dir`, `--guard`, `--tools`, `--read-only`, `--index-dir`, `--request`, `--timeout`. Nothing is served and nothing is written to stdout. |
 | 130, 143 | SIGINT or SIGTERM ended `mcp` or `call`. |
