@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	agentkit "github.com/agent-fox-dev/agentkit-go"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
 	agentmcp "github.com/agent-fox-dev/agentkit-go/mcp"
+	"github.com/agent-fox-dev/agentkit-go/runner"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -51,7 +51,7 @@ func TestAResultIsServedAsItsLLMTextThenItsTextBlocks(t *testing.T) {
 func TestRunnerFailuresAreErrorResultsAndAnUnservedToolAProtocolError(t *testing.T) {
 	needsPath := tool("needs_path", nil)
 	needsPath.InputSchema = schema.Object(schema.Prop("path", schema.String()))
-	rec := &recorder{toolRunner: must(agentkit.NewRunner(agentkit.Toolset{
+	rec := &recorder{toolRunner: must(runner.New(runner.Toolset{
 		Tools: []core.Tool{needsPath, tool("blocked", nil),
 			tool("panics", func(context.Context, json.RawMessage) core.ToolResult { panic("boom") }),
 			{Name: "fails", Description: "x", InputSchema: schema.Object(),

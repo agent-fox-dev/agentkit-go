@@ -9,8 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	agentkit "github.com/agent-fox-dev/agentkit-go"
 	"github.com/agent-fox-dev/agentkit-go/core"
 	"github.com/agent-fox-dev/agentkit-go/internal/testutil"
+	"github.com/agent-fox-dev/agentkit-go/provider/faux"
+	"github.com/agent-fox-dev/agentkit-go/runner"
 	"github.com/agent-fox-dev/agentkit-go/schema"
 )
 
@@ -55,6 +58,32 @@ func TestASessionSeesTheServerInfoAndTheToolsAsTheyWereAtNew(t *testing.T) {
 		}
 		if slices.Sort(got); strings.Join(got, "\n") != c.listing || r.reads != 1 {
 			t.Errorf("listed %q after %d reads of Tools; want %q after one", got, r.reads, c.listing)
+		}
+	}
+}
+
+// New takes the runner package's Runner, which is also what the root
+// package's NewRunner and an agent's Runner method return: a program that
+// built its runner either way serves it unchanged.
+func TestNewServesARunnerFromThePackageTheRootOrAnAgent(t *testing.T) {
+	ts := runner.Toolset{Tools: []core.Tool{echoTool(), tool("other", nil)}}
+	agent := must(agentkit.New(agentkit.Config{Client: faux.New(), Model: "test-model", Toolset: ts}))
+	for name, r := range map[string]*runner.Runner{
+		"runner.New":         must(runner.New(ts)),
+		"agentkit.NewRunner": must(agentkit.NewRunner(ts)),
+		"Agent.Runner":       agent.Runner(),
+	} {
+		s, err := New(r, Options{})
+		if err != nil {
+			t.Errorf("%s: New = %v", name, err)
+			continue
+		}
+		var got []string
+		for _, l := range must(serveStdio(t, context.Background(), s).conn(t).ListTools(context.Background())) {
+			got = append(got, l.Name)
+		}
+		if slices.Sort(got); !slices.Equal(got, []string{"echo", "other"}) {
+			t.Errorf("%s: the session lists %v, want echo and other", name, got)
 		}
 	}
 }

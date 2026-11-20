@@ -1,4 +1,4 @@
-// Package mcpserve serves one agentkit.Runner's tools over MCP to a harness
+// Package mcpserve serves one runner.Runner's tools over MCP to a harness
 // that is not AgentKit's own model loop: Claude Code, Pi, or any MCP client
 // on the same machine.
 //

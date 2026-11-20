@@ -6,6 +6,13 @@
 // decision D1). TestCrossTargetBuildAndVet builds that fallback for every
 // supported target; TestHostCgoBuildAndVet builds the cgo variant for the host.
 // Both take minutes, so they skip under -short and run in make check-release.
+//
+// It also holds the tools-only dependency gate (toolsonly_test.go): the
+// packages a program needs to run tools, code mode and the MCP server must
+// link neither the tree-sitter grammars nor a model provider. That one takes
+// seconds and runs under -short, in make check, because nothing else would
+// notice the regression
+// (docs/adr/10-keep-the-runner-and-the-output-buffer-free-of-cgo-and-providers.md).
 package policy
 
 import (

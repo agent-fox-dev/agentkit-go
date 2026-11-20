@@ -3,7 +3,7 @@
   "spec_id": "34",
   "spec_name": "runner_without_cgo_or_providers",
   "schema_version": 3,
-  "updated_at": "2026-11-20T18:48:40Z",
+  "updated_at": "2026-11-20T18:51:43Z",
   "tasks": [
     {
       "id": 1,
@@ -367,7 +367,83 @@
     },
     {
       "id": 3,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-1.5",
+          "tests": [
+            {
+              "test": "./internal/policy:TestToolsOnlyPackagesLinkNoGrammarAndNoProvider",
+              "failed": {
+                "at": "2026-11-20T18:50:18Z",
+                "tree": "2bbbb880309d93608aa477eb475252b9bddd6cf0"
+              },
+              "passed": {
+                "at": "2026-11-20T18:51:42Z",
+                "tree": "3b8f787684f5e70ab9d638259cc38c8dd5c2e7ec"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.1",
+          "tests": [
+            {
+              "test": "./internal/policy:TestToolsOnlyPackagesLinkNoGrammarAndNoProvider",
+              "failed": {
+                "at": "2026-11-20T18:50:18Z",
+                "tree": "2bbbb880309d93608aa477eb475252b9bddd6cf0"
+              },
+              "passed": {
+                "at": "2026-11-20T18:51:42Z",
+                "tree": "3b8f787684f5e70ab9d638259cc38c8dd5c2e7ec"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.2",
+          "no_red": "it exercises the gate's own listing and violations functions, which are test code written with this test; there is no production code whose absence could make it fail first",
+          "tests": [
+            {
+              "test": "./internal/policy:TestTheDependencyGateNamesWhatBroughtAForbiddenPackageIn",
+              "passed": {
+                "at": "2026-11-20T18:51:42Z",
+                "tree": "3b8f787684f5e70ab9d638259cc38c8dd5c2e7ec"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.3",
+          "tests": [
+            {
+              "test": "./internal/policy:TestToolsOnlyPackagesLinkNoGrammarAndNoProvider",
+              "failed": {
+                "at": "2026-11-20T18:50:18Z",
+                "tree": "2bbbb880309d93608aa477eb475252b9bddd6cf0"
+              },
+              "passed": {
+                "at": "2026-11-20T18:51:42Z",
+                "tree": "3b8f787684f5e70ab9d638259cc38c8dd5c2e7ec"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.4",
+          "no_red": "it exercises the gate's own listing function, which is test code written with this test; there is no production code whose absence could make it fail first",
+          "tests": [
+            {
+              "test": "./internal/policy:TestTheDependencyGateFailsWhenItCannotListAPackage",
+              "passed": {
+                "at": "2026-11-20T18:51:42Z",
+                "tree": "3b8f787684f5e70ab9d638259cc38c8dd5c2e7ec"
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
