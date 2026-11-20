@@ -1143,6 +1143,8 @@ a frame that breaks those limits ends the session and never reaches the runner.
 It returns `nil` when the client closes its end (after every reply owed is
 written), `ctx.Err()` when `ctx` ends (the session is closed first and calls in
 flight see a cancelled context), and otherwise an error starting `mcpserve: `.
+It returns once the session is closed even when stdin is a blocking pipe, as it
+is for a program a harness starts as a child process.
 A served session closes `os.Stdin` and leaves `os.Stdout` open; nothing but
 protocol frames is written to stdout, so the program's own output belongs on
 stderr. It is meant to be called once per process, which is not enforced.

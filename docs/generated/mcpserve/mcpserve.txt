@@ -128,3 +128,9 @@ func (s *Server) ServeStdio(ctx context.Context) error
     Nothing but protocol frames is written to stdout; the program's own output
     belongs on stderr.
 
+    It returns as soon as the session is closed even when stdin is a blocking
+    pipe, as it is for a child process, whose pending read closing os.Stdin
+    does not interrupt. That read is left to a goroutine of its own, which ends
+    when the read does: with the client's next byte, the end of its input,
+    or the process.
+

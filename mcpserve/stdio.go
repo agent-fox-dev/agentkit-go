@@ -28,13 +28,46 @@ import (
 // A served session closes os.Stdin when it ends and leaves os.Stdout open.
 // Nothing but protocol frames is written to stdout; the program's own output
 // belongs on stderr.
+//
+// It returns as soon as the session is closed even when stdin is a blocking
+// pipe, as it is for a child process, whose pending read closing os.Stdin does
+// not interrupt. That read is left to a goroutine of its own, which ends when
+// the read does: with the client's next byte, the end of its input, or the
+// process.
 func (s *Server) ServeStdio(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	// Only a Writer is handed over, so the transport, which closes the ends that
-	// are Closers, closes stdin (which unblocks its read) and leaves stdout.
-	return s.serveStream(ctx, os.Stdin, struct{ io.Writer }{os.Stdout})
+	// are Closers, closes stdin and leaves stdout.
+	return s.serveStream(ctx, detach(os.Stdin), struct{ io.Writer }{os.Stdout})
+}
+
+// detached is a file read on a goroutine of its own, so that Close returns a
+// Read still pending on it. Go interrupts a read pending on a file only when
+// the file is pollable, and a stdin inherited as a blocking pipe is not, while
+// the SDK's ServerSession.Close waits for its reader to return.
+type detached struct {
+	*io.PipeReader
+	f *os.File
+}
+
+func detach(f *os.File) *detached {
+	pr, pw := io.Pipe()
+	go func() {
+		// A nil error closes the pipe with io.EOF, the clean end of input.
+		_, err := io.Copy(pw, f)
+		_ = pw.CloseWithError(err)
+	}()
+	return &detached{PipeReader: pr, f: f}
+}
+
+// Close ends a pending Read with io.ErrClosedPipe and closes the file, which
+// interrupts the copy's read only when the file is pollable; otherwise the copy
+// stops at its next write.
+func (d *detached) Close() error {
+	_ = d.PipeReader.Close()
+	return d.f.Close()
 }
 
 func (s *Server) serveStream(ctx context.Context, r io.Reader, w io.Writer) error {

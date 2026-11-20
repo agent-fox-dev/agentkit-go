@@ -501,6 +501,11 @@ panicking. The SDK closes a session gracefully and cancels a call only when its
 client asks, so each session and each endpoint carries a lifetime, passed as a
 value of the context the SDK server is connected with, which a call's context
 also obeys; closing a session or an endpoint cancels the calls still running.
+The SDK's close also waits for its reader, and Go cannot interrupt a read
+pending on a stdin inherited as a blocking pipe, as a child process's is, so
+`ServeStdio` reads stdin through a pipe fed by a goroutine of its own: closing
+the session ends the pending read at once, and the goroutine ends with the
+read it is still waiting on.
 
 ## The `agentkit-tools` command
 

@@ -51,9 +51,9 @@ func runMCP(args []string, _, stderr io.Writer) int {
 	case err = <-served:
 	case <-ctx.Done():
 		// A signal ended the session: ServeStdio has cancelled the running
-		// calls, but it can stay blocked closing a stdin that is a blocking
-		// pipe, whose pending read Close does not interrupt. Give it the same
-		// grace as a call's timeout, then exit with the signal's status.
+		// calls, and closing the session waits for them to return. Give a
+		// tool that ignores cancellation the same grace as a call past its
+		// timeout, then exit with the signal's status.
 		select {
 		case err = <-served:
 		case <-time.After(timeoutGrace):

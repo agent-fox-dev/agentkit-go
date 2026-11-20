@@ -28,6 +28,14 @@ erratum. The erratum is gone; the rules the code follows are here.
 - **Exactly one `Authorization` header.** A request with two is refused even
   when one is valid. `net/http` strips trailing whitespace from header values,
   so `Bearer <token> ` is the valid header.
+- **Stdin is read off the session's path.** The SDK's `ServerSession.Close`
+  also waits for its reader to return, and closing `os.Stdin` does not
+  interrupt a read pending on it when stdin is a blocking pipe, which it is
+  for a child process (Go interrupts reads only on pollable files). So
+  `ServeStdio` hands the SDK a pipe fed from stdin by a goroutine of its own;
+  closing the session closes the pipe and stdin and returns at once. The
+  goroutine stays on its pending read until the client's next byte, the end
+  of its input, or the process ends, and nothing reads what it gets.
 - **Read errors.** The session's `Wait` returns the first read error that is
   not a clean end of stream, and nil for a clean end; `ServeStdio` returns it
   as it is, with no connection wrapper.
@@ -47,5 +55,5 @@ erratum. The erratum is gone; the rules the code follows are here.
 
 - A harness that disconnects, or an embedder that stops serving, does not
   leave tools running on its behalf.
-- Upgrading the MCP Go SDK means re-checking the two measured behaviours above:
-  how `Close` treats calls in flight, and what `Wait` returns.
+- Upgrading the MCP Go SDK means re-checking the measured behaviours above:
+  how `Close` treats calls in flight and its reader, and what `Wait` returns.
