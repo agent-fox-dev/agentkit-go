@@ -7,7 +7,7 @@ module github.com/agent-fox-dev/agentkit-go/cmd/agentkit-tools
 go 1.27
 
 require (
-	github.com/agent-fox-dev/agentkit-go v0.9.0
+	github.com/agent-fox-dev/agentkit-go v0.11.0
 	github.com/agent-fox-dev/agentkit-go/codesearch v0.0.0
 	github.com/agent-fox-dev/agentkit-go/mcpserve v0.0.0-00010101000000-000000000000
 )
