@@ -24,6 +24,11 @@ what the tool marshals:
 - `file_outline`'s `file` uses the Go field names of `outline.File` and
   `outline.Decl` (`Path`, `Lang`, `Backend`, `Decls`; `Kind`, `Name`,
   `Container`, `Signature`, `Exported`, `StartLine`, `EndLine`), all present.
+  It is those four fields of `outline.File` and no others: the file's parse
+  verdict (`Parsed`, `NotParsed`, `SyntaxErrors`,
+  `SyntaxErrorsTruncated`) is left out, so the tool's output did not change
+  when `outline` started reporting it. `Data["file"]` is therefore a value
+  of the tools package's own type, not an `outline.File`.
 - `find_symbol`'s `backends` is a count per backend; a symbol has a `backend`
   and no `score`, and all its fields are required.
 - `find_references`' `target` is the `outline.Decl` searched for, `errors` is

@@ -3,7 +3,7 @@
   "spec_id": "35",
   "spec_name": "outline_syntax_errors",
   "schema_version": 3,
-  "updated_at": "2026-11-23T09:14:02Z",
+  "updated_at": "2026-11-23T09:17:39Z",
   "tasks": [
     {
       "id": 1,
@@ -303,7 +303,109 @@
     },
     {
       "id": 3,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-3.1",
+          "tests": [
+            {
+              "test": "./outline:TestTreeSitterSyntaxErrorsAreTheOutermostErrorAndEachMissingNode",
+              "failed": {
+                "at": "2026-11-23T09:16:37Z",
+                "tree": "abe321232b06d774d0c73955c22d367e18f811f5"
+              },
+              "passed": {
+                "at": "2026-11-23T09:17:37Z",
+                "tree": "1a95b44f2c147a4f51cb6b30e7950d53f07e02f0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.2",
+          "tests": [
+            {
+              "test": "./outline:TestTreeSitterSyntaxErrorsAreTheOutermostErrorAndEachMissingNode",
+              "failed": {
+                "at": "2026-11-23T09:16:37Z",
+                "tree": "abe321232b06d774d0c73955c22d367e18f811f5"
+              },
+              "passed": {
+                "at": "2026-11-23T09:17:37Z",
+                "tree": "1a95b44f2c147a4f51cb6b30e7950d53f07e02f0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.3",
+          "tests": [
+            {
+              "test": "./outline:TestABrokenFileInEveryTreeSitterLanguageHasAnErrorAtItsFault",
+              "failed": {
+                "at": "2026-11-23T09:16:37Z",
+                "tree": "abe321232b06d774d0c73955c22d367e18f811f5"
+              },
+              "passed": {
+                "at": "2026-11-23T09:17:37Z",
+                "tree": "1a95b44f2c147a4f51cb6b30e7950d53f07e02f0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.4",
+          "tests": [
+            {
+              "test": "./outline:TestTreeSitterSyntaxErrorsStopAtTheLimit",
+              "failed": {
+                "at": "2026-11-23T09:16:37Z",
+                "tree": "abe321232b06d774d0c73955c22d367e18f811f5"
+              },
+              "passed": {
+                "at": "2026-11-23T09:17:37Z",
+                "tree": "1a95b44f2c147a4f51cb6b30e7950d53f07e02f0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-5.2",
+          "no_red": "a pin of today's tree-sitter declarations and the .h rule: the wanted lists are unedited and pass before and after; the broken files' declarations, recorded from main, are asserted in the red test of REQ-3.1",
+          "tests": [
+            {
+              "test": "./outline:TestTreeSitterDeclarations",
+              "passed": {
+                "at": "2026-11-23T09:17:37Z",
+                "tree": "1a95b44f2c147a4f51cb6b30e7950d53f07e02f0"
+              }
+            },
+            {
+              "test": "./outline:TestACppHeaderIsOutlinedAsCpp",
+              "passed": {
+                "at": "2026-11-23T09:17:37Z",
+                "tree": "1a95b44f2c147a4f51cb6b30e7950d53f07e02f0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-5.4",
+          "tests": [
+            {
+              "test": "./tools:TestFileOutlineOfABrokenFileShowsNoSyntaxErrors",
+              "failed": {
+                "at": "2026-11-23T09:16:37Z",
+                "tree": "abe321232b06d774d0c73955c22d367e18f811f5"
+              },
+              "passed": {
+                "at": "2026-11-23T09:17:37Z",
+                "tree": "1a95b44f2c147a4f51cb6b30e7950d53f07e02f0"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 4,

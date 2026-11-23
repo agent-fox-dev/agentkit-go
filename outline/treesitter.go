@@ -127,18 +127,20 @@ type tsDecl struct {
 	scope     bool   // a container only, not reported
 }
 
-// outlineTreeSitter returns the declarations tree-sitter finds in src.
-// ok is false when the language has no grammar.
-func outlineTreeSitter(ctx context.Context, lang, ext string, src []byte) (decls []Decl, ok bool, err error) {
+// outlineTreeSitter returns the declarations tree-sitter finds in src and
+// the syntax errors of the same tree, unordered. ok is false when the
+// language has no grammar.
+func outlineTreeSitter(ctx context.Context, lang, ext string, src []byte) (decls []Decl, errs []SyntaxError, ok bool, err error) {
 	g := grammarFor(lang, ext)
 	if g == nil {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 	tree, err := g.parse(ctx, src)
 	if err != nil {
-		return nil, true, err
+		return nil, nil, true, err
 	}
 	defer tree.Close()
+	errs = treeSyntaxErrors(tree)
 
 	qc := ts.NewQueryCursor()
 	defer qc.Close()
@@ -200,7 +202,41 @@ func outlineTreeSitter(ctx context.Context, lang, ext string, src []byte) (decls
 			EndLine:   end + 1,
 		})
 	}
-	return decls, true, nil
+	return decls, errs, true, nil
+}
+
+// treeSyntaxErrors returns the faults tree-sitter marked in the tree: each
+// error node with no error node above it as one unexpected error at its
+// start (its descendants are fragments of the same fault), and each
+// missing node as one missing error where the token was expected. Only
+// subtrees that report an error are walked.
+func treeSyntaxErrors(tree *ts.Tree) []SyntaxError {
+	if !tree.RootNode().HasError() {
+		return nil
+	}
+	var errs []SyntaxError
+	at := func(n *ts.Node, kind SyntaxErrorKind) {
+		p := n.StartPosition()
+		errs = append(errs, SyntaxError{Line: int(p.Row) + 1, Column: int(p.Column) + 1, Kind: kind})
+	}
+	c := tree.Walk()
+	defer c.Close()
+	for {
+		n := c.Node()
+		switch {
+		case n.IsError():
+			at(n, SyntaxErrorUnexpected)
+		case n.IsMissing():
+			at(n, SyntaxErrorMissing)
+		case n.HasError() && c.GotoFirstChild():
+			continue
+		}
+		for !c.GotoNextSibling() {
+			if !c.GotoParent() {
+				return errs
+			}
+		}
+	}
 }
 
 // resolveContainer sets d's container from the nearest declaration

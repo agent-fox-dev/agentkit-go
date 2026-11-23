@@ -174,7 +174,7 @@ func renderOutlineResult(ws *workspace.Workspace, abs string, ofile outline.File
 	text := b.String()
 
 	data := map[string]any{
-		"file":         ofile,
+		"file":         fileOutlineData{Path: ofile.Path, Lang: ofile.Lang, Backend: ofile.Backend, Decls: ofile.Decls},
 		"backend":      string(ofile.Backend),
 		"declarations": total,
 		"listed":       len(listed),
@@ -183,6 +183,17 @@ func renderOutlineResult(ws *workspace.Workspace, abs string, ofile outline.File
 	r := core.OKResult(data)
 	r.Text = text
 	return r
+}
+
+// fileOutlineData is the file object of file_outline's Data: the four
+// fields of outline.File its output schema declares, under their Go names.
+// The file's parse verdict is left out, so the tool's output does not
+// change with it (ADR 04).
+type fileOutlineData struct {
+	Path    string
+	Lang    string
+	Backend outline.Backend
+	Decls   []outline.Decl
 }
 
 // lineRange formats the L<start>-<end> or L<start> range.

@@ -175,7 +175,7 @@ func Outline(ctx context.Context, abs string, src []byte, opts Options) (File, e
 		return f, nil
 	}
 	f.Lang = LangFor(abs, src)
-	decls, ok, err := outlineTreeSitter(ctx, f.Lang, filepath.Ext(abs), src)
+	decls, errs, ok, err := outlineTreeSitter(ctx, f.Lang, filepath.Ext(abs), src)
 	if err != nil {
 		if ctx.Err() != nil {
 			return File{}, ctx.Err()
@@ -187,6 +187,7 @@ func Outline(ctx context.Context, abs string, src []byte, opts Options) (File, e
 		return f, nil // no grammar for the language in this build: unsupported
 	}
 	f.Backend, f.Decls, f.Parsed, f.NotParsed = BackendTreeSitter, decls, true, ""
+	f.SyntaxErrors, f.SyntaxErrorsTruncated = limitSyntaxErrors(errs, opts.MaxSyntaxErrors)
 	return finishFile(f), nil
 }
 

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"runtime"
 	"strings"
@@ -41,7 +42,7 @@ func TestFileOutlineListsDeclarationsWithLineRanges(t *testing.T) {
 		}
 	}
 	r := mustOK(t, call(fo, `{"path":"x.go"}`))
-	if f, ok := r.Data["file"].(outline.File); !ok || len(f.Decls) != 4 || r.Data["declarations"] != 4 || r.Data["listed"] != 3 || r.Data["backend"] != "go/ast" {
+	if f, ok := r.Data["file"].(fileOutlineData); !ok || len(f.Decls) != 4 || r.Data["declarations"] != 4 || r.Data["listed"] != 3 || r.Data["backend"] != "go/ast" {
 		t.Errorf("Data = %+v", r.Data)
 	}
 	// Read from disk on every call, never from the symbol table.
@@ -110,6 +111,24 @@ func TestANoneOutlineSaysWhyAndWhatToUseInstead(t *testing.T) {
 	r := renderOutlineResult(ws, abs(ws, "a.php"), outline.File{Lang: outline.LangPHP, Backend: outline.BackendNone}, false, src, int64(len(src)))
 	if want := "a.php  (none, 0 declarations)\n  No declarations found (no outline backend for PHP in this build (built without cgo)); use read_file or search_files"; r.Text != want {
 		t.Errorf("got:\n%s\nwant:\n%s", r.Text, want)
+	}
+}
+
+// A file with syntax errors is shown as before: the outline's parse verdict
+// is in neither the text nor the data. Both are what file_outline returned
+// before outline reported syntax errors.
+func TestFileOutlineOfABrokenFileShowsNoSyntaxErrors(t *testing.T) {
+	ws := newWS(t, map[string]string{"broken.go": "package a\n\n// G is fine.\nfunc G() {}\n\nfunc F() {\n\tx := 1\n"})
+	r := mustOK(t, call(newFT(ws, Options{}).fileOutlineTool(), `{"path":"broken.go","include_private":true}`))
+	if want := "broken.go  (go/ast, 2 declarations)\n  L4  func G()\n  L6-7  func F()"; r.Text != want {
+		t.Errorf("text:\n%s\nwant:\n%s", r.Text, want)
+	}
+	data, err := json.Marshal(r.Data)
+	want := `{"backend":"go/ast","declarations":2,"file":{"Path":"broken.go","Lang":"Go","Backend":"go/ast","Decls":[` +
+		`{"Kind":"func","Name":"G","Container":"","Signature":"func G()","Exported":true,"StartLine":4,"EndLine":4},` +
+		`{"Kind":"func","Name":"F","Container":"","Signature":"func F()","Exported":true,"StartLine":6,"EndLine":7}]},"listed":2}`
+	if err != nil || string(data) != want {
+		t.Errorf("data:\n%s, %v\nwant:\n%s", data, err, want)
 	}
 }
 
