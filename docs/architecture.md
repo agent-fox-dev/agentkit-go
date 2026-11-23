@@ -618,15 +618,15 @@ Constants: `DefaultCallLimit` 1000 per session, `DefaultReconnectLimit` 3,
 - `find_references` finds usages and callers of a declaration. Go uses exact
   type resolution (`go/parser`, `go/types`, workspace-local imports, external
   imports stubbed as empty packages): a use is `resolved` when it resolves to
-  the target, and `lexical` when its type comes from a stubbed import or it
-  resolves to nothing (a name no package declares). Any other target (one
-  declared in another language, or nowhere, that no Go code uses) is searched
-  with outline-attributed lexical matching: a hit is `lexical` outside the
-  comments and strings `outline.CommentAndStringSpans` finds (from Go's
-  tokens in every build, from tree-sitter for the other languages) and `text`
-  inside them; without cgo every hit outside a Go file is `text`. A Go file
-  reaches the lexical scan through its code only when the type checker
-  cannot load it. Each site is attributed to its enclosing declaration. The
+  the target, and `lexical` when its type comes from a stubbed import. A
+  target declared in another language is searched with outline-attributed
+  lexical matching over every file, Go files included: a hit is `lexical`
+  outside the comments and strings `outline.CommentAndStringSpans` finds
+  (from Go's tokens in every build, from tree-sitter for the other
+  languages) and `text` inside them; without cgo every hit outside a Go file
+  is `text`. A name with no declaration is searched as `text`. (`tools.References`
+  type-checks first and scans lexically only when Go code does not use the
+  name; see ADR 04.) Each site is attributed to its enclosing declaration. The
   tool's `path` argument scopes both the reported sites and the declaration
   lookup itself: a `path` holding only callers, not the declaration, matches
   no candidate and falls back to a workspace-wide text search, reporting

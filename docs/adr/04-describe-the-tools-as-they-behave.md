@@ -51,16 +51,19 @@ context is created after the clock starts, never before.
 
 - A Go target is searched by type only: the resolver's identifiers are
   reported, and Go comments, strings and non-Go files mentioning the name are
-  not scanned, so its header always shows `0 text matches`. A non-Go or
-  undeclared target is scanned lexically, and its declaration line is reported
-  as a `lexical` site.
-- The type check also reports a use in Go code of a name no package
-  declares (an unresolved selector such as `yaml.Marshal`, labelled
-  `lexical`), and then the backend is `go/types`. So the lexical scan reaches
-  the code of a Go file only when the type checker cannot load that file (one
-  that has lost its package clause, say); a Go file it loads adds to a
-  lexical search only when no Go code uses the name, and then only through its
-  comments and strings, as `text`.
+  not scanned, so its header always shows `0 text matches`. A non-Go target
+  is scanned lexically, and its declaration line is reported as a `lexical`
+  site. A name `find_references` finds no declaration of is searched as
+  `text`; `tools.References` scans it lexically.
+- `tools.References` chooses its backend by type-checking first, and the
+  type check also reports a use in Go code of a name no package declares (an
+  unresolved selector such as `yaml.Marshal`, labelled `lexical`); then the
+  backend is `go/types`. So its lexical scan reaches the code of a Go file
+  only when the type checker cannot load that file (one that has lost its
+  package clause, say). `find_references` takes the backend from the
+  declaration it resolves, so a target declared in another language is
+  scanned lexically in every file, Go files included: a Go call is `lexical`
+  and a Go comment naming it `text`.
 - Comment and string spans of a Go file come from its tokens, in every
   build. Those of the other languages come from tree-sitter, which needs cgo:
   without cgo every hit outside a Go file is `text` and attributed to

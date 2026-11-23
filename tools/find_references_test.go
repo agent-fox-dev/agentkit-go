@@ -141,6 +141,7 @@ func TestFindReferencesInPythonIsLexical(t *testing.T) {
 	ws := newWS(t, map[string]string{
 		"billing/tax.py":  "def calculate_tax(amount):\n    return amount * 0.2\n",
 		"billing/shop.py": "# calculate_tax is applied at checkout\ndef checkout(total):\n    label = \"calculate_tax\"\n    return calculate_tax(total)\n",
+		"billing/report.go": "package billing\n\n// calculate_tax is the Python helper\nfunc report() { calculate_tax() }\n",
 	})
 	res := refResult(t, newFT(ws, Options{}), `{"name":"calculate_tax"}`)
 	if f, _ := outline.Outline(context.Background(), abs(ws, "billing/shop.py"), nil, outline.Options{}); f.Backend == outline.BackendNone {
@@ -150,12 +151,14 @@ func TestFindReferencesInPythonIsLexical(t *testing.T) {
 		}
 		return
 	}
-	// The call is code; the comment and the string are text.
-	want := []string{"billing/shop.py:4:12 lexical", "billing/tax.py:1:5 lexical", "billing/shop.py:1:3 text", "billing/shop.py:3:14 text"}
+	// The calls are code, in Python and in Go; the comments and the string
+	// are text.
+	want := []string{"billing/report.go:4:17 lexical", "billing/shop.py:4:12 lexical", "billing/tax.py:1:5 lexical",
+		"billing/report.go:3:4 text", "billing/shop.py:1:3 text", "billing/shop.py:3:14 text"}
 	if res.Target.StartLine != 1 || res.Backend != "lexical" || !slices.Equal(siteList(res), want) {
 		t.Fatalf("%+v: %v, want %v", res.Target, siteList(res), want)
 	}
-	if call, top := res.Sites[0].Enclosing, res.Sites[2].Enclosing; call.Name != "checkout" || call.StartLine != 2 || top.Kind != "file" {
+	if call, top := res.Sites[1].Enclosing, res.Sites[4].Enclosing; call.Name != "checkout" || call.StartLine != 2 || top.Kind != "file" {
 		t.Fatalf("attributed to %+v and %+v", call, top)
 	}
 }

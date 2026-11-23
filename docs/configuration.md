@@ -952,7 +952,7 @@ workspace root would.
 ## Outlines (`outline.Options`)
 
 `outline.Outline` and `outline.OutlineMany` take these options; the tools
-outline with the defaults.
+outline with the defaults and `Root` set to the workspace root.
 
 | Field | Default |
 |---|---|

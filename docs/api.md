@@ -136,8 +136,8 @@ raw string and rune literal, `ok` true. An unterminated raw string or block
 comment runs to the end of the file; an unterminated interpreted string or
 rune ends with its line. For the other languages the spans come from the
 tree-sitter grammar with cgo, and `ok` is false without cgo, without a
-grammar, or when the context ended. Reference search labels a hit outside
-every span `lexical` and one inside a span `text`.
+grammar, or when the context ended. A lexical reference search labels a hit
+outside every span `lexical` and one inside a span `text`.
 
 The verdict is not in the output of `file_outline` or `find_symbol`, nor read
 by `codesearch` (whose stored index records it with each outline).
