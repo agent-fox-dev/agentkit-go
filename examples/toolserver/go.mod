@@ -5,7 +5,7 @@ module github.com/agent-fox-dev/agentkit-go/examples/toolserver
 
 go 1.27
 
-require github.com/agent-fox-dev/agentkit-go v0.9.0
+require github.com/agent-fox-dev/agentkit-go v0.11.0
 
 require (
 	cloud.google.com/go/auth v0.14.0 // indirect
