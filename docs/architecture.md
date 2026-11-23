@@ -173,7 +173,7 @@ What follows from it:
 | `provider/openrouter` | The OpenRouter wire: OpenRouter's native Chat Completions through its own Go SDK. `New` resolves the key and base URL, builds one SDK client and makes no request. AgentKit writes the request body itself and the SDK sends it, through an `HTTPClient` that also records each response's status, `Retry-After` and error body, because the SDK's typed errors carry none of them; AgentKit runs its own retry loop, replays reasoning as `reasoning_details` to the model that produced it, nets the usage, prices it from the response's `cost` or the model's row, and keeps the API key out of every error and warning. |
 | `provider/ollama` | The Ollama wire: Ollama's native `/api/chat` through its own Go package. `New` resolves `OLLAMA_HOST` by the ollama CLI's rules (refusing a scheme other than http or https, a bad port, user information and the hosted service), builds one SDK client with `api.NewClient` and makes no request. Every request goes through a layer that deletes `Authorization` and records the response's status, because `Chat` returns no error for an error status with an empty body. It sends `num_ctx` and `truncate: false` on every request, cuts a tool schema to what the SDK's tool type carries, replays thinking to the model that produced it and a call's arguments with their keys in order and their values as written, nets the usage and prices it at zero, and names its failures: `ErrModelNotFound`, `ErrUnreachable`, `ErrContextWindow` and `ErrStreamTruncated`. |
 | `provider/faux` | A scripted provider for offline tests and demos. |
-| `outline` | Declarations of a source file with line ranges. Go uses `go/ast` in every build. With cgo, Python, JavaScript, TypeScript/TSX, Java, Kotlin, C#, Scala, Rust, C, C++, PHP, Ruby, Lua and shell are parsed by tree-sitter grammars; without cgo they are `none`. `IsTestFile` is the test-file convention the symbol and reference ranking in `tools` uses. |
+| `outline` | Declarations of a source file with line ranges. Go uses `go/ast` in every build. With cgo, Python, JavaScript, TypeScript/TSX, Java, Kotlin, C#, Scala, Rust, C, C++, PHP, Ruby, Lua and shell are parsed by tree-sitter grammars; without cgo they are `none`. Each `File` carries the verdict of the parse that produced it: parsed or why not, and the syntax errors found. `CommentAndStringSpans` answers for Go from its tokens in every build, for the other languages from their grammars. `IsTestFile` is the test-file convention the symbol and reference ranking in `tools` uses. |
 | `workspace` | The workspace: the containment boundary (`Open`, `Resolve`, `Rel`, `CheckWriteTarget`), the layered ignore engine (`IgnoreOptions`, `NoGlobalExcludes`, `Ignore`, `Ignored`) and the directory walk (`Walk`), opened once and handed to the tools and the index. It imports only the standard library and doublestar. |
 | `tools` | The built-in tools (`For`), its names for the output accumulator of `output`, process control and the runner (`Run`, `RunArgv`), glob, the symbol table behind `find_symbol` and the reference engine behind `find_references` (`References`). |
 | `guard` | The shell boundary: `Check` (a pure decision on an argv), `Commands` (the simple commands a shell line runs, read once for every policy), `Restricted` (the interceptor over both), `Allow` (`Restricted` with only the allowlist), `AllowAll`. |
@@ -618,10 +618,15 @@ Constants: `DefaultCallLimit` 1000 per session, `DefaultReconnectLimit` 3,
 - `find_references` finds usages and callers of a declaration. Go uses exact
   type resolution (`go/parser`, `go/types`, workspace-local imports, external
   imports stubbed as empty packages): a use is `resolved` when it resolves to
-  the target, and `lexical` when its type comes from a stubbed import. Other
-  languages use outline-attributed lexical matching: a hit is `lexical`
-  outside the comments and strings tree-sitter finds, and `text` in a build
-  without cgo. Each site is attributed to its enclosing declaration. The
+  the target, and `lexical` when its type comes from a stubbed import. A
+  target declared in another language is searched with outline-attributed
+  lexical matching over every file, Go files included: a hit is `lexical`
+  outside the comments and strings `outline.CommentAndStringSpans` finds
+  (from Go's tokens in every build, from tree-sitter for the other
+  languages) and `text` inside them; without cgo every hit outside a Go file
+  is `text`. A name with no declaration is searched as `text`. (`tools.References`
+  type-checks first and scans lexically only when Go code does not use the
+  name; see ADR 04.) Each site is attributed to its enclosing declaration. The
   tool's `path` argument scopes both the reported sites and the declaration
   lookup itself: a `path` holding only callers, not the declaration, matches
   no candidate and falls back to a workspace-wide text search, reporting

@@ -2,6 +2,7 @@ package outline
 
 import (
 	"context"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -27,8 +28,8 @@ func TestOutlinePathIsRelativeToRootOrAbsolute(t *testing.T) {
 
 func TestOutlineOfAnUnknownExtensionReadsNothing(t *testing.T) {
 	f, err := Outline(context.Background(), "/nonexistent/foo.xyz", nil, Options{})
-	if err != nil || f.Lang != "" || !isNone(f) {
-		t.Fatalf("Outline(foo.xyz) = %+v, %v; want no language, none, no error", f, err)
+	if err != nil || f.Lang != "" || !isNone(f, NotParsedUnsupported) {
+		t.Fatalf("Outline(foo.xyz) = %+v, %v; want no language, unsupported, no error", f, err)
 	}
 }
 
@@ -46,14 +47,16 @@ func TestOutlineReadsTheFileOnlyWhenNoSourceIsGiven(t *testing.T) {
 	}
 }
 
-// A file over the limit, on disk or given, is none; MaxFileBytes 0 means
-// 1 MiB, and a file of exactly the limit is outlined.
-func TestOutlineOfAFileOverTheSizeLimitIsNone(t *testing.T) {
+// A file over the limit, on disk or given, is not parsed as too large, even
+// when it is binary too; MaxFileBytes 0 means 1 MiB, and a file of exactly
+// the limit is parsed.
+func TestOutlineOfAFileOverTheSizeLimitIsTooLarge(t *testing.T) {
 	sized := func(n int) string {
 		s := "package a\n\nfunc F() {}\n//"
 		return s + strings.Repeat("x", n-len(s))
 	}
-	root := testutil.Tree(t, map[string]string{"exact.go": sized(500), "over.go": sized(501), "mib.go": sized(1<<20 + 1)})
+	root := testutil.Tree(t, map[string]string{"exact.go": sized(500), "over.go": sized(501), "mib.go": sized(1<<20 + 1),
+		"overbin.go": sized(500) + "\x00"})
 	for _, c := range []struct {
 		name  string
 		max   int64
@@ -61,7 +64,7 @@ func TestOutlineOfAFileOverTheSizeLimitIsNone(t *testing.T) {
 		none  bool
 	}{
 		{"exact.go", 500, false, false}, {"over.go", 500, false, true}, {"over.go", 500, true, true},
-		{"mib.go", 0, false, true}, {"over.go", 0, false, false},
+		{"mib.go", 0, false, true}, {"over.go", 0, false, false}, {"overbin.go", 500, true, true}, {"overbin.go", 500, false, true},
 	} {
 		abs := filepath.Join(root, c.name)
 		var src []byte
@@ -69,8 +72,8 @@ func TestOutlineOfAFileOverTheSizeLimitIsNone(t *testing.T) {
 			src, _ = os.ReadFile(abs)
 		}
 		f, err := Outline(context.Background(), abs, src, Options{MaxFileBytes: c.max})
-		if err != nil || isNone(f) != c.none || f.Lang != LangGo {
-			t.Errorf("%s with limit %d (given %v) = %s %v, %v; want none %v", c.name, c.max, c.given, f.Backend, shows(f.Decls), err, c.none)
+		if err != nil || isNone(f, NotParsedTooLarge) != c.none || f.Parsed == c.none || f.Lang != LangGo {
+			t.Errorf("%s with limit %d (given %v) = %s %q %v, %v; want too large %v", c.name, c.max, c.given, f.Backend, f.NotParsed, shows(f.Decls), err, c.none)
 		}
 	}
 	// Over the limit the file is not read at all: a directory would fail to.
@@ -78,20 +81,41 @@ func TestOutlineOfAFileOverTheSizeLimitIsNone(t *testing.T) {
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if f, err := Outline(context.Background(), dir, nil, Options{MaxFileBytes: 1}); err != nil || !isNone(f) {
-		t.Errorf("Outline of an over-limit entry = %+v, %v; want none without reading it", f, err)
+	if f, err := Outline(context.Background(), dir, nil, Options{MaxFileBytes: 1}); err != nil || !isNone(f, NotParsedTooLarge) {
+		t.Errorf("Outline of an over-limit entry = %+v, %v; want too large without reading it", f, err)
 	}
 }
 
-func TestOutlineOfABinaryFileIsNone(t *testing.T) {
+// A program passes a 2 MiB JavaScript file on disk and is told it is too
+// large, which it tells apart from a clean file and an unsupported one.
+func TestAProgramIsToldWhyAFileWasNotParsed(t *testing.T) {
+	ctx := context.Background()
+	root := testutil.Tree(t, map[string]string{
+		"big.js": strings.Repeat("//x\n", 2<<20/4), "a.go": "package a\n\nfunc A() {}\n", "notes.txt": "x\n",
+	})
+	big, err := Outline(ctx, filepath.Join(root, "big.js"), nil, Options{})
+	if err != nil || big.Lang != LangJavaScript || !isNone(big, NotParsedTooLarge) {
+		t.Fatalf("big.js: %+v, %v; want JavaScript, too large", big, err)
+	}
+	clean, err := Outline(ctx, filepath.Join(root, "a.go"), nil, Options{})
+	if err != nil || !clean.Parsed || clean.NotParsed != "" {
+		t.Fatalf("a.go: %+v, %v; want parsed", clean, err)
+	}
+	other, err := Outline(ctx, filepath.Join(root, "notes.txt"), nil, Options{})
+	if err != nil || other.NotParsed != NotParsedUnsupported || other.NotParsed == big.NotParsed {
+		t.Fatalf("notes.txt: %+v, %v; want unsupported", other, err)
+	}
+}
+
+func TestOutlineOfABinaryFileIsNotParsed(t *testing.T) {
 	early := []byte("package a\n\nfunc F() {}\n")
 	early = append(early, 0)
 	late := []byte("package a\n\nfunc F() {}\n//" + strings.Repeat("x", binarySniffSize) + "\x00\n")
-	if f := outlineSrc(t, "early.go", string(early)); !isNone(f) || f.Lang != LangGo {
-		t.Errorf("a NUL in the first 8 KiB: %s %v, want none", f.Backend, shows(f.Decls))
+	if f := outlineSrc(t, "early.go", string(early)); !isNone(f, NotParsedBinary) || f.Lang != LangGo {
+		t.Errorf("a NUL in the first 8 KiB: %s %q %v, want binary", f.Backend, f.NotParsed, shows(f.Decls))
 	}
-	if f := outlineSrc(t, "late.go", string(late)); f.Backend != BackendGoAST {
-		t.Errorf("a NUL after the first 8 KiB: %s, want it outlined", f.Backend)
+	if f := outlineSrc(t, "late.go", string(late)); f.Backend != BackendGoAST || !f.Parsed || f.NotParsed != "" {
+		t.Errorf("a NUL after the first 8 KiB: %s %v %q, want it parsed", f.Backend, f.Parsed, f.NotParsed)
 	}
 }
 
@@ -114,18 +138,18 @@ func TestOutlineOfACancelledContextIsItsError(t *testing.T) {
 	}
 }
 
-// A Go file the parser returns no syntax tree for is none.
-func TestOutlineOfAGoFileWithNoSyntaxTreeIsNone(t *testing.T) {
+// A Go file the parser returns no syntax tree for is not parsed: failed.
+func TestOutlineOfAGoFileWithNoSyntaxTreeFailed(t *testing.T) {
 	saved := parseGo
 	t.Cleanup(func() { parseGo = saved })
 	parseGo = func(*token.FileSet, string, any, parser.Mode) (*ast.File, error) { return nil, os.ErrInvalid }
-	if f := outlineSrc(t, "a.go", "package a\n\nfunc F() {}\n"); !isNone(f) || f.Lang != LangGo {
-		t.Errorf("Outline = %+v, want Go, none", f)
+	if f := outlineSrc(t, "a.go", "package a\n\nfunc F() {}\n"); !isNone(f, NotParsedFailed) || f.Lang != LangGo {
+		t.Errorf("Outline = %+v, want Go, failed", f)
 	}
 }
 
 // OutlineMany returns one File per input, in order, an unreadable one as
-// none.
+// not parsed: failed.
 func TestOutlineManyKeepsTheInputOrder(t *testing.T) {
 	dir := testutil.Tree(t, map[string]string{
 		"a.go": "package a\nfunc A() {}\n", "c.unknown": "x", "d.go": "package d\nfunc D() {}\n",
@@ -141,11 +165,14 @@ func TestOutlineManyKeepsTheInputOrder(t *testing.T) {
 	}
 	var got []string
 	for _, f := range files {
-		got = append(got, f.Path+" "+f.Lang+" "+string(f.Backend)+" "+strings.Join(shows(f.Decls), ","))
+		got = append(got, fmt.Sprintf("%s %s %s %v %q %s", f.Path, f.Lang, f.Backend, f.Parsed, f.NotParsed, strings.Join(shows(f.Decls), ",")))
+		if f.SyntaxErrors == nil {
+			t.Errorf("%s: SyntaxErrors is nil", f.Path)
+		}
 	}
 	want := []string{
-		"a.go Go go/ast func A L2-2", "missing.py Python none ", "c.unknown  none ",
-		"d.go Go go/ast func D L2-2", "given.go Go go/ast func G L2-2",
+		`a.go Go go/ast true "" func A L2-2`, `missing.py Python none false "failed" `, `c.unknown  none false "unsupported" `,
+		`d.go Go go/ast true "" func D L2-2`, `given.go Go go/ast true "" func G L2-2`,
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("OutlineMany =\n%q\nwant\n%q", got, want)

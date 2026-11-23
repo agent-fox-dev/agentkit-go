@@ -3,27 +3,598 @@
   "spec_id": "35",
   "spec_name": "outline_syntax_errors",
   "schema_version": 3,
-  "updated_at": "",
+  "updated_at": "2026-11-23T09:26:15Z",
   "tasks": [
     {
       "id": 1,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-1.1",
+          "tests": [
+            {
+              "test": "./outline:TestOutlineOfAGoFile",
+              "failed": {
+                "at": "2026-11-23T09:09:58Z",
+                "tree": "af37068f2ab72be98d759b122ef343c1e9a766fc"
+              },
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            },
+            {
+              "test": "./outline:TestTreeSitterDeclarations",
+              "failed": {
+                "at": "2026-11-23T09:09:58Z",
+                "tree": "af37068f2ab72be98d759b122ef343c1e9a766fc"
+              },
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.2",
+          "tests": [
+            {
+              "test": "./outline:TestOutlineOfAnUnknownExtensionReadsNothing",
+              "failed": {
+                "at": "2026-11-23T09:09:58Z",
+                "tree": "af37068f2ab72be98d759b122ef343c1e9a766fc"
+              },
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.3",
+          "tests": [
+            {
+              "test": "./outline:TestOutlineOfAFileOverTheSizeLimitIsTooLarge",
+              "failed": {
+                "at": "2026-11-23T09:09:58Z",
+                "tree": "af37068f2ab72be98d759b122ef343c1e9a766fc"
+              },
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.4",
+          "tests": [
+            {
+              "test": "./outline:TestOutlineOfABinaryFileIsNotParsed",
+              "failed": {
+                "at": "2026-11-23T09:09:58Z",
+                "tree": "af37068f2ab72be98d759b122ef343c1e9a766fc"
+              },
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.5",
+          "tests": [
+            {
+              "test": "./outline:TestOutlineOfAGoFileWithNoSyntaxTreeFailed",
+              "failed": {
+                "at": "2026-11-23T09:09:58Z",
+                "tree": "af37068f2ab72be98d759b122ef343c1e9a766fc"
+              },
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            },
+            {
+              "test": "./outline:TestAFileWhoseGrammarDoesNotLoadFailed",
+              "failed": {
+                "at": "2026-11-23T09:09:58Z",
+                "tree": "af37068f2ab72be98d759b122ef343c1e9a766fc"
+              },
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.6",
+          "tests": [
+            {
+              "test": "./outline:TestOutlineManyKeepsTheInputOrder",
+              "failed": {
+                "at": "2026-11-23T09:09:58Z",
+                "tree": "af37068f2ab72be98d759b122ef343c1e9a766fc"
+              },
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-5.3",
+          "no_red": "the behaviour is unchanged by this package: a cancelled context already returns ctx.Err() and no File, and these existing tests pin it unedited",
+          "tests": [
+            {
+              "test": "./outline:TestOutlineOfACancelledContextIsItsError",
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            },
+            {
+              "test": "./outline:TestAParseStopsWhenTheContextEnds",
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 2,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-2.1",
+          "tests": [
+            {
+              "test": "./outline:TestGoSyntaxErrorsArePositionsAndKinds",
+              "failed": {
+                "at": "2026-11-23T09:13:25Z",
+                "tree": "b7496a7b1c95c28d86d61da633ad60bd042b6507"
+              },
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.2",
+          "tests": [
+            {
+              "test": "./outline:TestGoSyntaxErrorsArePositionsAndKinds",
+              "failed": {
+                "at": "2026-11-23T09:13:25Z",
+                "tree": "b7496a7b1c95c28d86d61da633ad60bd042b6507"
+              },
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.3",
+          "tests": [
+            {
+              "test": "./outline:TestGoSyntaxErrorsArePositionsAndKinds",
+              "failed": {
+                "at": "2026-11-23T09:13:25Z",
+                "tree": "b7496a7b1c95c28d86d61da633ad60bd042b6507"
+              },
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.4",
+          "tests": [
+            {
+              "test": "./outline:TestAGoFileWithErrorsOnManyLinesKeepsItsDeclarations",
+              "failed": {
+                "at": "2026-11-23T09:13:25Z",
+                "tree": "b7496a7b1c95c28d86d61da633ad60bd042b6507"
+              },
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-4.1",
+          "tests": [
+            {
+              "test": "./outline:TestGoSyntaxErrorsArePositionsAndKinds",
+              "failed": {
+                "at": "2026-11-23T09:13:25Z",
+                "tree": "b7496a7b1c95c28d86d61da633ad60bd042b6507"
+              },
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-4.2",
+          "tests": [
+            {
+              "test": "./outline:TestGoSyntaxErrorsStopAtTheLimit",
+              "failed": {
+                "at": "2026-11-23T09:13:25Z",
+                "tree": "b7496a7b1c95c28d86d61da633ad60bd042b6507"
+              },
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-4.3",
+          "tests": [
+            {
+              "test": "./outline:TestGoSyntaxErrorsStopAtTheLimit",
+              "failed": {
+                "at": "2026-11-23T09:13:25Z",
+                "tree": "b7496a7b1c95c28d86d61da633ad60bd042b6507"
+              },
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-5.1",
+          "no_red": "a pin of today's declarations: the broken.go list was recorded from the unchanged code and the other three tests are unedited, so they pass before and must pass after the parser mode changes",
+          "tests": [
+            {
+              "test": "./outline:TestABrokenGoFileStillYieldsWhatParses",
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            },
+            {
+              "test": "./outline:TestOutlineOfAGoFile",
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            },
+            {
+              "test": "./outline:TestGoDeclarationsHaveTheirKindContainerAndRange",
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            },
+            {
+              "test": "./outline:TestGoSignaturesAreOneLineWithoutTheBody",
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 3,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-3.1",
+          "tests": [
+            {
+              "test": "./outline:TestTreeSitterSyntaxErrorsAreTheOutermostErrorAndEachMissingNode",
+              "failed": {
+                "at": "2026-11-23T09:16:37Z",
+                "tree": "abe321232b06d774d0c73955c22d367e18f811f5"
+              },
+              "passed": {
+                "at": "2026-11-23T09:17:37Z",
+                "tree": "1a95b44f2c147a4f51cb6b30e7950d53f07e02f0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.2",
+          "tests": [
+            {
+              "test": "./outline:TestTreeSitterSyntaxErrorsAreTheOutermostErrorAndEachMissingNode",
+              "failed": {
+                "at": "2026-11-23T09:16:37Z",
+                "tree": "abe321232b06d774d0c73955c22d367e18f811f5"
+              },
+              "passed": {
+                "at": "2026-11-23T09:17:37Z",
+                "tree": "1a95b44f2c147a4f51cb6b30e7950d53f07e02f0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.3",
+          "tests": [
+            {
+              "test": "./outline:TestABrokenFileInEveryTreeSitterLanguageHasAnErrorAtItsFault",
+              "failed": {
+                "at": "2026-11-23T09:16:37Z",
+                "tree": "abe321232b06d774d0c73955c22d367e18f811f5"
+              },
+              "passed": {
+                "at": "2026-11-23T09:17:37Z",
+                "tree": "1a95b44f2c147a4f51cb6b30e7950d53f07e02f0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-3.4",
+          "tests": [
+            {
+              "test": "./outline:TestTreeSitterSyntaxErrorsStopAtTheLimit",
+              "failed": {
+                "at": "2026-11-23T09:16:37Z",
+                "tree": "abe321232b06d774d0c73955c22d367e18f811f5"
+              },
+              "passed": {
+                "at": "2026-11-23T09:17:37Z",
+                "tree": "1a95b44f2c147a4f51cb6b30e7950d53f07e02f0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-5.2",
+          "no_red": "a pin of today's tree-sitter declarations and the .h rule: the wanted lists are unedited and pass before and after; the broken files' declarations, recorded from main, are asserted in the red test of REQ-3.1",
+          "tests": [
+            {
+              "test": "./outline:TestTreeSitterDeclarations",
+              "passed": {
+                "at": "2026-11-23T09:17:37Z",
+                "tree": "1a95b44f2c147a4f51cb6b30e7950d53f07e02f0"
+              }
+            },
+            {
+              "test": "./outline:TestACppHeaderIsOutlinedAsCpp",
+              "passed": {
+                "at": "2026-11-23T09:17:37Z",
+                "tree": "1a95b44f2c147a4f51cb6b30e7950d53f07e02f0"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-5.4",
+          "tests": [
+            {
+              "test": "./tools:TestFileOutlineOfABrokenFileShowsNoSyntaxErrors",
+              "failed": {
+                "at": "2026-11-23T09:16:37Z",
+                "tree": "abe321232b06d774d0c73955c22d367e18f811f5"
+              },
+              "passed": {
+                "at": "2026-11-23T09:17:37Z",
+                "tree": "1a95b44f2c147a4f51cb6b30e7950d53f07e02f0"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 4,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-6.1",
+          "tests": [
+            {
+              "test": "./outline:TestGoCommentAndStringSpans",
+              "failed": {
+                "at": "2026-11-23T09:19:58Z",
+                "tree": "04e69933afdf38cc806b143ceede0edd863ef3cb"
+              },
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-6.2",
+          "tests": [
+            {
+              "test": "./outline:TestGoCommentAndStringSpans",
+              "failed": {
+                "at": "2026-11-23T09:19:58Z",
+                "tree": "04e69933afdf38cc806b143ceede0edd863ef3cb"
+              },
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-6.3",
+          "tests": [
+            {
+              "test": "./outline:TestGoCommentAndStringSpans",
+              "failed": {
+                "at": "2026-11-23T09:19:58Z",
+                "tree": "04e69933afdf38cc806b143ceede0edd863ef3cb"
+              },
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-6.4",
+          "no_red": "the other languages answer as before: the six language cases and the cancellation test are unedited and pass before and after; only the assertion that Go has no spans was removed",
+          "tests": [
+            {
+              "test": "./outline:TestCommentAndStringSpans",
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            },
+            {
+              "test": "./outline:TestAParseStopsWhenTheContextEnds",
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-6.5",
+          "tests": [
+            {
+              "test": "./tools:TestACodeHitIsLexicalAndACommentOrStringHitIsText",
+              "failed": {
+                "at": "2026-11-23T09:19:58Z",
+                "tree": "04e69933afdf38cc806b143ceede0edd863ef3cb"
+              },
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-6.6",
+          "no_red": "a pin of behaviour that must not change: go/types resolution and the text backend's labels; the resolved tests are unedited, and the text-backend test gains a Go hit in code that is text before and after",
+          "tests": [
+            {
+              "test": "./tools:TestFindReferencesOfANameNothingDeclaresIsText",
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            },
+            {
+              "test": "./tools:TestFindReferencesResolvesAGoMethodsCallers",
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            },
+            {
+              "test": "./tools:TestReferencesFindsTheResolvedCallers",
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            },
+            {
+              "test": "./tools:TestReferencesChoosesItsBackendFromTheTarget",
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 5,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "PATH-1",
+          "no_red": "a smoke test written after the tasks that deliver the path; it runs the path once with real components",
+          "tests": [
+            {
+              "test": "./outline:TestAProgramOutlinesACleanFileThenOneItHasJustBroken",
+              "passed": {
+                "at": "2026-11-23T09:26:13Z",
+                "tree": "0b299876b0972c3c075237f5ed304121abc81b9c"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-2",
+          "no_red": "a smoke test written after the tasks that deliver the path; it runs the path once with real components",
+          "tests": [
+            {
+              "test": "./outline:TestAProgramIsToldWhyAFileWasNotParsed",
+              "passed": {
+                "at": "2026-11-23T09:26:13Z",
+                "tree": "0b299876b0972c3c075237f5ed304121abc81b9c"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-3",
+          "no_red": "PATH-3's own smoke test, TestWithoutCgoOnlyGoIsOutlined, compiles only with CGO_ENABLED=0 and speca runs go test with cgo; these two constraint-free tests run in both builds, and the no-cgo test was run with CGO_ENABLED=0 go test ./outline, which passed",
+          "tests": [
+            {
+              "test": "./outline:TestGoCommentAndStringSpans",
+              "passed": {
+                "at": "2026-11-23T09:26:13Z",
+                "tree": "0b299876b0972c3c075237f5ed304121abc81b9c"
+              }
+            },
+            {
+              "test": "./outline:TestGoSyntaxErrorsArePositionsAndKinds",
+              "passed": {
+                "at": "2026-11-23T09:26:13Z",
+                "tree": "0b299876b0972c3c075237f5ed304121abc81b9c"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-4",
+          "no_red": "a smoke test written after the tasks that deliver the path; it fails on main's code (both hits text) and passes on the branch",
+          "tests": [
+            {
+              "test": "./tools:TestReferencesTellAGoCallFromAGoComment",
+              "passed": {
+                "at": "2026-11-23T09:26:13Z",
+                "tree": "0b299876b0972c3c075237f5ed304121abc81b9c"
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

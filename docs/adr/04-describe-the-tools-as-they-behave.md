@@ -24,6 +24,11 @@ what the tool marshals:
 - `file_outline`'s `file` uses the Go field names of `outline.File` and
   `outline.Decl` (`Path`, `Lang`, `Backend`, `Decls`; `Kind`, `Name`,
   `Container`, `Signature`, `Exported`, `StartLine`, `EndLine`), all present.
+  It is those four fields of `outline.File` and no others: the file's parse
+  verdict (`Parsed`, `NotParsed`, `SyntaxErrors`,
+  `SyntaxErrorsTruncated`) is left out, so the tool's output did not change
+  when `outline` started reporting it. `Data["file"]` is therefore a value
+  of the tools package's own type, not an `outline.File`.
 - `find_symbol`'s `backends` is a count per backend; a symbol has a `backend`
   and no `score`, and all its fields are required.
 - `find_references`' `target` is the `outline.Decl` searched for, `errors` is
@@ -46,11 +51,23 @@ context is created after the clock starts, never before.
 
 - A Go target is searched by type only: the resolver's identifiers are
   reported, and Go comments, strings and non-Go files mentioning the name are
-  not scanned, so its header always shows `0 text matches`. A non-Go or
-  undeclared target is scanned lexically, and its declaration line is reported
-  as a `lexical` site.
-- Comment and string spans come from tree-sitter, which needs cgo. Without
-  cgo every non-Go hit is `text` and attributed to `<file>`.
+  not scanned, so its header always shows `0 text matches`. A non-Go target
+  is scanned lexically, and its declaration line is reported as a `lexical`
+  site. A name `find_references` finds no declaration of is searched as
+  `text`; `tools.References` scans it lexically.
+- `tools.References` chooses its backend by type-checking first, and the
+  type check also reports a use in Go code of a name no package declares (an
+  unresolved selector such as `yaml.Marshal`, labelled `lexical`); then the
+  backend is `go/types`. So its lexical scan reaches the code of a Go file
+  only when the type checker cannot load that file (one that has lost its
+  package clause, say). `find_references` takes the backend from the
+  declaration it resolves, so a target declared in another language is
+  scanned lexically in every file, Go files included: a Go call is `lexical`
+  and a Go comment naming it `text`.
+- Comment and string spans of a Go file come from its tokens, in every
+  build. Those of the other languages come from tree-sitter, which needs cgo:
+  without cgo every hit outside a Go file is `text` and attributed to
+  `<file>`.
 - The time budget is checked per file walked, between Go package checks and
   between scanned files; walking the ASTs of packages already checked runs to
   completion.

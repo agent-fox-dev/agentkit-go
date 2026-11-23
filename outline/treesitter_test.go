@@ -4,59 +4,65 @@ package outline
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 )
 
+// treeSitterSamples is a clean file for each tree-sitter language, and the
+// .tsx and C++ .h rules, with the declarations it outlines to.
+var treeSitterSamples = []struct {
+	file, src string
+	want      []string
+}{
+	{"a.py", "X = 1\n\n@dec\ndef f():\n    def local():\n        pass\n\nclass Runner:\n    def run(self):\n        pass\n\n    def _hide(self):\n        pass\n",
+		[]string{"var X L1-1", "func f L4-6", "class Runner L8-13", "method Runner.run L9-10", "method Runner._hide L12-13 -"}},
+	{"a.js", "export function f() { function local() {} }\nclass W {\n  m() {}\n  #p() {}\n}\nconst g = () => 1\n",
+		[]string{"func f L1-1", "class W L2-5 -", "method W.m L3-3 -", "method W.#p L4-4 -", "func g L6-6 -"}},
+	{"a.ts", "export interface I { a(): void }\ntype T = string\nenum E { A }\nexport abstract class B {\n  private p(): void {}\n  abstract q(): void\n}\n",
+		[]string{"interface I L1-1", "type T L2-2 -", "enum E L3-3 -", "class B L4-7", "method B.p L5-5 -", "method B.q L6-6"}},
+	{"a.tsx", "export function View() { return <div/> }\n",
+		[]string{"func View L1-1"}},
+	{"A.java", "public class Outer {\n    @Override\n    public void run() {}\n    private int h() { return 1; }\n}\ninterface I {}\nenum E { A }\n",
+		[]string{"class Outer L1-5", "method Outer.run L3-3", "method Outer.h L4-4 -", "interface I L6-6 -", "enum E L7-7 -"}},
+	{"a.cs", "namespace N\n{\n    public class W\n    {\n        public void Draw() {}\n        private void H() {}\n    }\n    public struct P {}\n}\n",
+		[]string{"module N L1-9 -", "class W L3-7", "method W.Draw L5-5", "method W.H L6-6 -", "type P L8-8"}},
+	{"a.kt", "fun top() {}\n\nclass W {\n    private fun h() {}\n}\n\ninterface S {\n    fun area(): Double\n}\n\nenum class C {\n    A\n}\n\nobject O\n",
+		[]string{"func top L1-1", "class W L3-5", "method W.h L4-4 -", "interface S L7-9", "method S.area L8-8", "enum C L11-13", "class O L15-15"}},
+	{"a.scala", "class W {\n  def d(): Unit = {}\n  private def h = 1\n}\ntrait S\nobject O\n",
+		[]string{"class W L1-4", "method W.d L2-2", "method W.h L3-3 -", "trait S L5-5", "class O L6-6"}},
+	{"a.rs", "pub struct W;\nimpl W {\n    pub fn new() -> Self { fn local() {} W }\n    fn p(&self) {}\n}\npub trait S { fn a(&self); }\nconst M: u8 = 1;\nmacro_rules! m { () => {} }\n",
+		[]string{"type W L1-1", "method W.new L3-3", "method W.p L4-4 -", "trait S L6-6", "method S.a L6-6 -", "const M L7-7 -", "macro m L8-8 -"}},
+	{"a.c", "#define MAX 1\ntypedef struct p { int x; } p_t;\nenum c { R };\nstatic int h(int x) { return x; }\n",
+		[]string{"macro MAX L1-1", "type p L2-2", "type p_t L2-2", "enum c L3-3", "func h L4-4"}},
+	{"a.cpp", "namespace ns {\nclass W {\n  void m() {}\n};\n}\nvoid ns::W::d() {}\n",
+		[]string{"module ns L1-5", "class W L2-4", "method W.m L3-3", "method ns::W.d L6-6"}},
+	{"a.h", "class W { public: void m() {} };\n",
+		[]string{"class W L1-1", "method W.m L1-1"}},
+	{"a.php", "<?php\nfunction f() {}\nclass U {\n    public function n() {}\n    private function s() {}\n}\n",
+		[]string{"func f L2-2", "class U L3-6", "method U.n L4-4", "method U.s L5-5 -"}},
+	{"a.rb", "def top; end\nmodule M\n  def self.h; end\nend\nclass W\n  def _p; end\nend\n",
+		[]string{"func top L1-1", "module M L2-4", "method M.h L3-3", "class W L5-7", "method W._p L6-6 -"}},
+	{"a.lua", "function g() end\nlocal function l() end\nfunction M.f() end\nfunction M:m() end\n",
+		[]string{"func g L1-1", "func l L2-2 -", "method M.f L3-3", "method M.m L4-4"}},
+	{"a.sh", "greet() { echo; }\nfunction _p { :; }\n",
+		[]string{"func greet L1-1", "func _p L2-2 -"}},
+}
+
 // Each grammar's query yields the closed Kind set, containers, the
 // language's export rule and line ranges; locals inside functions are
 // dropped, and the signature is the line the declaration's name is on.
 func TestTreeSitterDeclarations(t *testing.T) {
-	cases := []struct {
-		file, src string
-		want      []string
-	}{
-		{"a.py", "X = 1\n\n@dec\ndef f():\n    def local():\n        pass\n\nclass Runner:\n    def run(self):\n        pass\n\n    def _hide(self):\n        pass\n",
-			[]string{"var X L1-1", "func f L4-6", "class Runner L8-13", "method Runner.run L9-10", "method Runner._hide L12-13 -"}},
-		{"a.js", "export function f() { function local() {} }\nclass W {\n  m() {}\n  #p() {}\n}\nconst g = () => 1\n",
-			[]string{"func f L1-1", "class W L2-5 -", "method W.m L3-3 -", "method W.#p L4-4 -", "func g L6-6 -"}},
-		{"a.ts", "export interface I { a(): void }\ntype T = string\nenum E { A }\nexport abstract class B {\n  private p(): void {}\n  abstract q(): void\n}\n",
-			[]string{"interface I L1-1", "type T L2-2 -", "enum E L3-3 -", "class B L4-7", "method B.p L5-5 -", "method B.q L6-6"}},
-		{"a.tsx", "export function View() { return <div/> }\n",
-			[]string{"func View L1-1"}},
-		{"A.java", "public class Outer {\n    @Override\n    public void run() {}\n    private int h() { return 1; }\n}\ninterface I {}\nenum E { A }\n",
-			[]string{"class Outer L1-5", "method Outer.run L3-3", "method Outer.h L4-4 -", "interface I L6-6 -", "enum E L7-7 -"}},
-		{"a.cs", "namespace N\n{\n    public class W\n    {\n        public void Draw() {}\n        private void H() {}\n    }\n    public struct P {}\n}\n",
-			[]string{"module N L1-9 -", "class W L3-7", "method W.Draw L5-5", "method W.H L6-6 -", "type P L8-8"}},
-		{"a.kt", "fun top() {}\n\nclass W {\n    private fun h() {}\n}\n\ninterface S {\n    fun area(): Double\n}\n\nenum class C {\n    A\n}\n\nobject O\n",
-			[]string{"func top L1-1", "class W L3-5", "method W.h L4-4 -", "interface S L7-9", "method S.area L8-8", "enum C L11-13", "class O L15-15"}},
-		{"a.scala", "class W {\n  def d(): Unit = {}\n  private def h = 1\n}\ntrait S\nobject O\n",
-			[]string{"class W L1-4", "method W.d L2-2", "method W.h L3-3 -", "trait S L5-5", "class O L6-6"}},
-		{"a.rs", "pub struct W;\nimpl W {\n    pub fn new() -> Self { fn local() {} W }\n    fn p(&self) {}\n}\npub trait S { fn a(&self); }\nconst M: u8 = 1;\nmacro_rules! m { () => {} }\n",
-			[]string{"type W L1-1", "method W.new L3-3", "method W.p L4-4 -", "trait S L6-6", "method S.a L6-6 -", "const M L7-7 -", "macro m L8-8 -"}},
-		{"a.c", "#define MAX 1\ntypedef struct p { int x; } p_t;\nenum c { R };\nstatic int h(int x) { return x; }\n",
-			[]string{"macro MAX L1-1", "type p L2-2", "type p_t L2-2", "enum c L3-3", "func h L4-4"}},
-		{"a.cpp", "namespace ns {\nclass W {\n  void m() {}\n};\n}\nvoid ns::W::d() {}\n",
-			[]string{"module ns L1-5", "class W L2-4", "method W.m L3-3", "method ns::W.d L6-6"}},
-		{"a.h", "class W { public: void m() {} };\n",
-			[]string{"class W L1-1", "method W.m L1-1"}},
-		{"a.php", "<?php\nfunction f() {}\nclass U {\n    public function n() {}\n    private function s() {}\n}\n",
-			[]string{"func f L2-2", "class U L3-6", "method U.n L4-4", "method U.s L5-5 -"}},
-		{"a.rb", "def top; end\nmodule M\n  def self.h; end\nend\nclass W\n  def _p; end\nend\n",
-			[]string{"func top L1-1", "module M L2-4", "method M.h L3-3", "class W L5-7", "method W._p L6-6 -"}},
-		{"a.lua", "function g() end\nlocal function l() end\nfunction M.f() end\nfunction M:m() end\n",
-			[]string{"func g L1-1", "func l L2-2 -", "method M.f L3-3", "method M.m L4-4"}},
-		{"a.sh", "greet() { echo; }\nfunction _p { :; }\n",
-			[]string{"func greet L1-1", "func _p L2-2 -"}},
-	}
-	for _, tc := range cases {
+	for _, tc := range treeSitterSamples {
 		t.Run(tc.file, func(t *testing.T) {
 			f := outlineSrc(t, tc.file, tc.src)
 			if f.Backend != BackendTreeSitter {
 				t.Fatalf("Backend = %q", f.Backend)
 			}
+			assertParsedClean(t, f)
 			for _, d := range f.Decls {
 				if want := strings.Split(tc.src, "\n")[d.StartLine-1]; d.Signature != strings.TrimSpace(want) {
 					t.Errorf("%s: signature %q, want the line it starts on %q", d.Name, d.Signature, want)
@@ -66,6 +72,109 @@ func TestTreeSitterDeclarations(t *testing.T) {
 				t.Errorf("decls:\n got %q\nwant %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// Each error node with no error node above it is one unexpected error at
+// its start, and each missing node one missing error where the token was
+// expected; the declarations are the ones the tree had before its errors
+// were read.
+func TestTreeSitterSyntaxErrorsAreTheOutermostErrorAndEachMissingNode(t *testing.T) {
+	type e = SyntaxError
+	u, m := SyntaxErrorUnexpected, SyntaxErrorMissing
+	for _, c := range []struct {
+		file, src string
+		want      []e
+		decls     []string
+	}{
+		// Four error nodes inside one outer error node.
+		{"a.py", "def f():\n    x = ((( ]]] }}} $$ ??\n    y = [1, (2, {3: ]\n", []e{{2, 5, u}}, nil},
+		{"A.java", "class A {\n  int x = 1\n  void m() {}\n}\n", []e{{2, 12, m}}, []string{"class A L1-4 -", "method A.m L3-3 -"}},
+		{"a.js", "const x = (1 + 2;\nlet y = 3;\n", []e{{1, 17, m}}, []string{}},
+		{"a.py", "def f(:\n    pass\n", []e{{1, 7, m}}, []string{"func f L1-2"}},
+	} {
+		f := outlineSrc(t, c.file, c.src)
+		if !f.Parsed || f.Backend != BackendTreeSitter || f.NotParsed != "" || !slices.Equal(f.SyntaxErrors, c.want) || f.SyntaxErrorsTruncated {
+			t.Errorf("%s %q: %s parsed %v %q, errors %v (truncated %v); want %v", c.file, c.src, f.Backend, f.Parsed, f.NotParsed, f.SyntaxErrors, f.SyntaxErrorsTruncated, c.want)
+		}
+		if c.decls != nil && !slices.Equal(shows(f.Decls), c.decls) {
+			t.Errorf("%s %q: decls %q, want %q", c.file, c.src, shows(f.Decls), c.decls)
+		}
+	}
+}
+
+// Error and missing nodes are ordered together by position and cut to the
+// limit together.
+func TestTreeSitterSyntaxErrorsStopAtTheLimit(t *testing.T) {
+	src := []byte("def f(:\n    pass\n\ndef g():\n    return (1 + \n")
+	first := SyntaxError{1, 7, SyntaxErrorMissing}
+	for _, c := range []struct {
+		limit     int
+		want      []SyntaxError
+		truncated bool
+	}{
+		{0, []SyntaxError{first, {5, 5, SyntaxErrorUnexpected}}, false},
+		{1, []SyntaxError{first}, true},
+	} {
+		f, err := Outline(context.Background(), "/x/a.py", src, Options{MaxSyntaxErrors: c.limit})
+		if err != nil || !slices.Equal(f.SyntaxErrors, c.want) || f.SyntaxErrorsTruncated != c.truncated {
+			t.Errorf("limit %d: %v (truncated %v), %v; want %v (truncated %v)", c.limit, f.SyntaxErrors, f.SyntaxErrorsTruncated, err, c.want, c.truncated)
+		}
+	}
+}
+
+// A file with a syntax error, in every tree-sitter language, is parsed and
+// has an error on the line of the fault or of the first token after it.
+// The fault is a stray `)` on a line of its own, put on line 2 of each
+// clean sample.
+func TestABrokenFileInEveryTreeSitterLanguageHasAnErrorAtItsFault(t *testing.T) {
+	for _, tc := range treeSitterSamples {
+		first, rest, _ := strings.Cut(tc.src, "\n")
+		f := outlineSrc(t, tc.file, first+"\n)\n"+rest)
+		if !f.Parsed || f.Backend != BackendTreeSitter || f.NotParsed != "" ||
+			!slices.ContainsFunc(f.SyntaxErrors, func(e SyntaxError) bool { return e.Line == 2 || e.Line == 3 }) {
+			t.Errorf("%s: %s parsed %v %q, errors %v; want one on line 2 or 3", tc.file, f.Backend, f.Parsed, f.NotParsed, f.SyntaxErrors)
+		}
+	}
+}
+
+// A program outlines a clean Python file, then a Go file it has just broken
+// by removing a function's closing brace, and can refuse the edit on the
+// second verdict.
+func TestAProgramOutlinesACleanFileThenOneItHasJustBroken(t *testing.T) {
+	ctx := context.Background()
+	py, err := Outline(ctx, "/x/a.py", []byte(treeSitterSamples[0].src), Options{})
+	if err != nil || !py.Parsed || py.Backend != BackendTreeSitter || len(py.Decls) == 0 || len(py.SyntaxErrors) != 0 {
+		t.Fatalf("clean Python: %+v, %v", py, err)
+	}
+	sample, err := os.ReadFile(filepath.Join("testdata", "go_sample.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(sample), "\n")
+	if lines[5] != "}" {
+		t.Fatalf("line 6 of go_sample.go is %q, want Greet's closing brace", lines[5])
+	}
+	edited := []byte(strings.Join(slices.Delete(lines, 5, 6), "\n"))
+	g, err := Outline(ctx, "/x/go_sample.go", edited, Options{})
+	if err != nil || !g.Parsed || g.Backend != BackendGoAST || len(g.Decls) == 0 || len(g.SyntaxErrors) == 0 {
+		t.Fatalf("the broken Go file: %+v, %v; want parsed with declarations and syntax errors", g, err)
+	}
+	for _, e := range g.SyntaxErrors {
+		if e.Line < 6 {
+			t.Errorf("syntax error %v is before the function's last line", e)
+		}
+	}
+}
+
+// A grammar that cannot be loaded leaves the file not parsed: failed, with
+// no error from Outline.
+func TestAFileWhoseGrammarDoesNotLoadFailed(t *testing.T) {
+	saved := grammars[LangLua]
+	t.Cleanup(func() { grammars[LangLua] = saved })
+	grammars[LangLua] = &grammar{load: saved.load, query: "(no_such_node) @name", exported: always}
+	if f := outlineSrc(t, "a.lua", "function g() end\n"); !isNone(f, NotParsedFailed) || f.Lang != LangLua {
+		t.Errorf("Outline(a.lua) = %+v; want Lua, failed", f)
 	}
 }
 
@@ -101,9 +210,6 @@ func TestCommentAndStringSpans(t *testing.T) {
 		if code := strings.LastIndex(tc.src, tc.inCode); in(code) {
 			t.Errorf("%s: code at %d (%q) is in a literal span %v", tc.file, code, tc.inCode, spans)
 		}
-	}
-	if _, ok := CommentAndStringSpans(context.Background(), "/x/a.go", nil); ok {
-		t.Error("Go has no grammar: its references are resolved by type")
 	}
 }
 

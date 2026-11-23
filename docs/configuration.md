@@ -36,6 +36,7 @@ configured by:
   - [Tiers](#tiers)
   - [`catalog.Select`](#catalogselect)
 - [Workspace (`workspace.Options`)](#workspace-workspaceoptions)
+- [Outlines (`outline.Options`)](#outlines-outlineoptions)
 - [Built-in tools (`tools.Options`)](#built-in-tools-toolsoptions)
   - [`code_search` (when a `codesearch` index is set)](#code_search-when-a-codesearch-index-is-set)
 - [Subprocess runner (`tools.Run`, `tools.RunArgv`)](#subprocess-runner-toolsrun-toolsrunargv)
@@ -947,6 +948,20 @@ excluded; `.ignore` files are not read. `ws.Walk(ctx, sub, WalkOptions{IncludeHi
 visits what those rules leave under `sub`, with the engine rooted at `sub`, and
 `ws.Ignored(rel, isDir)` answers the question for one path as a walk from the
 workspace root would.
+
+## Outlines (`outline.Options`)
+
+`outline.Outline` and `outline.OutlineMany` take these options; the tools
+outline with the defaults and `Root` set to the workspace root.
+
+| Field | Default |
+|---|---|
+| `Root` | Empty: `File.Path` is the absolute path. When set, `File.Path` is relative to it and slash-separated. |
+| `MaxFileBytes` | 0, meaning 1 MiB. A larger file is not read (on disk, its size is checked on a stat) and is not parsed: `NotParsed` is `too_large`. |
+| `MaxSyntaxErrors` | 0, meaning 20; a negative value is treated as 0. A parse that finds more keeps the first ones by position and sets `SyntaxErrorsTruncated`. |
+
+A file with a NUL byte in its first 8 KiB is not parsed either (`binary`),
+after the size check.
 
 ## Built-in tools (`tools.Options`)
 

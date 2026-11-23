@@ -1,5 +1,19 @@
 package outline // import "github.com/agent-fox-dev/agentkit-go/outline"
 
+Package outline returns the declarations of a source file, with line ranges, and
+the parse verdict of the parse that produced them: whether the file was parsed,
+why not if it was not, and the syntax errors the parse found. Go is parsed
+with go/parser in every build; fourteen other languages with their tree-sitter
+grammars in a build with cgo. One parse gives both the declarations and the
+verdict, so a file is never outlined by one backend and checked by another.
+
+A syntax error is a position and a kind (unexpected text, or a token that is
+missing where it was expected), never a message. Semantic errors (unresolved
+names, types, unused imports) are not reported: only what the parser rejects.
+
+A grammar can lag its language: a file that uses syntax newer than the grammar
+of this build is reported with syntax errors although the language accepts it. A
+caller that refuses files, or edits, on this verdict should offer a way past it.
 
 CONSTANTS
 
@@ -27,8 +41,18 @@ FUNCTIONS
 
 func CommentAndStringSpans(ctx context.Context, path string, src []byte) (spans [][2]int, ok bool)
     CommentAndStringSpans returns the byte ranges [start, end) of the comments
-    and string literals in src, in order, as the language's tree-sitter grammar
-    parses them. ok is false when the language has no grammar or ctx ended.
+    and string literals in src, in order and not overlapping.
+
+    For a Go file it answers in every build, from Go's tokens: every line and
+    block comment, interpreted and raw string, and rune literal. ok is then
+    true whether or not the file has syntax errors, and ctx is not consulted.
+    An unterminated raw string or block comment runs to the end of src;
+    an unterminated interpreted string or rune literal ends with its line.
+    An empty or nil src has no spans.
+
+    For any other language the spans come from the language's tree-sitter
+    grammar, in a build with cgo; ok is false when there is no grammar, in a
+    build without cgo, or when ctx ended.
 
 func IsTestFile(rel string) bool
     IsTestFile reports whether rel, a slash-separated path relative to a
@@ -88,8 +112,23 @@ type File struct {
 	Lang    string  // language name from the extension table
 	Backend Backend // which backend produced the declarations
 	Decls   []Decl  // sorted by StartLine, ties broken by Name; never nil
+
+	// Parsed is true when a backend parsed the file's bytes, whether or not
+	// it found syntax errors; Backend is then not BackendNone.
+	Parsed bool
+	// NotParsed is empty when Parsed is true, and otherwise says why the
+	// file was not parsed. Backend is then BackendNone and Decls empty.
+	NotParsed NotParsedReason
+	// SyntaxErrors are the errors the parse found, in position order, at
+	// most Options.MaxSyntaxErrors of them; empty and never nil when there
+	// are none or the file was not parsed.
+	SyntaxErrors []SyntaxError
+	// SyntaxErrorsTruncated is true when the parse found more errors than
+	// SyntaxErrors holds.
+	SyntaxErrorsTruncated bool
 }
-    File is the outline of one source file.
+    File is the outline of one source file, with the parse verdict of the parse
+    that produced its declarations.
 
 func Outline(ctx context.Context, abs string, src []byte, opts Options) (File, error)
     Outline returns the outline of a single file: Go files from go/ast, the
@@ -118,9 +157,27 @@ const (
 	KindModule    Kind = "module"
 	KindMacro     Kind = "macro"
 )
+type NotParsedReason string
+    NotParsedReason says why a file was not parsed: a closed set.
+
+const (
+	// NotParsedUnsupported: the extension is not in the table, or this build
+	// has no backend for the language (any language but Go without cgo).
+	NotParsedUnsupported NotParsedReason = "unsupported"
+	// NotParsedTooLarge: the file is over Options.MaxFileBytes.
+	NotParsedTooLarge NotParsedReason = "too_large"
+	// NotParsedBinary: a NUL byte in the file's first 8 KiB.
+	NotParsedBinary NotParsedReason = "binary"
+	// NotParsedFailed: the backend returned no syntax tree, or the file
+	// could not be read.
+	NotParsedFailed NotParsedReason = "failed"
+)
 type Options struct {
 	Root         string // when non-empty, File.Path is relative to this
 	MaxFileBytes int64  // 0 means 1 MiB
+	// MaxSyntaxErrors caps File.SyntaxErrors: 0 means 20, and a negative
+	// value is treated as 0.
+	MaxSyntaxErrors int
 }
     Options configures outlining.
 
@@ -130,3 +187,21 @@ type Source struct {
 }
     Source identifies a file to outline.
 
+type SyntaxError struct {
+	Line   int // 1-based
+	Column int // 1-based, in bytes
+	Kind   SyntaxErrorKind
+}
+    SyntaxError is one syntax error a parse found: a position and a kind,
+    with no message.
+
+type SyntaxErrorKind string
+    SyntaxErrorKind is the closed set of syntax error kinds.
+
+const (
+	// SyntaxErrorUnexpected is text the grammar could not place.
+	SyntaxErrorUnexpected SyntaxErrorKind = "unexpected"
+	// SyntaxErrorMissing is a token the grammar needed and did not find,
+	// reported where it was expected.
+	SyntaxErrorMissing SyntaxErrorKind = "missing"
+)

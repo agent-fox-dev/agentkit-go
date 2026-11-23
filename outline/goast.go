@@ -2,10 +2,12 @@ package outline
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/printer"
+	"go/scanner"
 	"go/token"
 	"strings"
 )
@@ -14,17 +16,18 @@ import (
 // that returns a nil AST.
 var parseGo = parser.ParseFile
 
-// outlineGo parses a Go file with go/ast and returns its declarations.
-// It returns (File, true) when it handled the file (even partially),
-// or (File{}, false) when the parser returned no AST at all and the
-// caller should fall through to the next backend.
+// outlineGo parses a Go file with go/ast and returns its declarations and
+// its syntax errors, from the one parse. It returns (File, true) when it
+// handled the file (even partially), or (File{}, false) when the parser
+// returned no AST at all.
+//
+// The parse asks for all errors: without that, go/parser gives up after
+// errors on more than ten lines and returns a tree with no declarations.
 func outlineGo(abs string, src []byte, opts Options) (File, bool) {
 	fset := token.NewFileSet()
-	f, err := parseGo(fset, abs, src, parser.SkipObjectResolution)
+	f, err := parseGo(fset, abs, src, parser.SkipObjectResolution|parser.AllErrors)
 	if f == nil {
-		// No AST at all — fall through.
-		_ = err
-		return File{}, false
+		return File{}, false // no AST at all
 	}
 	// Even if err != nil (syntax errors), we use the partial AST.
 
@@ -43,8 +46,47 @@ func outlineGo(abs string, src []byte, opts Options) (File, bool) {
 		Lang:    LangGo,
 		Backend: BackendGoAST,
 		Decls:   decls,
+		Parsed:  true,
 	}
+	result.SyntaxErrors, result.SyntaxErrorsTruncated = limitSyntaxErrors(goSyntaxErrors(err), opts.MaxSyntaxErrors)
 	return finishFile(result), true
+}
+
+// goSyntaxErrors turns the parser's error into syntax errors: one for each
+// distinct position, since the parser can report several messages at one
+// (an empty file has three at 1:1). A position is missing when one of its
+// messages names a token in quotes ("expected ')', found '{'") and
+// unexpected otherwise ("expected type", "missing ',' in argument list").
+// A position with no valid line is the file's first.
+func goSyntaxErrors(err error) []SyntaxError {
+	if err == nil {
+		return nil
+	}
+	var list scanner.ErrorList
+	if !errors.As(err, &list) {
+		return []SyntaxError{{Line: 1, Column: 1, Kind: SyntaxErrorUnexpected}}
+	}
+	var out []SyntaxError
+	at := map[[2]int]int{} // position to its index in out
+	for _, e := range list {
+		pos := [2]int{max(e.Pos.Line, 1), max(e.Pos.Column, 1)}
+		if e.Pos.Line < 1 {
+			pos = [2]int{1, 1}
+		}
+		kind := SyntaxErrorUnexpected
+		if strings.HasPrefix(e.Msg, "expected '") {
+			kind = SyntaxErrorMissing
+		}
+		if i, seen := at[pos]; seen {
+			if kind == SyntaxErrorMissing {
+				out[i].Kind = kind
+			}
+			continue
+		}
+		at[pos] = len(out)
+		out = append(out, SyntaxError{Line: pos[0], Column: pos[1], Kind: kind})
+	}
+	return out
 }
 
 // goFuncDecl converts a FuncDecl to a Decl slice (always 0 or 1 element).
