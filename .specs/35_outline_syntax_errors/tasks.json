@@ -1,0 +1,142 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
+  "spec_id": "35",
+  "spec_name": "outline_syntax_errors",
+  "schema_version": 3,
+  "test_commands": {
+    "all_tests": "make check",
+    "linter": "make lint",
+    "spec_tests": "go test -short -count=1 ./outline/... ./tools/..."
+  },
+  "dependencies": [],
+  "tasks": [
+    {
+      "id": 1,
+      "title": "Report whether a file was parsed, and the reason when it was not",
+      "criteria": [
+        "REQ-1",
+        "REQ-5.3"
+      ],
+      "steps": [
+        "Add the behaviours of this task's criteria to outline/outline_test.go, outline/goast_test.go, outline/treesitter_test.go and outline/treesitter_nocgo_test.go, with the two assertion helpers in outline/helpers_test.go (a parsed file with no errors; a file that is not parsed, with its reason), and confirm they fail to compile or fail",
+        "Add to outline.File the exported fields Parsed (bool), NotParsed, SyntaxErrors and SyntaxErrorsTruncated (bool), with comments that say what each means; add the exported type of NotParsed with its four constants, whose values are the strings unsupported, too_large, binary and failed, and the exported SyntaxError type with Line, Column and Kind and the two kind constants, whose values are unexpected and missing. Add Options.MaxSyntaxErrors, documented as: zero means 20, a negative value is treated as zero. Nothing reads the option yet",
+        "Give every File that Outline and OutlineMany return a non-nil, empty SyntaxErrors, and set Parsed and NotParsed on each return: an unknown extension is unsupported and is still not read; over the size limit, on the stat or by the length of the bytes given, is too_large and is decided before the NUL check; a NUL byte in the first 8 KiB is binary; a Go file with no syntax tree is failed; a language with no grammar in this build is unsupported; an error from the tree-sitter backend while the context is live is failed; a file a backend parsed is Parsed with an empty reason",
+        "In OutlineMany, return a file that could not be read as not parsed with the reason failed, keeping its Path and Lang; Outline still returns the zero File and the error for it, and a cancelled context still returns ctx.Err() and no File from both",
+        "Leave the decisions about language and backend, the declarations and their order exactly as they are; this task changes no parse",
+        "Run `make doc`; add a section on the outline package to docs/api.md, with its entry in the Contents index, that gives Outline, OutlineMany and File and describes Parsed, the four reasons and when each is reported, and that Backend is none and Decls empty in all four"
+      ],
+      "touches": [
+        "outline/outline.go",
+        "outline/goast.go",
+        "outline/outline_test.go",
+        "outline/goast_test.go",
+        "outline/treesitter_test.go",
+        "outline/treesitter_nocgo_test.go",
+        "outline/helpers_test.go",
+        "docs/api.md",
+        "docs/generated"
+      ],
+      "done_when": [
+        "`CGO_ENABLED=0 go test -short -count=1 ./outline/...` passes as well as the cgo run",
+        "`go build ./...` passes in the root and in codesearch, mcpserve and cmd/agentkit-tools with no edit outside outline"
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Report a Go file's syntax errors in position order, up to the limit",
+      "criteria": [
+        "REQ-2",
+        "REQ-4",
+        "REQ-5.1"
+      ],
+      "steps": [
+        "Before any production edit, run the unchanged code on the broken.go source of TestABrokenGoFileStillYieldsWhatParses and make that test assert the whole list of declarations it prints; it passes now and must pass at the end of the task",
+        "Add the behaviours of this task's criteria to outline/goast_test.go as table tests (the exact errors of a source, the kinds, the limit) and confirm they fail",
+        "Parse a Go file once, with parser.AllErrors added to the mode it has; the declarations come from that parse, so a file with errors on more than ten lines now has the declarations the parser recovers",
+        "Turn the parser's error, when it is a scanner.ErrorList, into syntax errors: one for each distinct line and column, the kind missing when any message at that position starts with `expected '` and unexpected otherwise; a position the parser gives without a valid line is reported at the first position of the file, 1:1",
+        "Order the errors by line, then column, and cut them to the limit in one function both backends will use: Options.MaxSyntaxErrors, 20 when it is zero or negative; more errors than the limit keeps the first ones and sets SyntaxErrorsTruncated; the result is never nil",
+        "Keep parseGo as the seam the tests replace, and keep returning a file with no syntax tree as not parsed with the reason failed",
+        "Run `make doc`; in the outline section of docs/api.md describe SyntaxErrors, the two kinds, what counts as an error in a Go file (one per position, an empty file has one, at its first position), Options.MaxSyntaxErrors with its default of 20 and SyntaxErrorsTruncated, and that a Go file with many errors now keeps its declarations"
+      ],
+      "touches": [
+        "outline/goast.go",
+        "outline/outline.go",
+        "outline/syntaxerror.go",
+        "outline/goast_test.go",
+        "docs/api.md",
+        "docs/generated"
+      ],
+      "done_when": [
+        "the declarations asserted by TestOutlineOfAGoFile, TestGoDeclarationsHaveTheirKindContainerAndRange and TestGoSignaturesAreOneLineWithoutTheBody are unedited in the diff",
+        "`go -C codesearch test -short -count=1 ./...` passes with no edit to codesearch"
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Report the syntax errors of a file parsed by tree-sitter",
+      "criteria": [
+        "REQ-3",
+        "REQ-5.2",
+        "REQ-5.4"
+      ],
+      "steps": [
+        "Before any production edit, run the unchanged code on the broken a.py, A.java and a.js of this task's checks and on file_outline for a Go file whose function lacks its closing brace, and write the declarations and the tool text they give into the tests that will assert them; they pass now and must pass at the end of the task",
+        "Add the behaviours of this task's criteria to outline/treesitter_test.go (the exact errors of a broken source, one broken file per language, the limit over error and missing nodes together) and to tools/outline_tool_test.go, and confirm the new ones fail",
+        "Have the tree-sitter backend return, with the declarations and from the same tree, the tree's faults: walk the tree only when its root reports an error, report an error node as one unexpected error at its start and do not descend into it, and report a missing node as one missing error at its start; the line is the start row plus one and the column the start column in bytes plus one",
+        "Pass the faults through the ordering and limit function of the Go backend, so both kinds are ordered together by position and cut to Options.MaxSyntaxErrors",
+        "Keep the declarations, the `.h` rule for C++, the `.tsx` rule and the cancellation of a parse as they are; the build without cgo still returns no backend for these languages, and its stub keeps the signature of the cgo function",
+        "Change nothing in the tools package beyond its tests: file_outline and find_symbol show no syntax error and no new reason",
+        "Add a package comment to outline (outline/doc.go) that says what the package returns, that the verdict comes from the parse that produced the declarations, and that a grammar can lag its language: a file using syntax newer than the grammar of this build is reported with errors although the language accepts it, so a caller that refuses files on the verdict should offer a way past it",
+        "Run `make doc`; in the outline section of docs/api.md describe what counts as an error in a tree-sitter file (the outermost error node, each missing node) and repeat the grammar constraint with the advice to callers"
+      ],
+      "touches": [
+        "outline/treesitter.go",
+        "outline/treesitter_nocgo.go",
+        "outline/outline.go",
+        "outline/doc.go",
+        "outline/treesitter_test.go",
+        "tools/outline_tool_test.go",
+        "docs/api.md",
+        "docs/generated"
+      ],
+      "done_when": [
+        "`git status --short tools/testdata` shows no changed golden file",
+        "`CGO_ENABLED=0 go test -short -count=1 ./outline/...` passes as well as the cgo run"
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Answer comment and string spans for Go and label Go reference hits by them",
+      "criteria": [
+        "REQ-6"
+      ],
+      "steps": [
+        "Add the behaviours of this task's criteria to a new outline/gospans_test.go with no build constraint, to outline/treesitter_test.go and outline/treesitter_nocgo_test.go (Go answers, the other languages answer as before), and to tools/ref_scanner_test.go and tools/find_references_test.go, and confirm the new ones fail",
+        "Make CommentAndStringSpans one exported function in a file with no build constraint, with the signature it has: for a path whose language is Go it answers from Go's tokens, and for any other path it calls the build's own implementation, the tree-sitter one with cgo and the one that answers not ok without",
+        "Take Go's spans from go/scanner with comments on: every COMMENT, STRING and CHAR token is a span from its offset to the end of the token in src. Do not use the length of the literal for the end: the scanner removes carriage returns from comments and raw strings, so the end is found in src. An unterminated raw string or block comment ends at len(src); scanner errors are ignored and the answer is ok; the context is not consulted; empty and nil src give no spans and ok",
+        "Leave tools/ref_scanner.go's call as it is and correct its comment, which says Go has no grammar: with the spans, a lexical scan labels a Go hit in code lexical and a hit in a comment or string text, and the text backend still labels everything text",
+        "Check that the description of the find_references tool and tools/testdata still describe what it returns; change a description only where it says that hits in Go files are always text",
+        "Run `make doc`; in the outline section of docs/api.md describe CommentAndStringSpans for Go (every build, with or without syntax errors, where an unterminated token ends) and for the other languages; in docs/architecture.md, in the paragraph on find_references, say that a lexical search labels hits in Go files as in the other languages, in every build, and that the other languages are `text` throughout without cgo; update the outline row of its package table"
+      ],
+      "touches": [
+        "outline/gospans.go",
+        "outline/gospans_test.go",
+        "outline/treesitter.go",
+        "outline/treesitter_nocgo.go",
+        "outline/treesitter_test.go",
+        "outline/treesitter_nocgo_test.go",
+        "tools/ref_scanner.go",
+        "tools/ref_scanner_test.go",
+        "tools/find_references_test.go",
+        "tools/references_test.go",
+        "docs/api.md",
+        "docs/architecture.md",
+        "docs/generated"
+      ],
+      "done_when": [
+        "`CGO_ENABLED=0 go test -short -count=1 ./outline/... ./tools/...` passes as well as the cgo run",
+        "`git status --short tools/testdata` shows no golden file changed except for a tool description this task corrected"
+      ]
+    }
+  ]
+}
