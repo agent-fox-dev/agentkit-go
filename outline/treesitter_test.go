@@ -57,6 +57,7 @@ func TestTreeSitterDeclarations(t *testing.T) {
 			if f.Backend != BackendTreeSitter {
 				t.Fatalf("Backend = %q", f.Backend)
 			}
+			assertParsedClean(t, f)
 			for _, d := range f.Decls {
 				if want := strings.Split(tc.src, "\n")[d.StartLine-1]; d.Signature != strings.TrimSpace(want) {
 					t.Errorf("%s: signature %q, want the line it starts on %q", d.Name, d.Signature, want)
@@ -66,6 +67,17 @@ func TestTreeSitterDeclarations(t *testing.T) {
 				t.Errorf("decls:\n got %q\nwant %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A grammar that cannot be loaded leaves the file not parsed: failed, with
+// no error from Outline.
+func TestAFileWhoseGrammarDoesNotLoadFailed(t *testing.T) {
+	saved := grammars[LangLua]
+	t.Cleanup(func() { grammars[LangLua] = saved })
+	grammars[LangLua] = &grammar{load: saved.load, query: "(no_such_node) @name", exported: always}
+	if f := outlineSrc(t, "a.lua", "function g() end\n"); !isNone(f, NotParsedFailed) || f.Lang != LangLua {
+		t.Errorf("Outline(a.lua) = %+v; want Lua, failed", f)
 	}
 }
 

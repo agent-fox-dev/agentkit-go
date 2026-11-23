@@ -23,6 +23,7 @@ func TestOutlineOfAGoFile(t *testing.T) {
 	if f.Path != "go_sample.go" || f.Lang != LangGo || f.Backend != BackendGoAST {
 		t.Fatalf("File = %q %q %q", f.Path, f.Lang, f.Backend)
 	}
+	assertParsedClean(t, f)
 	want := [][2]string{
 		{"func Greet L4-6", "func Greet(name string) string"},
 		{"type Server L8-10", "type Server struct"},

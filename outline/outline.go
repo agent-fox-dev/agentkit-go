@@ -46,12 +46,62 @@ type Decl struct {
 	EndLine   int // 1-based, inclusive; 0 when unknown
 }
 
-// File is the outline of one source file.
+// NotParsedReason says why a file was not parsed: a closed set.
+type NotParsedReason string
+
+const (
+	// NotParsedUnsupported: the extension is not in the table, or this build
+	// has no backend for the language (any language but Go without cgo).
+	NotParsedUnsupported NotParsedReason = "unsupported"
+	// NotParsedTooLarge: the file is over Options.MaxFileBytes.
+	NotParsedTooLarge NotParsedReason = "too_large"
+	// NotParsedBinary: a NUL byte in the file's first 8 KiB.
+	NotParsedBinary NotParsedReason = "binary"
+	// NotParsedFailed: the backend returned no syntax tree, or the file
+	// could not be read.
+	NotParsedFailed NotParsedReason = "failed"
+)
+
+// SyntaxErrorKind is the closed set of syntax error kinds.
+type SyntaxErrorKind string
+
+const (
+	// SyntaxErrorUnexpected is text the grammar could not place.
+	SyntaxErrorUnexpected SyntaxErrorKind = "unexpected"
+	// SyntaxErrorMissing is a token the grammar needed and did not find,
+	// reported where it was expected.
+	SyntaxErrorMissing SyntaxErrorKind = "missing"
+)
+
+// SyntaxError is one syntax error a parse found: a position and a kind,
+// with no message.
+type SyntaxError struct {
+	Line   int // 1-based
+	Column int // 1-based, in bytes
+	Kind   SyntaxErrorKind
+}
+
+// File is the outline of one source file, with the parse verdict of the
+// parse that produced its declarations.
 type File struct {
 	Path    string  // slash-separated, relative to Options.Root or absolute
 	Lang    string  // language name from the extension table
 	Backend Backend // which backend produced the declarations
 	Decls   []Decl  // sorted by StartLine, ties broken by Name; never nil
+
+	// Parsed is true when a backend parsed the file's bytes, whether or not
+	// it found syntax errors; Backend is then not BackendNone.
+	Parsed bool
+	// NotParsed is empty when Parsed is true, and otherwise says why the
+	// file was not parsed. Backend is then BackendNone and Decls empty.
+	NotParsed NotParsedReason
+	// SyntaxErrors are the errors the parse found, in position order, at
+	// most Options.MaxSyntaxErrors of them; empty and never nil when there
+	// are none or the file was not parsed.
+	SyntaxErrors []SyntaxError
+	// SyntaxErrorsTruncated is true when the parse found more errors than
+	// SyntaxErrors holds.
+	SyntaxErrorsTruncated bool
 }
 
 // Source identifies a file to outline.
@@ -64,6 +114,9 @@ type Source struct {
 type Options struct {
 	Root         string // when non-empty, File.Path is relative to this
 	MaxFileBytes int64  // 0 means 1 MiB
+	// MaxSyntaxErrors caps File.SyntaxErrors: 0 means 20, and a negative
+	// value is treated as 0.
+	MaxSyntaxErrors int
 }
 
 // defaultMaxFileBytes is the default file size limit (1 MiB).
@@ -80,7 +133,7 @@ func Outline(ctx context.Context, abs string, src []byte, opts Options) (File, e
 	if err := ctx.Err(); err != nil {
 		return File{}, err
 	}
-	f := File{Path: filePath(abs, opts.Root), Lang: langForExt(filepath.Ext(abs)), Backend: BackendNone, Decls: []Decl{}}
+	f := notParsed(filePath(abs, opts.Root), langForExt(filepath.Ext(abs)), NotParsedUnsupported)
 	// Unknown extension: return immediately without reading the file.
 	if f.Lang == "" {
 		return f, nil
@@ -95,6 +148,7 @@ func Outline(ctx context.Context, abs string, src []byte, opts Options) (File, e
 	if src == nil {
 		data, err := loadSource(abs, maxBytes)
 		if errors.Is(err, errTooLarge) {
+			f.NotParsed = NotParsedTooLarge
 			return f, nil
 		}
 		if err != nil {
@@ -102,8 +156,14 @@ func Outline(ctx context.Context, abs string, src []byte, opts Options) (File, e
 		}
 		src = data
 	}
-	// Too large, or binary (a NUL in the first 8 KiB).
-	if int64(len(src)) > maxBytes || bytes.IndexByte(src[:min(len(src), binarySniffSize)], 0) >= 0 {
+	// Too large, then binary (a NUL in the first 8 KiB): the size decides
+	// first, as it does for a file on disk, which is never read to sniff.
+	if int64(len(src)) > maxBytes {
+		f.NotParsed = NotParsedTooLarge
+		return f, nil
+	}
+	if bytes.IndexByte(src[:min(len(src), binarySniffSize)], 0) >= 0 {
+		f.NotParsed = NotParsedBinary
 		return f, nil
 	}
 
@@ -111,7 +171,8 @@ func Outline(ctx context.Context, abs string, src []byte, opts Options) (File, e
 		if g, ok := outlineGo(abs, src, opts); ok {
 			return g, nil
 		}
-		return f, nil // the parser returned no AST at all
+		f.NotParsed = NotParsedFailed // the parser returned no AST at all
+		return f, nil
 	}
 	f.Lang = LangFor(abs, src)
 	decls, ok, err := outlineTreeSitter(ctx, f.Lang, filepath.Ext(abs), src)
@@ -119,12 +180,19 @@ func Outline(ctx context.Context, abs string, src []byte, opts Options) (File, e
 		if ctx.Err() != nil {
 			return File{}, ctx.Err()
 		}
+		f.NotParsed = NotParsedFailed // the grammar or its query did not load
 		return f, nil
 	}
-	if ok {
-		f.Backend, f.Decls = BackendTreeSitter, decls
+	if !ok {
+		return f, nil // no grammar for the language in this build: unsupported
 	}
+	f.Backend, f.Decls, f.Parsed, f.NotParsed = BackendTreeSitter, decls, true, ""
 	return finishFile(f), nil
+}
+
+// notParsed is the File of a file no backend parsed, for the reason why.
+func notParsed(path, lang string, why NotParsedReason) File {
+	return File{Path: path, Lang: lang, Backend: BackendNone, Decls: []Decl{}, NotParsed: why, SyntaxErrors: []SyntaxError{}}
 }
 
 // OutlineMany outlines many files, returning one File per input in order. A
@@ -138,7 +206,7 @@ func OutlineMany(ctx context.Context, srcs []Source, opts Options) ([]File, erro
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			f = File{Path: filePath(s.Abs, opts.Root), Lang: langForExt(filepath.Ext(s.Abs)), Backend: BackendNone, Decls: []Decl{}}
+			f = notParsed(filePath(s.Abs, opts.Root), langForExt(filepath.Ext(s.Abs)), NotParsedFailed)
 		}
 		files[i] = f
 	}
@@ -171,10 +239,14 @@ func filePath(abs, root string) string {
 	return filepath.ToSlash(abs)
 }
 
-// finishFile guarantees non-nil Decls and sorts by StartLine then Name.
+// finishFile guarantees non-nil Decls and SyntaxErrors and sorts the
+// declarations by StartLine then Name.
 func finishFile(f File) File {
 	if f.Decls == nil {
 		f.Decls = []Decl{}
+	}
+	if f.SyntaxErrors == nil {
+		f.SyntaxErrors = []SyntaxError{}
 	}
 	sort.SliceStable(f.Decls, func(i, j int) bool {
 		if f.Decls[i].StartLine != f.Decls[j].StartLine {

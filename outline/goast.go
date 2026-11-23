@@ -43,6 +43,7 @@ func outlineGo(abs string, src []byte, opts Options) (File, bool) {
 		Lang:    LangGo,
 		Backend: BackendGoAST,
 		Decls:   decls,
+		Parsed:  true,
 	}
 	return finishFile(result), true
 }

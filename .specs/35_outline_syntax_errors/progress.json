@@ -3,11 +3,151 @@
   "spec_id": "35",
   "spec_name": "outline_syntax_errors",
   "schema_version": 3,
-  "updated_at": "",
+  "updated_at": "2026-11-23T09:11:06Z",
   "tasks": [
     {
       "id": 1,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-1.1",
+          "tests": [
+            {
+              "test": "./outline:TestOutlineOfAGoFile",
+              "failed": {
+                "at": "2026-11-23T09:09:58Z",
+                "tree": "af37068f2ab72be98d759b122ef343c1e9a766fc"
+              },
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            },
+            {
+              "test": "./outline:TestTreeSitterDeclarations",
+              "failed": {
+                "at": "2026-11-23T09:09:58Z",
+                "tree": "af37068f2ab72be98d759b122ef343c1e9a766fc"
+              },
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.2",
+          "tests": [
+            {
+              "test": "./outline:TestOutlineOfAnUnknownExtensionReadsNothing",
+              "failed": {
+                "at": "2026-11-23T09:09:58Z",
+                "tree": "af37068f2ab72be98d759b122ef343c1e9a766fc"
+              },
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.3",
+          "tests": [
+            {
+              "test": "./outline:TestOutlineOfAFileOverTheSizeLimitIsTooLarge",
+              "failed": {
+                "at": "2026-11-23T09:09:58Z",
+                "tree": "af37068f2ab72be98d759b122ef343c1e9a766fc"
+              },
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.4",
+          "tests": [
+            {
+              "test": "./outline:TestOutlineOfABinaryFileIsNotParsed",
+              "failed": {
+                "at": "2026-11-23T09:09:58Z",
+                "tree": "af37068f2ab72be98d759b122ef343c1e9a766fc"
+              },
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.5",
+          "tests": [
+            {
+              "test": "./outline:TestOutlineOfAGoFileWithNoSyntaxTreeFailed",
+              "failed": {
+                "at": "2026-11-23T09:09:58Z",
+                "tree": "af37068f2ab72be98d759b122ef343c1e9a766fc"
+              },
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            },
+            {
+              "test": "./outline:TestAFileWhoseGrammarDoesNotLoadFailed",
+              "failed": {
+                "at": "2026-11-23T09:09:58Z",
+                "tree": "af37068f2ab72be98d759b122ef343c1e9a766fc"
+              },
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-1.6",
+          "tests": [
+            {
+              "test": "./outline:TestOutlineManyKeepsTheInputOrder",
+              "failed": {
+                "at": "2026-11-23T09:09:58Z",
+                "tree": "af37068f2ab72be98d759b122ef343c1e9a766fc"
+              },
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-5.3",
+          "no_red": "the behaviour is unchanged by this package: a cancelled context already returns ctx.Err() and no File, and these existing tests pin it unedited",
+          "tests": [
+            {
+              "test": "./outline:TestOutlineOfACancelledContextIsItsError",
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            },
+            {
+              "test": "./outline:TestAParseStopsWhenTheContextEnds",
+              "passed": {
+                "at": "2026-11-23T09:11:04Z",
+                "tree": "83ffc1fb69b765cb28e87b922fd7493ad8292f4d"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 2,
