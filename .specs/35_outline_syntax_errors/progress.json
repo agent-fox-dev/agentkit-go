@@ -3,7 +3,7 @@
   "spec_id": "35",
   "spec_name": "outline_syntax_errors",
   "schema_version": 3,
-  "updated_at": "2026-11-23T09:11:06Z",
+  "updated_at": "2026-11-23T09:14:02Z",
   "tasks": [
     {
       "id": 1,
@@ -151,7 +151,155 @@
     },
     {
       "id": 2,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-2.1",
+          "tests": [
+            {
+              "test": "./outline:TestGoSyntaxErrorsArePositionsAndKinds",
+              "failed": {
+                "at": "2026-11-23T09:13:25Z",
+                "tree": "b7496a7b1c95c28d86d61da633ad60bd042b6507"
+              },
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.2",
+          "tests": [
+            {
+              "test": "./outline:TestGoSyntaxErrorsArePositionsAndKinds",
+              "failed": {
+                "at": "2026-11-23T09:13:25Z",
+                "tree": "b7496a7b1c95c28d86d61da633ad60bd042b6507"
+              },
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.3",
+          "tests": [
+            {
+              "test": "./outline:TestGoSyntaxErrorsArePositionsAndKinds",
+              "failed": {
+                "at": "2026-11-23T09:13:25Z",
+                "tree": "b7496a7b1c95c28d86d61da633ad60bd042b6507"
+              },
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-2.4",
+          "tests": [
+            {
+              "test": "./outline:TestAGoFileWithErrorsOnManyLinesKeepsItsDeclarations",
+              "failed": {
+                "at": "2026-11-23T09:13:25Z",
+                "tree": "b7496a7b1c95c28d86d61da633ad60bd042b6507"
+              },
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-4.1",
+          "tests": [
+            {
+              "test": "./outline:TestGoSyntaxErrorsArePositionsAndKinds",
+              "failed": {
+                "at": "2026-11-23T09:13:25Z",
+                "tree": "b7496a7b1c95c28d86d61da633ad60bd042b6507"
+              },
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-4.2",
+          "tests": [
+            {
+              "test": "./outline:TestGoSyntaxErrorsStopAtTheLimit",
+              "failed": {
+                "at": "2026-11-23T09:13:25Z",
+                "tree": "b7496a7b1c95c28d86d61da633ad60bd042b6507"
+              },
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-4.3",
+          "tests": [
+            {
+              "test": "./outline:TestGoSyntaxErrorsStopAtTheLimit",
+              "failed": {
+                "at": "2026-11-23T09:13:25Z",
+                "tree": "b7496a7b1c95c28d86d61da633ad60bd042b6507"
+              },
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-5.1",
+          "no_red": "a pin of today's declarations: the broken.go list was recorded from the unchanged code and the other three tests are unedited, so they pass before and must pass after the parser mode changes",
+          "tests": [
+            {
+              "test": "./outline:TestABrokenGoFileStillYieldsWhatParses",
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            },
+            {
+              "test": "./outline:TestOutlineOfAGoFile",
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            },
+            {
+              "test": "./outline:TestGoDeclarationsHaveTheirKindContainerAndRange",
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            },
+            {
+              "test": "./outline:TestGoSignaturesAreOneLineWithoutTheBody",
+              "passed": {
+                "at": "2026-11-23T09:14:01Z",
+                "tree": "fbc2f2cfb25f5a58f6792e003f9ce73a0e8b2204"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 3,
