@@ -17,6 +17,7 @@ The authoritative reference is each package's documentation: `go doc -all
 - [Identifiers, in the order an application uses them](#identifiers-in-the-order-an-application-uses-them)
   - [Workspace](#workspace)
   - [Tools, and shaping the tool set](#tools-and-shaping-the-tool-set)
+  - [Outlines](#outlines)
   - [Guard](#guard)
   - [Toolset and runner](#toolset-and-runner)
   - [Agent](#agent)
@@ -42,7 +43,7 @@ Import path prefix `github.com/agent-fox-dev/agentkit-go`.
 | `tools` | The eleven built-in file, search, navigation and shell tools (`tools.For`), the subprocess runner, and `tools.References` for reference search without a model. |
 | `output` | The bounded output buffer the tools and code mode share: `Accumulator`, `TruncateMode`, `TruncatedBy`. Standard library only; `tools` keeps its names for them as aliases. |
 | `guard` | The shell guard: `Allow`, `Restricted`, `AllowAll`, and the pure `Check` and `Commands` it is built on. |
-| `outline` | Declarations of a source file: Go always, fourteen more languages with cgo. |
+| `outline` | Declarations of a source file and the verdict of the parse that produced them (parsed or why not, and its syntax errors): Go always, fourteen more languages with cgo. |
 | `codemode` | A tool that runs a model-written Starlark script whose functions are other tools. |
 | `mcp` | The MCP client and tool pool. |
 | `prompt` | System prompt assembly: the base prompt plus the active tools' guidelines. |
@@ -89,6 +90,57 @@ is used by the **agent loop** and by **`mcpserve`**.
 | `core.Named` | `Named(ts []Tool, names ...string) ([]Tool, error)`: the named tools, in `names` order; an error for a missing or repeated name |
 | `codemode.New` | `New(tools []core.Tool, opts Options) (core.Tool, BuildInfo, error)` |
 | `mcp` | `ParseConfig`, `NewPool`, `Pool.Connect`, `Pool.Tools`, `Pool.Close`, `Connect` |
+
+### Outlines
+
+The tools outline files for you; a program that works on declarations
+itself calls `outline` directly. One parse gives a file's declarations and
+its parse verdict, so a caller can refuse an edit that leaves a file
+unparseable without a parser of its own.
+
+| Identifier | Shape |
+|---|---|
+| `outline.Outline` | `Outline(ctx, abs string, src []byte, opts Options) (File, error)`: one file; `src` nil reads it from disk. An unreadable file is an error; a cancelled context returns `ctx.Err()` |
+| `outline.OutlineMany` | `OutlineMany(ctx, srcs []Source, opts Options) ([]File, error)`: one `File` per input, in order; an unreadable one is not parsed, `failed` |
+| `outline.Options` | `Root`, `MaxFileBytes` (0 means 1 MiB), `MaxSyntaxErrors` (0 or negative means 20) |
+| `outline.File` | `Path`, `Lang`, `Backend`, `Decls`, and the verdict: `Parsed`, `NotParsed`, `SyntaxErrors`, `SyntaxErrorsTruncated` |
+| `outline.NotParsedReason` | Why a file was not parsed: `NotParsedUnsupported` (`unsupported`: unknown extension, or no backend in this build), `NotParsedTooLarge` (`too_large`), `NotParsedBinary` (`binary`: a NUL in the first 8 KiB), `NotParsedFailed` (`failed`: no syntax tree, or an unreadable file in `OutlineMany`). `Backend` is then `none` and `Decls` empty |
+| `outline.SyntaxError` | `Line` (1-based), `Column` (1-based, in bytes), `Kind`: `SyntaxErrorUnexpected` (`unexpected`, text the grammar could not place) or `SyntaxErrorMissing` (`missing`, a token expected at that position) |
+| `outline.CommentAndStringSpans` | `CommentAndStringSpans(ctx, path string, src []byte) ([][2]int, bool)`: the byte ranges of comments and string literals; Go in every build, the other languages with cgo |
+
+**The verdict.** `Parsed` is true when a backend parsed the bytes, with or
+without errors; then `NotParsed` is empty. `SyntaxErrors` is empty and never
+nil when there are none or the file was not parsed. It holds at most
+`MaxSyntaxErrors` errors, ordered by line, then column, and
+`SyntaxErrorsTruncated` is true when the parse found more. An error is a
+position and a kind, never a message, and only what the parser rejects:
+semantic errors are not reported.
+
+- **Go.** `go/parser` with all errors requested. Each position it reports is
+  one error, `missing` when a message there names a token in quotes
+  (`expected ')'`) and `unexpected` otherwise. An empty `.go` file has one
+  error, at 1:1. Asking for all errors also means a Go file with errors on
+  more than ten lines keeps the declarations the parser recovers; it used to
+  have none.
+- **Tree-sitter.** Each error node with no error node above it is one
+  `unexpected` error at its start, and each missing node one `missing` error
+  where the token was expected.
+- **A grammar can lag its language.** A file using syntax newer than the
+  grammar of this build is reported with errors although the language
+  accepts it. A caller that refuses files or edits on the verdict should
+  offer a way past it.
+
+**Spans.** For a Go file `CommentAndStringSpans` answers in every build,
+from its tokens, with or without syntax errors: every comment, interpreted and
+raw string and rune literal, `ok` true. An unterminated raw string or block
+comment runs to the end of the file; an unterminated interpreted string or
+rune ends with its line. For the other languages the spans come from the
+tree-sitter grammar with cgo, and `ok` is false without cgo, without a
+grammar, or when the context ended. Reference search labels a hit outside
+every span `lexical` and one inside a span `text`.
+
+The verdict is not in the output of `file_outline` or `find_symbol`, nor read
+by `codesearch` (whose stored index records it with each outline).
 
 ### Guard
 
