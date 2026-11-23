@@ -139,8 +139,8 @@ func TestFindReferencesOfANameNothingDeclaresIsText(t *testing.T) {
 
 func TestFindReferencesInPythonIsLexical(t *testing.T) {
 	ws := newWS(t, map[string]string{
-		"billing/tax.py":  "def calculate_tax(amount):\n    return amount * 0.2\n",
-		"billing/shop.py": "# calculate_tax is applied at checkout\ndef checkout(total):\n    label = \"calculate_tax\"\n    return calculate_tax(total)\n",
+		"billing/tax.py":    "def calculate_tax(amount):\n    return amount * 0.2\n",
+		"billing/shop.py":   "# calculate_tax is applied at checkout\ndef checkout(total):\n    label = \"calculate_tax\"\n    return calculate_tax(total)\n",
 		"billing/report.go": "package billing\n\n// calculate_tax is the Python helper\nfunc report() { calculate_tax() }\n",
 	})
 	res := refResult(t, newFT(ws, Options{}), `{"name":"calculate_tax"}`)
