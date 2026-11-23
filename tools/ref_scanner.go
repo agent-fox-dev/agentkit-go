@@ -110,8 +110,9 @@ func inSpans(spans [][2]int, off int) bool {
 }
 
 // scanContentForMatches scans content for whole-identifier occurrences of
-// target.Name. A hit is lexical when the language's grammar places it
-// outside any comment or string; otherwise it is text.
+// target.Name. A hit is lexical when it lies outside every comment and
+// string outline finds (Go's from its tokens, the other languages' from
+// their grammars); otherwise it is text.
 func scanContentForMatches(path string, content []byte, target outline.Decl) []ReferenceSite {
 	name := target.Name
 	if name == "" {
@@ -119,8 +120,8 @@ func scanContentForMatches(path string, content []byte, target outline.Decl) []R
 	}
 
 	lang := outline.LangFor(path, content)
-	// Without a grammar (Go, which is resolved by type, or any language in
-	// a build without cgo) every hit is text.
+	// Without spans (a language with no grammar, or any language but Go in a
+	// build without cgo) every hit is text.
 	spans, classified := outline.CommentAndStringSpans(context.Background(), path, content)
 
 	var sites []ReferenceSite

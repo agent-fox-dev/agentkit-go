@@ -10,7 +10,7 @@ func outlineTreeSitter(context.Context, string, string, []byte) ([]Decl, []Synta
 	return nil, nil, false, nil
 }
 
-// CommentAndStringSpans needs cgo: without it no language is known.
-func CommentAndStringSpans(context.Context, string, []byte) ([][2]int, bool) {
+// commentAndStringSpans needs cgo: without it no grammar is known.
+func commentAndStringSpans(context.Context, string, []byte) ([][2]int, bool) {
 	return nil, false
 }

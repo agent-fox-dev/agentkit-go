@@ -180,9 +180,6 @@ func TestCommentAndStringSpans(t *testing.T) {
 			t.Errorf("%s: code at %d (%q) is in a literal span %v", tc.file, code, tc.inCode, spans)
 		}
 	}
-	if _, ok := CommentAndStringSpans(context.Background(), "/x/a.go", nil); ok {
-		t.Error("Go has no grammar: its references are resolved by type")
-	}
 }
 
 // endsLater is a context that is live for its first n Err calls and ended

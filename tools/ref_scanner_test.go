@@ -69,6 +69,15 @@ func TestACodeHitIsLexicalAndACommentOrStringHitIsText(t *testing.T) {
 	if !slices.Equal(conf, want) {
 		t.Fatalf("confidences %v, want %v", conf, want)
 	}
+	// Go needs no grammar: its comments and strings come from its tokens,
+	// in every build.
+	var goSites []string
+	for _, s := range scanContentForMatches("t.go", []byte("package t\n// Marshal is deprecated\nvar s = \"Marshal\"\nfunc f() { yaml.Marshal(nil) }\n"), outline.Decl{Name: "Marshal"}) {
+		goSites = append(goSites, fmt.Sprintf("%d %s", s.Line, s.Confidence))
+	}
+	if want := []string{"2 text", "3 text", "4 lexical"}; !slices.Equal(goSites, want) {
+		t.Fatalf("Go confidences %v, want %v", goSites, want)
+	}
 	// Markdown has no grammar, and a name searched as text is text everywhere.
 	ws := newWS(t, map[string]string{"README.md": "Please execute this.\n", "a.py": "service.execute()\n"})
 	res, err := executeReferenceSearch(context.Background(), ws, outline.Decl{Name: "execute"}, "", "text", ReferenceOptions{IncludeTests: true}, SymbolOptions{}, nil)

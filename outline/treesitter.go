@@ -295,10 +295,10 @@ func lineAt(src []byte, starts []int, n int) string {
 	return strings.TrimRight(string(src[starts[n]:end]), "\r\n")
 }
 
-// CommentAndStringSpans returns the byte ranges [start, end) of the comments
+// commentAndStringSpans returns the byte ranges [start, end) of the comments
 // and string literals in src, in order, as the language's tree-sitter grammar
 // parses them. ok is false when the language has no grammar or ctx ended.
-func CommentAndStringSpans(ctx context.Context, path string, src []byte) (spans [][2]int, ok bool) {
+func commentAndStringSpans(ctx context.Context, path string, src []byte) (spans [][2]int, ok bool) {
 	g := grammarFor(LangFor(path, src), filepath.Ext(path))
 	if g == nil {
 		return nil, false

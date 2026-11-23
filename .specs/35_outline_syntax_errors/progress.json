@@ -3,7 +3,7 @@
   "spec_id": "35",
   "spec_name": "outline_syntax_errors",
   "schema_version": 3,
-  "updated_at": "2026-11-23T09:17:39Z",
+  "updated_at": "2026-11-23T09:21:44Z",
   "tasks": [
     {
       "id": 1,
@@ -409,7 +409,127 @@
     },
     {
       "id": 4,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "REQ-6.1",
+          "tests": [
+            {
+              "test": "./outline:TestGoCommentAndStringSpans",
+              "failed": {
+                "at": "2026-11-23T09:19:58Z",
+                "tree": "04e69933afdf38cc806b143ceede0edd863ef3cb"
+              },
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-6.2",
+          "tests": [
+            {
+              "test": "./outline:TestGoCommentAndStringSpans",
+              "failed": {
+                "at": "2026-11-23T09:19:58Z",
+                "tree": "04e69933afdf38cc806b143ceede0edd863ef3cb"
+              },
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-6.3",
+          "tests": [
+            {
+              "test": "./outline:TestGoCommentAndStringSpans",
+              "failed": {
+                "at": "2026-11-23T09:19:58Z",
+                "tree": "04e69933afdf38cc806b143ceede0edd863ef3cb"
+              },
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-6.4",
+          "no_red": "the other languages answer as before: the six language cases and the cancellation test are unedited and pass before and after; only the assertion that Go has no spans was removed",
+          "tests": [
+            {
+              "test": "./outline:TestCommentAndStringSpans",
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            },
+            {
+              "test": "./outline:TestAParseStopsWhenTheContextEnds",
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-6.5",
+          "tests": [
+            {
+              "test": "./tools:TestACodeHitIsLexicalAndACommentOrStringHitIsText",
+              "failed": {
+                "at": "2026-11-23T09:19:58Z",
+                "tree": "04e69933afdf38cc806b143ceede0edd863ef3cb"
+              },
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "REQ-6.6",
+          "no_red": "a pin of behaviour that must not change: go/types resolution and the text backend's labels; the resolved tests are unedited, and the text-backend test gains a Go hit in code that is text before and after",
+          "tests": [
+            {
+              "test": "./tools:TestFindReferencesOfANameNothingDeclaresIsText",
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            },
+            {
+              "test": "./tools:TestFindReferencesResolvesAGoMethodsCallers",
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            },
+            {
+              "test": "./tools:TestReferencesFindsTheResolvedCallers",
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            },
+            {
+              "test": "./tools:TestReferencesChoosesItsBackendFromTheTarget",
+              "passed": {
+                "at": "2026-11-23T09:21:43Z",
+                "tree": "86b9d52e6a2f029a6542d9747ec2e272af2fba66"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": 5,

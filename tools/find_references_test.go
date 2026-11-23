@@ -122,11 +122,14 @@ func TestFindReferencesOfANameNothingDeclaresIsText(t *testing.T) {
 		"config/settings.py": "ENABLED = NONEXISTENT_FLAG or False\n",
 		"docs/notes.md":      "Set NONEXISTENT_FLAG to turn it on.\n",
 		"main.go":            "package main\n\nfunc main() { _ = \"NONEXISTENT_FLAG\" }\n",
+		"cmd/run.go":         "package cmd\n\nfunc run() { NONEXISTENT_FLAG() }\n",
 	}), Options{})
 	r := mustOK(t, call(ft.findReferencesTool(), `{"name":"NONEXISTENT_FLAG"}`))
 	res := r.Data["result"].(ReferenceResult)
-	if res.Target != (outline.Decl{}) || r.Data["target"] != (outline.Decl{}) || res.Backend != "text" || len(res.Sites) != 3 ||
-		!strings.HasPrefix(r.Text, "find_references NONEXISTENT_FLAG  (text, 3 references in 3 files; 3 text matches) [0 declarations matched]\n") {
+	// Searched as text, every hit is text, a Go hit in code included.
+	if res.Target != (outline.Decl{}) || r.Data["target"] != (outline.Decl{}) || res.Backend != "text" || len(res.Sites) != 4 ||
+		slices.ContainsFunc(res.Sites, func(s ReferenceSite) bool { return s.Confidence != "text" }) ||
+		!strings.HasPrefix(r.Text, "find_references NONEXISTENT_FLAG  (text, 4 references in 4 files; 4 text matches) [0 declarations matched]\n") {
 		t.Fatalf("%+v\n%s", res, r.Text)
 	}
 	if r := mustOK(t, call(newFT(newWS(t, nil), Options{}).findReferencesTool(), `{"name":"GOPHER_KEY"}`)); !strings.Contains(r.Text, "(text, 0 references in 0 files; 0 text matches) [0 declarations matched]") {

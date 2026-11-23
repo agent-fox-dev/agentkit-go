@@ -41,8 +41,18 @@ FUNCTIONS
 
 func CommentAndStringSpans(ctx context.Context, path string, src []byte) (spans [][2]int, ok bool)
     CommentAndStringSpans returns the byte ranges [start, end) of the comments
-    and string literals in src, in order, as the language's tree-sitter grammar
-    parses them. ok is false when the language has no grammar or ctx ended.
+    and string literals in src, in order and not overlapping.
+
+    For a Go file it answers in every build, from Go's tokens: every line and
+    block comment, interpreted and raw string, and rune literal. ok is then
+    true whether or not the file has syntax errors, and ctx is not consulted.
+    An unterminated raw string or block comment runs to the end of src;
+    an unterminated interpreted string or rune literal ends with its line.
+    An empty or nil src has no spans.
+
+    For any other language the spans come from the language's tree-sitter
+    grammar, in a build with cgo; ok is false when there is no grammar, in a
+    build without cgo, or when ctx ended.
 
 func IsTestFile(rel string) bool
     IsTestFile reports whether rel, a slash-separated path relative to a
