@@ -54,8 +54,17 @@ context is created after the clock starts, never before.
   not scanned, so its header always shows `0 text matches`. A non-Go or
   undeclared target is scanned lexically, and its declaration line is reported
   as a `lexical` site.
-- Comment and string spans come from tree-sitter, which needs cgo. Without
-  cgo every non-Go hit is `text` and attributed to `<file>`.
+- The type check also reports a use in Go code of a name no package
+  declares (an unresolved selector such as `yaml.Marshal`, labelled
+  `lexical`), and then the backend is `go/types`. So the lexical scan reaches
+  the code of a Go file only when the type checker cannot load that file (one
+  that has lost its package clause, say); a Go file it loads adds to a
+  lexical search only when no Go code uses the name, and then only through its
+  comments and strings, as `text`.
+- Comment and string spans of a Go file come from its tokens, in every
+  build. Those of the other languages come from tree-sitter, which needs cgo:
+  without cgo every hit outside a Go file is `text` and attributed to
+  `<file>`.
 - The time budget is checked per file walked, between Go package checks and
   between scanned files; walking the ASTs of packages already checked runs to
   completion.

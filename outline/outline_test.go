@@ -86,6 +86,27 @@ func TestOutlineOfAFileOverTheSizeLimitIsTooLarge(t *testing.T) {
 	}
 }
 
+// A program passes a 2 MiB JavaScript file on disk and is told it is too
+// large, which it tells apart from a clean file and an unsupported one.
+func TestAProgramIsToldWhyAFileWasNotParsed(t *testing.T) {
+	ctx := context.Background()
+	root := testutil.Tree(t, map[string]string{
+		"big.js": strings.Repeat("//x\n", 2<<20/4), "a.go": "package a\n\nfunc A() {}\n", "notes.txt": "x\n",
+	})
+	big, err := Outline(ctx, filepath.Join(root, "big.js"), nil, Options{})
+	if err != nil || big.Lang != LangJavaScript || !isNone(big, NotParsedTooLarge) {
+		t.Fatalf("big.js: %+v, %v; want JavaScript, too large", big, err)
+	}
+	clean, err := Outline(ctx, filepath.Join(root, "a.go"), nil, Options{})
+	if err != nil || !clean.Parsed || clean.NotParsed != "" {
+		t.Fatalf("a.go: %+v, %v; want parsed", clean, err)
+	}
+	other, err := Outline(ctx, filepath.Join(root, "notes.txt"), nil, Options{})
+	if err != nil || other.NotParsed != NotParsedUnsupported || other.NotParsed == big.NotParsed {
+		t.Fatalf("notes.txt: %+v, %v; want unsupported", other, err)
+	}
+}
+
 func TestOutlineOfABinaryFileIsNotParsed(t *testing.T) {
 	early := []byte("package a\n\nfunc F() {}\n")
 	early = append(early, 0)

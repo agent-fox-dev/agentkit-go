@@ -4,6 +4,8 @@ package outline
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -132,6 +134,35 @@ func TestABrokenFileInEveryTreeSitterLanguageHasAnErrorAtItsFault(t *testing.T) 
 		if !f.Parsed || f.Backend != BackendTreeSitter || f.NotParsed != "" ||
 			!slices.ContainsFunc(f.SyntaxErrors, func(e SyntaxError) bool { return e.Line == 2 || e.Line == 3 }) {
 			t.Errorf("%s: %s parsed %v %q, errors %v; want one on line 2 or 3", tc.file, f.Backend, f.Parsed, f.NotParsed, f.SyntaxErrors)
+		}
+	}
+}
+
+// A program outlines a clean Python file, then a Go file it has just broken
+// by removing a function's closing brace, and can refuse the edit on the
+// second verdict.
+func TestAProgramOutlinesACleanFileThenOneItHasJustBroken(t *testing.T) {
+	ctx := context.Background()
+	py, err := Outline(ctx, "/x/a.py", []byte(treeSitterSamples[0].src), Options{})
+	if err != nil || !py.Parsed || py.Backend != BackendTreeSitter || len(py.Decls) == 0 || len(py.SyntaxErrors) != 0 {
+		t.Fatalf("clean Python: %+v, %v", py, err)
+	}
+	sample, err := os.ReadFile(filepath.Join("testdata", "go_sample.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(sample), "\n")
+	if lines[5] != "}" {
+		t.Fatalf("line 6 of go_sample.go is %q, want Greet's closing brace", lines[5])
+	}
+	edited := []byte(strings.Join(slices.Delete(lines, 5, 6), "\n"))
+	g, err := Outline(ctx, "/x/go_sample.go", edited, Options{})
+	if err != nil || !g.Parsed || g.Backend != BackendGoAST || len(g.Decls) == 0 || len(g.SyntaxErrors) == 0 {
+		t.Fatalf("the broken Go file: %+v, %v; want parsed with declarations and syntax errors", g, err)
+	}
+	for _, e := range g.SyntaxErrors {
+		if e.Line < 6 {
+			t.Errorf("syntax error %v is before the function's last line", e)
 		}
 	}
 }

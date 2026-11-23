@@ -3,7 +3,7 @@
   "spec_id": "35",
   "spec_name": "outline_syntax_errors",
   "schema_version": 3,
-  "updated_at": "2026-11-23T09:21:44Z",
+  "updated_at": "2026-11-23T09:26:15Z",
   "tasks": [
     {
       "id": 1,
@@ -533,7 +533,68 @@
     },
     {
       "id": 5,
-      "state": "pending"
+      "state": "done",
+      "evidence": [
+        {
+          "covers": "PATH-1",
+          "no_red": "a smoke test written after the tasks that deliver the path; it runs the path once with real components",
+          "tests": [
+            {
+              "test": "./outline:TestAProgramOutlinesACleanFileThenOneItHasJustBroken",
+              "passed": {
+                "at": "2026-11-23T09:26:13Z",
+                "tree": "0b299876b0972c3c075237f5ed304121abc81b9c"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-2",
+          "no_red": "a smoke test written after the tasks that deliver the path; it runs the path once with real components",
+          "tests": [
+            {
+              "test": "./outline:TestAProgramIsToldWhyAFileWasNotParsed",
+              "passed": {
+                "at": "2026-11-23T09:26:13Z",
+                "tree": "0b299876b0972c3c075237f5ed304121abc81b9c"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-3",
+          "no_red": "PATH-3's own smoke test, TestWithoutCgoOnlyGoIsOutlined, compiles only with CGO_ENABLED=0 and speca runs go test with cgo; these two constraint-free tests run in both builds, and the no-cgo test was run with CGO_ENABLED=0 go test ./outline, which passed",
+          "tests": [
+            {
+              "test": "./outline:TestGoCommentAndStringSpans",
+              "passed": {
+                "at": "2026-11-23T09:26:13Z",
+                "tree": "0b299876b0972c3c075237f5ed304121abc81b9c"
+              }
+            },
+            {
+              "test": "./outline:TestGoSyntaxErrorsArePositionsAndKinds",
+              "passed": {
+                "at": "2026-11-23T09:26:13Z",
+                "tree": "0b299876b0972c3c075237f5ed304121abc81b9c"
+              }
+            }
+          ]
+        },
+        {
+          "covers": "PATH-4",
+          "no_red": "a smoke test written after the tasks that deliver the path; it fails on main's code (both hits text) and passes on the branch",
+          "tests": [
+            {
+              "test": "./tools:TestReferencesTellAGoCallFromAGoComment",
+              "passed": {
+                "at": "2026-11-23T09:26:13Z",
+                "tree": "0b299876b0972c3c075237f5ed304121abc81b9c"
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

@@ -102,6 +102,22 @@ func TestReferencesRefusals(t *testing.T) {
 	}
 }
 
+// A Go file the type checker cannot load (here it has lost its package
+// clause) is scanned lexically like any other language: its call is
+// lexical and a comment naming the target text. A Go file it can load never
+// gets here: go/types reports every use in Go code, even of a name nothing
+// declares (ADR 04).
+func TestReferencesTellAGoCallFromAGoComment(t *testing.T) {
+	ws := newWS(t, map[string]string{
+		"go.mod":     "module example.com/enc\n\ngo 1.27\n",
+		"enc/enc.go": "import \"gopkg.in/yaml.v3\"\n\n// Marshal is deprecated\nfunc Encode(v any) ([]byte, error) { return yaml.Marshal(v) }\n",
+	})
+	res, err := References(context.Background(), ws, outline.Decl{Kind: outline.KindFunc, Name: "Marshal"}, ReferenceOptions{})
+	if want := []string{"enc/enc.go:4:50 lexical", "enc/enc.go:3:4 text"}; err != nil || res.Backend != "lexical" || !slices.Equal(siteList(res), want) {
+		t.Fatalf("%s %v, %v; want lexical %v", res.Backend, siteList(res), err, want)
+	}
+}
+
 func TestReferencesChoosesItsBackendFromTheTarget(t *testing.T) {
 	ws := newWS(t, map[string]string{
 		"go.mod":      "module example.com/c\n\ngo 1.22\n",
